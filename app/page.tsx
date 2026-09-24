@@ -14,12 +14,19 @@ import {
   buildOrder,
   connectSolanaWallet,
   fetchCategories,
+  fetchMarketTrades,
+  fetchPositions,
+  marketCreateBuild,
+  marketCreateQuote,
+  marketCreateRegister,
   quoteOrder,
   quoteParlayLive,
   reportTrade,
   signAndBroadcast,
-  submitOrder
+  submitOrder,
+  verifyOrder
 } from "@/lib/panta-client";
+import type { PantaPosition } from "@/lib/panta";
 import {
   PARLAY_MAX_LEGS,
   PARLAY_MIN_LEGS,
@@ -136,8 +143,16 @@ export default function Home() {
 
   const [dataSource, setDataSource] = useState<"panta" | "mock" | "unknown">("unknown");
 
+  // Live market trade tape for the active market (Panta /markets/{id}/trades).
+  type MarketTrade = { signature: string; side: "YES" | "NO"; shares: number; priceCents: number; usdcAmount: string; wallet: string; ts: string };
+  const [marketTrades, setMarketTrades] = useState<MarketTrade[]>([]);
+
+  // Panta-authoritative positions when a wallet is connected.
+  const [remotePositions, setRemotePositions] = useState<PantaPosition[]>([]);
+
   const [toast, setToast] = useState("");
   const [showHost, setShowHost] = useState(false);
+  const [hosting, setHosting] = useState(false);
 
   // ---- lifecycle -----------------------------------------------------
 
@@ -227,6 +242,37 @@ export default function Home() {
     }
     setCategoryFilter("All");
   }, [activeArena, activeMarketId]);
+
+  // Live trade tape for the focused market — refreshes on market change
+  // and every 8s. When PANTA_LIVE=true this is /markets/{id}/trades.
+  useEffect(() => {
+    let cancelled = false;
+    async function pull() {
+      try {
+        const r = await fetchMarketTrades(activeMarket.id);
+        if (!cancelled) setMarketTrades(r.trades);
+      } catch { /* ignore */ }
+    }
+    pull();
+    const id = window.setInterval(pull, 8_000);
+    return () => { cancelled = true; window.clearInterval(id); };
+  }, [activeMarket.id]);
+
+  // Remote positions from Panta when a wallet is connected. Refreshes on
+  // connect and every 12s while connected.
+  useEffect(() => {
+    if (!walletAddress) { setRemotePositions([]); return; }
+    let cancelled = false;
+    async function pull() {
+      try {
+        const r = await fetchPositions(walletAddress!);
+        if (!cancelled) setRemotePositions(r.positions);
+      } catch { /* ignore */ }
+    }
+    pull();
+    const id = window.setInterval(pull, 12_000);
+    return () => { cancelled = true; window.clearInterval(id); };
+  }, [walletAddress]);
 
   // ---- derived -------------------------------------------------------
 
@@ -322,8 +368,29 @@ export default function Home() {
         quoteId: quote.quoteId
       };
       setPositions((prev) => [pos, ...prev]);
-      const label = signed.simulated ? "simulated" : "on-chain";
+      const label = signed.simulated ? "simulated" : signed.confirmed ? "on-chain, confirmed" : "on-chain, broadcasting";
       setToast(`${side} filled · ${quote.shares.toFixed(1)} shares at ${quote.price}¢ · sig ${shortenPk(signed.signature)} (${label})`);
+
+      // Poll Panta for its own confirmation view. This is Panta's async
+      // pickup — it may lag the RPC confirmation by a slot or two.
+      if (!signed.simulated) {
+        (async () => {
+          for (let i = 0; i < 8; i++) {
+            try {
+              const v = await verifyOrder({ signature: signed.signature });
+              if (v.status === "confirmed") {
+                setToast(`Panta confirmed · sig ${shortenPk(signed.signature)} settled on-chain.`);
+                return;
+              }
+              if (v.status === "failed") {
+                setToast(`Panta rejected · sig ${shortenPk(signed.signature)} did not settle.`);
+                return;
+              }
+            } catch { /* keep polling */ }
+            await new Promise((r) => setTimeout(r, 2_500));
+          }
+        })();
+      }
     } catch (err) {
       console.error(err);
       setToast(`Trade failed: ${err instanceof Error ? err.message : "unknown"}`);
@@ -420,13 +487,54 @@ export default function Home() {
     }
   }, [walletAddress, slipLegs, slipStake, parlayQuote, activeArena.id]);
 
-  function createArena(event: FormEvent<HTMLFormElement>) {
+  /**
+   * Host a rumble = create a Panta market. Runs the full three-step
+   * lifecycle:
+   *   1. POST /markets/quote     → creation fee + short-lived quoteId
+   *   2. POST /markets/build     → unsigned VersionedTransaction
+   *   3. wallet signs, broadcasts to Solana RPC
+   *   4. POST /markets/register  → Panta writes catalog metadata
+   *
+   * Without a connected wallet or on failure, falls back to a draft ring
+   * saved in the local hosted[] list so the UI stays usable.
+   */
+  async function createArena(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const form = new FormData(event.currentTarget);
     const title = String(form.get("title") || "Untitled ring").trim() || "Untitled ring";
-    setHosted((current) => [title, ...current]);
-    setShowHost(false);
-    setToast(`"${title}" forged as a draft realm.`);
+    const theme = String(form.get("theme") || "Community forecasts");
+    const durationLabel = String(form.get("duration") || "72 hours");
+    const HOURS: Record<string, number> = { "72 hours": 72, "1 week": 168, "1 month": 720 };
+    const endsAt = new Date(Date.now() + (HOURS[durationLabel] ?? 72) * 3_600_000).toISOString();
+
+    if (!walletAddress) {
+      setHosted((current) => [title, ...current]);
+      setShowHost(false);
+      setToast(`"${title}" forged as a draft realm — connect a wallet to publish to Panta.`);
+      return;
+    }
+
+    setHosting(true);
+    try {
+      const q = await marketCreateQuote({ question: title, category: theme, endsAt, wallet: walletAddress });
+      const feeUsdc = (Number(q.creationFeeUsdc) / 1_000_000).toFixed(2);
+      setToast(`Quoted ${feeUsdc} USDC creation fee · signing…`);
+
+      const b = await marketCreateBuild({ quoteId: q.quoteId, wallet: walletAddress });
+      const s = await signAndBroadcast({ serializedTx: b.serializedTx, wallet: walletAddress });
+      const reg = await marketCreateRegister({ quoteId: q.quoteId, signature: s.signature, wallet: walletAddress });
+
+      const label = s.simulated ? "simulated" : s.confirmed ? "on-chain, confirmed" : "on-chain, broadcasting";
+      setHosted((current) => [`${title} · ${reg.marketId.slice(0, 4)}…${reg.marketId.slice(-4)}`, ...current]);
+      setShowHost(false);
+      setToast(`"${title}" registered · market ${shortenPk(reg.marketId)} (${label}).`);
+    } catch (err) {
+      setHosted((current) => [title, ...current]);
+      setShowHost(false);
+      setToast(`Panta registration failed — kept as draft. ${err instanceof Error ? err.message : ""}`);
+    } finally {
+      setHosting(false);
+    }
   }
 
   // ---- render --------------------------------------------------------
@@ -685,6 +793,23 @@ export default function Home() {
                 <span>Route</span><b>{dataSource === "panta" ? "Panta primary_order" : "Panta (mocked)"}</b>
               </div>
 
+              {marketTrades.length > 0 && (
+                <div className="tape" aria-label="Recent trades on this market">
+                  <div className="tape-title">◆ RECENT FLOW · panta /markets/{shortenPk(activeMarket.id)}/trades</div>
+                  <ul>
+                    {marketTrades.slice(0, 3).map((t) => (
+                      <li key={t.signature}>
+                        <span className={t.side === "YES" ? "chip yes" : "chip no"}>{t.side}</span>
+                        <span className="who">{shortenPk(t.wallet)}</span>
+                        <span className="amt">${t.usdcAmount}</span>
+                        <span className="px">@ {t.priceCents}¢</span>
+                        <span className="sig">sig {shortenPk(t.signature)}</span>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+
               <button className="gbtn primary full" onClick={trade} disabled={trading}>
                 {trading ? "ROUTING…" : connected ? `STRIKE ${side}` : "CONNECT TO STRIKE"} <span className="arr">▸</span>
               </button>
@@ -736,6 +861,10 @@ export default function Home() {
             <div className={openPnL >= 0 ? "pnl up" : "pnl down"}>
               <span>⚔ OPEN P&amp;L</span>
               <b>{openPnL >= 0 ? "+" : ""}{usd2.format(openPnL)}</b>
+            </div>
+            <div title="Positions read from Panta's /positions endpoint using the connected wallet address.">
+              <span>◊ PANTA ON-CHAIN</span>
+              <b>{connected ? remotePositions.length : "—"}</b>
             </div>
           </div>
 
@@ -1011,7 +1140,9 @@ export default function Home() {
                 <option>1 month</option>
               </select>
             </label>
-            <button className="gbtn primary full" type="submit">FORGE DRAFT <span className="arr">▸</span></button>
+            <button className="gbtn primary full" type="submit" disabled={hosting}>
+              {hosting ? "REGISTERING ON PANTA…" : connected ? "PUBLISH TO PANTA" : "FORGE DRAFT"} <span className="arr">▸</span>
+            </button>
             <p className="fine">
               Draft rings live in this browser. In production the host would call
               <code> POST /markets/quote</code> → <code>/markets/build</code> → <code>/markets/register</code> to seal USDC markets on Panta.
