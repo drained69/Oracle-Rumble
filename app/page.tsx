@@ -606,7 +606,7 @@ export default function Home() {
         <div className="hud-nav">
           <a href="#markets">Markets</a>
           <a href="#positions">Positions</a>
-          <a href="#docs">Docs</a>
+          <button onClick={() => setShowHost(true)}>New market</button>
         </div>
         <div className="hud-right">
           <span className={sourceBadge.cls} title={dataSource === "panta" ? "Talking to live-api.panta.market" : "Set PANTA_API_KEY to go live"}>
@@ -621,23 +621,11 @@ export default function Home() {
 
       {/* ─── HERO ───────────────────────────────────────────────── */}
       <section className="hero" id="top">
-        <p className="eyebrow">Prediction markets · Solana {CLUSTER}</p>
-        <h1>Prediction markets, played like a game.</h1>
+        <p className="eyebrow">Prediction markets · Solana {CLUSTER} · powered by <a href="https://docs.panta.market/" style={{ color: "var(--accent)" }}>Panta</a></p>
+        <h1>Call it. Prove it. Climb.</h1>
         <p className="lead">
-          Oracle Rumble is a game lobby over <a href="https://docs.panta.market/" style={{ color: "var(--accent)" }}>Panta</a>&apos;s
-          on-chain prediction markets. Take YES or NO on live markets, stack legs into a parlay, and settle on Solana.
+          Buy YES or NO on live on-chain markets. Stack legs into a parlay. Settle on Solana.
         </p>
-        <div className="hero-actions">
-          <a href="#markets" className="btn primary">Explore markets →</a>
-          <button className="btn secondary" onClick={() => setShowHost(true)}>New market</button>
-        </div>
-
-        <div className="stats">
-          <div className="stat"><b>{totalMarkets}</b><span>Live markets</span></div>
-          <div className="stat"><b>{arenas.length}</b><span>Categories</span></div>
-          <div className="stat"><b>{volumeLabel}</b><span>USDC volume</span></div>
-          <div className="stat"><b>{PARLAY_MIN_LEGS}–{PARLAY_MAX_LEGS}</b><span>Parlay legs</span></div>
-        </div>
       </section>
 
       {/* ─── MARKETS ────────────────────────────────────────────── */}
@@ -761,63 +749,46 @@ export default function Home() {
       </section>
 
       {/* ─── POSITIONS ──────────────────────────────────────────── */}
-      <section className="shell" id="positions">
-        <div className="section-head">
-          <h2>Your positions</h2>
-          <span className="meta">
-            {connected ? `${remotePositions.length} on-chain · ${positions.length} session` : "Not connected"}
-          </span>
-        </div>
+      {(arenaPositions.length > 0 || connected) && (
+        <section className="shell" id="positions">
+          <div className="section-head">
+            <h2>Positions</h2>
+            <span className="meta">
+              {arenaPositions.length} open · cost basis {usd2.format(arenaPositions.reduce((s, p) => s + p.cost, 0))} ·
+              <span className={openPnL >= 0 ? "up" : "down"}> {openPnL >= 0 ? "+" : ""}{usd2.format(openPnL)}</span>
+            </span>
+          </div>
 
-        <div className="pos-summary">
-          <div><span>Open positions</span><b>{arenaPositions.length}</b></div>
-          <div><span>Parlays</span><b>{parlays.filter((p) => p.arenaId === activeArena.id).length}</b></div>
-          <div><span>Cost basis</span><b>{usd2.format(arenaPositions.reduce((s, p) => s + p.cost, 0))}</b></div>
-          <div className={`pnl ${openPnL >= 0 ? "up" : "down"}`}><span>Open P&amp;L</span><b>{openPnL >= 0 ? "+" : ""}{usd2.format(openPnL)}</b></div>
-        </div>
-
-        {arenaPositions.length === 0 ? (
-          <div className="empty tall">No positions yet. Pick a market above and place an order to fill this section.</div>
-        ) : (
-          <ul className="pos-list">
-            {arenaPositions.map((p) => {
-              const m = activeArena.markets.find((x) => x.id === p.marketId);
-              const mark = m ? (p.side === "YES" ? m.yesPrice : 100 - m.yesPrice) : p.entryPrice;
-              const pnl = (mark - p.entryPrice) * p.shares / 100;
-              const claimable = m?.phase === "resolved" && m?.outcome === p.side;
-              return (
-                <li key={p.id}>
-                  <span className={p.side === "YES" ? "side-tag yes" : "side-tag no"}>{p.side}</span>
-                  <div style={{ minWidth: 0 }}>
-                    <h4>{p.question}</h4>
-                    <span className="meta">
-                      {p.shares.toFixed(1)} shares · entry {p.entryPrice}¢ · mark {mark}¢
-                      {p.signature ? ` · ${shortenPk(p.signature)}` : ""}
-                    </span>
-                  </div>
-                  <strong className={pnl >= 0 ? "up" : "down"}>{pnl >= 0 ? "+" : ""}{usd2.format(pnl)}</strong>
-                  <div style={{ display: "flex", gap: 6 }}>
-                    {claimable && <button className="btn sm primary" onClick={() => claimPosition(p)}>Claim</button>}
-                    <button className="btn sm secondary" onClick={() => closePosition(p.id)}>Close</button>
-                  </div>
-                </li>
-              );
-            })}
-          </ul>
-        )}
-      </section>
-
-      {/* ─── FOOTER ─────────────────────────────────────────────── */}
-      <footer id="docs">
-        <span>Oracle Rumble · Solana {CLUSTER}</span>
-        <span>
-          <a href="https://docs.panta.market/" target="_blank" rel="noreferrer">Panta docs</a>
-          {" · "}
-          <a href="https://solana.com/docs" target="_blank" rel="noreferrer">Solana docs</a>
-          {" · "}
-          <a href="https://github.com/drained69/Oracle-Rumble" target="_blank" rel="noreferrer">Source</a>
-        </span>
-      </footer>
+          {arenaPositions.length === 0 ? (
+            <div className="empty">No positions yet. Buy YES or NO above to fill this section.</div>
+          ) : (
+            <ul className="pos-list">
+              {arenaPositions.map((p) => {
+                const m = activeArena.markets.find((x) => x.id === p.marketId);
+                const mark = m ? (p.side === "YES" ? m.yesPrice : 100 - m.yesPrice) : p.entryPrice;
+                const pnl = (mark - p.entryPrice) * p.shares / 100;
+                const claimable = m?.phase === "resolved" && m?.outcome === p.side;
+                return (
+                  <li key={p.id}>
+                    <span className={p.side === "YES" ? "side-tag yes" : "side-tag no"}>{p.side}</span>
+                    <div style={{ minWidth: 0 }}>
+                      <h4>{p.question}</h4>
+                      <span className="meta">
+                        {p.shares.toFixed(1)} shares · entry {p.entryPrice}¢ · mark {mark}¢
+                      </span>
+                    </div>
+                    <strong className={pnl >= 0 ? "up" : "down"}>{pnl >= 0 ? "+" : ""}{usd2.format(pnl)}</strong>
+                    <div style={{ display: "flex", gap: 6 }}>
+                      {claimable && <button className="btn sm primary" onClick={() => claimPosition(p)}>Claim</button>}
+                      <button className="btn sm secondary" onClick={() => closePosition(p.id)}>Close</button>
+                    </div>
+                  </li>
+                );
+              })}
+            </ul>
+          )}
+        </section>
+      )}
 
       {/* ─── SLIP DRAWER ────────────────────────────────────────── */}
       <button className={slipLegs.length > 0 ? "slip-fab on" : "slip-fab"} onClick={() => setSlipOpen((v) => !v)}>
