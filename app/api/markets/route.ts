@@ -32,24 +32,84 @@ function slug(s: string) {
   return s.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
 }
 
-function pantaMarketToUi(m: PantaMarket): PantaMarket {
-  // Panta may return prices in different units; we normalize to cents 0..100.
-  const yesPrice = typeof m.yesPrice === "number" && m.yesPrice > 1 ? Math.round(m.yesPrice) : Math.round((m.yesPrice ?? 0.5) * 100);
-  const change = typeof m.change === "number" ? m.change : 0;
+/**
+ * Panta's live `/markets/` response is `{ items: PantaLiveMarket[] }`,
+ * where each item uses `marketId`/`title`/`yesPrice: "0.50"` and reports
+ * a lifecycle `phase` like `"primary"` or `"resolved"`. Map it into the
+ * internal PantaMarket shape the UI expects (`id`/`question`/cents/etc.).
+ */
+type PantaLiveMarket = {
+  marketId?: string;
+  id?: string;
+  title?: string;
+  question?: string;
+  category?: string;
+  yesPrice?: number | string;
+  noPrice?: number | string;
+  volumeUsdc?: string;
+  volume?: string;
+  endTime?: string;
+  closes?: string;
+  phase?: string;
+  resolved?: boolean;
+  outcome?: "YES" | "NO" | null;
+};
+
+function toCents(v: number | string | undefined): number {
+  if (v === undefined || v === null) return 50;
+  const n = typeof v === "number" ? v : parseFloat(v);
+  if (!Number.isFinite(n)) return 50;
+  return Math.max(0, Math.min(100, n > 1 ? Math.round(n) : Math.round(n * 100)));
+}
+
+function formatVolume(v: string | undefined): string {
+  if (!v) return "—";
+  const n = parseFloat(v);
+  if (!Number.isFinite(n)) return v;
+  if (n >= 1_000_000) return `$${(n / 1_000_000).toFixed(1)}M`;
+  if (n >= 1_000) return `$${(n / 1_000).toFixed(1)}k`;
+  return `$${n.toFixed(2)}`;
+}
+
+function formatCloses(endTime: string | undefined): string {
+  if (!endTime) return "—";
+  const t = Date.parse(endTime);
+  if (Number.isNaN(t)) return "—";
+  const ms = t - Date.now();
+  if (ms <= 0) return "Closed";
+  const d = Math.floor(ms / 86_400_000);
+  const h = Math.floor((ms % 86_400_000) / 3_600_000);
+  if (d > 0) return `Closes in ${d}d`;
+  if (h > 0) return `Closes in ${h}h`;
+  return "Closes soon";
+}
+
+function mapPhase(p: string | undefined, resolved: boolean | undefined): "active" | "resolved" | "graduated" | "pending" {
+  if (resolved) return "resolved";
+  switch ((p ?? "").toLowerCase()) {
+    case "primary": return "active";
+    case "graduated": return "graduated";
+    case "resolved": return "resolved";
+    case "pending": return "pending";
+    default: return "active";
+  }
+}
+
+function pantaMarketToUi(m: PantaLiveMarket): PantaMarket {
   return {
-    id: m.id,
-    question: m.question,
+    id: m.marketId ?? m.id ?? "",
+    question: m.title ?? m.question ?? "(untitled market)",
     category: m.category ?? "General",
-    yesPrice,
-    change,
-    volume: m.volume ?? "—",
-    closes: m.closes ?? "—",
-    phase: m.phase ?? "active",
+    yesPrice: toCents(m.yesPrice),
+    change: 0,
+    volume: m.volume ?? formatVolume(m.volumeUsdc),
+    closes: m.closes ?? formatCloses(m.endTime),
+    phase: mapPhase(m.phase, m.resolved),
     outcome: m.outcome ?? null
   };
 }
 
-function buildArenasFromPantaMarkets(markets: PantaMarket[]) {
+function buildArenasFromPantaMarkets(markets: PantaLiveMarket[]) {
   const byCategory = new Map<string, PantaMarket[]>();
   for (const m of markets.map(pantaMarketToUi)) {
     const key = slug(m.category || "general");
@@ -74,8 +134,14 @@ export async function GET(request: Request) {
     try {
       const qs = new URLSearchParams();
       if (category) qs.set("category", category);
-      const data = await pantaFetch<{ markets: PantaMarket[] } | PantaMarket[]>(`/markets${qs.toString() ? `?${qs}` : ""}`);
-      const list: PantaMarket[] = Array.isArray(data) ? data : (data.markets ?? []);
+      // Panta returns `{ items: [...] }` (paginated). Older docs referred
+      // to `{ markets: [...] }`. Handle both plus bare arrays for safety.
+      const data = await pantaFetch<{ items?: PantaLiveMarket[]; markets?: PantaLiveMarket[] } | PantaLiveMarket[]>(
+        `/markets${qs.toString() ? `?${qs}` : ""}`
+      );
+      const list: PantaLiveMarket[] = Array.isArray(data)
+        ? data
+        : (data.items ?? data.markets ?? []);
       const arenas = buildArenasFromPantaMarkets(list);
       if (arenaId) {
         const arena = arenas.find((a) => a.id === arenaId);
