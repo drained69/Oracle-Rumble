@@ -48,9 +48,11 @@ export function fetchMarkets(arena?: string, category?: string) {
   const qs = new URLSearchParams();
   if (arena) qs.set("arena", arena);
   if (category) qs.set("category", category);
-  return jget<{ source: string; markets?: PantaMarket[]; arenas?: Array<{ id: string; markets: PantaMarket[] }> }>(
-    `/api/markets${qs.toString() ? `?${qs}` : ""}`
-  );
+  return jget<{
+    source: string;
+    markets?: PantaMarket[];
+    arenas?: Array<{ id: string; name?: string; tagline?: string; endsInMs?: number; markets: PantaMarket[] }>;
+  }>(`/api/markets${qs.toString() ? `?${qs}` : ""}`);
 }
 export function fetchMarketTrades(marketId: string) {
   return jget<{ source: string; trades: Array<{ signature: string; side: "YES" | "NO"; shares: number; priceCents: number; usdcAmount: string; wallet: string; ts: string }> }>(

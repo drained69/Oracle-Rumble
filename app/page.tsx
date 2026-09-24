@@ -13,8 +13,8 @@ import {
   buildClaim,
   buildOrder,
   connectSolanaWallet,
-  fetchCategories,
   fetchMarketTrades,
+  fetchMarkets,
   fetchPositions,
   marketCreateBuild,
   marketCreateQuote,
@@ -170,10 +170,52 @@ export default function Home() {
     deadlinesRef.current = deadlines;
     setHydrated(true);
 
-    fetchCategories()
-      .then((c) => setDataSource(c.source === "panta" ? "panta" : "mock"))
+    // Fetch the authoritative arena/market list. When PANTA_API_KEY is set
+    // this returns real Panta markets grouped by category; otherwise it
+    // falls back to the seed data with source: "mock".
+    fetchMarkets()
+      .then((r) => {
+        const src = r.source === "panta" ? "panta" : "mock";
+        setDataSource(src);
+        const list = r.arenas;
+        if (Array.isArray(list) && list.length > 0) {
+          const fresh: Arena[] = list.map((a) => ({
+            id: a.id,
+            name: a.name ?? a.id,
+            tagline: a.tagline ?? "",
+            endsInMs: a.endsInMs ?? 8 * 3_600_000,
+            markets: a.markets as Market[]
+          }));
+          setArenas(fresh);
+          if (!fresh.some((a) => a.id === activeArenaId)) setActiveArenaId(fresh[0].id);
+          const now = Date.now();
+          const dl: Record<string, number> = {};
+          for (const a of fresh) dl[a.id] = now + a.endsInMs;
+          deadlinesRef.current = dl;
+        }
+      })
       .catch(() => setDataSource("mock"));
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // Live mode: refresh Panta markets every 20s so prices stay authoritative.
+  useEffect(() => {
+    if (dataSource !== "panta") return;
+    const id = window.setInterval(async () => {
+      try {
+        const r = await fetchMarkets();
+        if (r.source !== "panta" || !Array.isArray(r.arenas)) return;
+        setArenas(r.arenas.map((a) => ({
+          id: a.id,
+          name: a.name ?? a.id,
+          tagline: a.tagline ?? "",
+          endsInMs: a.endsInMs ?? 8 * 3_600_000,
+          markets: a.markets as Market[]
+        })));
+      } catch { /* ignore transient */ }
+    }, 20_000);
+    return () => window.clearInterval(id);
+  }, [dataSource]);
 
   useEffect(() => {
     if (!hydrated || typeof window === "undefined") return;
@@ -183,7 +225,10 @@ export default function Home() {
     } catch { /* ignore */ }
   }, [walletAddress, walletKind, positions, hosted, parlays, hydrated]);
 
+  // Random-walk ticker — only runs in mock mode. In Panta mode the 20s
+  // fetch above is the source of truth for prices.
   useEffect(() => {
+    if (dataSource !== "mock") return;
     const id = window.setInterval(() => {
       setArenas((prev) => prev.map((arena) => ({
         ...arena,
@@ -195,7 +240,7 @@ export default function Home() {
       })));
     }, 4000);
     return () => window.clearInterval(id);
-  }, []);
+  }, [dataSource]);
 
   useEffect(() => {
     const id = window.setInterval(() => setNow(Date.now()), 1000);
@@ -539,10 +584,11 @@ export default function Home() {
 
   // ---- render --------------------------------------------------------
 
+  const cluster = (process.env.NEXT_PUBLIC_SOLANA_CLUSTER ?? "devnet").toUpperCase();
   const sourceBadge = dataSource === "panta"
-    ? { text: "LIVE · PANTA", cls: "src live" }
+    ? { text: `LIVE · PANTA · ${cluster}`, cls: "src live" }
     : dataSource === "mock"
-      ? { text: "DEMO · MOCK", cls: "src demo" }
+      ? { text: "DEMO · SET PANTA_API_KEY", cls: "src demo" }
       : { text: "CONNECTING…", cls: "src pending" };
 
   const legInSlip = slipLegs.find((l) => l.marketId === activeMarket.id);
