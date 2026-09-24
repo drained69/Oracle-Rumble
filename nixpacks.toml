@@ -1,0 +1,15 @@
+# Nixpacks build plan for Oracle Rumble (Next.js 15 / React 19).
+# Railway auto-detects Next.js, but this pins Node 20 and keeps the
+# install/build/start phases explicit so the deploy is reproducible.
+
+[phases.setup]
+nixPkgs = ["nodejs_20", "npm-9_x"]
+
+[phases.install]
+cmds = ["npm ci"]
+
+[phases.build]
+cmds = ["npm run build"]
+
+[start]
+cmd = "npm run start"
