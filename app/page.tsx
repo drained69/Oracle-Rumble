@@ -63,21 +63,40 @@ function loadPersisted(): Persisted {
 }
 
 function formatCountdown(ms: number) {
-  if (ms <= 0) return "Closed";
+  if (ms <= 0) return "CLOSED";
   const s = Math.floor(ms / 1000);
   const d = Math.floor(s / 86400);
   const h = Math.floor((s % 86400) / 3600);
   const m = Math.floor((s % 3600) / 60);
   const sec = s % 60;
-  if (d > 0) return `${d}d ${h}h ${m}m`;
-  if (h > 0) return `${h}h ${m}m ${sec}s`;
-  return `${m}m ${sec}s`;
+  if (d > 0) return `${d}D ${h}H ${m}M`;
+  if (h > 0) return `${h}H ${m}M ${sec}S`;
+  return `${m}M ${sec}S`;
 }
 
 function shortenPk(pk: string) {
   if (!pk) return "";
   if (pk.length <= 12) return pk;
   return `${pk.slice(0, 4)}…${pk.slice(-4)}`;
+}
+
+function realmSigil(id: string) {
+  // Deterministic little rune for each realm.
+  switch (id) {
+    case "solana-signals": return "◈";
+    case "fight-night": return "⚔";
+    case "shipmas": return "⛨";
+    default: return "❖";
+  }
+}
+
+function realmClass(id: string) {
+  switch (id) {
+    case "solana-signals": return "MAGE · SIGNAL RUNE";
+    case "fight-night": return "WARRIOR · BLOOD CIRCLE";
+    case "shipmas": return "ARCHITECT · SIEGE RING";
+    default: return "WANDERER · OPEN RING";
+  }
 }
 
 export default function Home() {
@@ -94,11 +113,9 @@ export default function Home() {
   const [activeArenaId, setActiveArenaId] = useState<string>(seedArenas[0].id);
   const activeArena = useMemo(() => arenas.find((a) => a.id === activeArenaId) ?? arenas[0], [arenas, activeArenaId]);
 
-  // Countdown deadlines per arena (absolute), pinned on mount.
   const deadlinesRef = useRef<Record<string, number>>({});
   const [now, setNow] = useState<number>(() => (typeof performance !== "undefined" ? Date.now() : 0));
 
-  // Trade panel state.
   const [activeMarketId, setActiveMarketId] = useState<string>(seedArenas[0].markets[0].id);
   const activeMarket: Market = useMemo(
     () => activeArena.markets.find((m) => m.id === activeMarketId) ?? activeArena.markets[0],
@@ -109,20 +126,16 @@ export default function Home() {
   const [categoryFilter, setCategoryFilter] = useState<string>("All");
   const [trading, setTrading] = useState(false);
 
-  // Parlay slip — parlayit-style native parlays.
   const [slipLegs, setSlipLegs] = useState<ParlayLeg[]>([]);
   const [slipStake, setSlipStake] = useState("10");
   const [slipOpen, setSlipOpen] = useState(false);
   const [placingParlay, setPlacingParlay] = useState(false);
 
-  // Server-priced parlay quote (quote-based liquidity model).
   const [serverQuote, setServerQuote] = useState<ParlayQuote | null>(null);
   const [quoting, setQuoting] = useState(false);
 
-  // Data source badge from /api/categories.
   const [dataSource, setDataSource] = useState<"panta" | "mock" | "unknown">("unknown");
 
-  // UI misc.
   const [toast, setToast] = useState("");
   const [showHost, setShowHost] = useState(false);
 
@@ -142,7 +155,6 @@ export default function Home() {
     deadlinesRef.current = deadlines;
     setHydrated(true);
 
-    // Probe the server for a live Panta connection.
     fetchCategories()
       .then((c) => setDataSource(c.source === "panta" ? "panta" : "mock"))
       .catch(() => setDataSource("mock"));
@@ -181,8 +193,6 @@ export default function Home() {
     return () => window.clearTimeout(id);
   }, [toast]);
 
-  // Quote-based liquidity: whenever the slip changes, ask the server to
-  // re-price the parlay from live Panta prices. Debounced 400ms.
   useEffect(() => {
     if (slipLegs.length === 0) { setServerQuote(null); return; }
     const stake = Number(slipStake);
@@ -202,7 +212,7 @@ export default function Home() {
         });
         if (!cancelled) setServerQuote(res.quote);
       } catch {
-        if (!cancelled) setServerQuote(null); // fall back to local compute
+        if (!cancelled) setServerQuote(null);
       } finally {
         if (!cancelled) setQuoting(false);
       }
@@ -251,12 +261,7 @@ export default function Home() {
     return total;
   }, [arenaPositions, activeArena]);
 
-  // Local quote — instant feedback while the server round-trips.
   const localQuote = useMemo(() => quoteParlay(slipLegs, Number(slipStake) || 0), [slipLegs, slipStake]);
-  // Prefer the server-priced quote when we have a fresh one for the exact
-  // (legs, stake) combo; otherwise fall back to the local compute. Both
-  // use the same `quoteParlay` function, so the numbers only diverge when
-  // Panta reports a different live price for a leg.
   const parlayQuote: ParlayQuote = serverQuote ?? localQuote;
 
   const countdownMs = hydrated ? Math.max(0, (deadlinesRef.current[activeArena.id] ?? 0) - now) : activeArena.endsInMs;
@@ -268,7 +273,7 @@ export default function Home() {
     if (connected) {
       setWalletAddress(null);
       setWalletKind(null);
-      setToast("Wallet disconnected.");
+      setToast("Wallet disconnected · your rumbler has left the realm.");
       return;
     }
     const real = await connectSolanaWallet();
@@ -284,17 +289,11 @@ export default function Home() {
     }
   }, [connected]);
 
-  /**
-   * Runs the full Panta trade lifecycle: quote → build → sign → submit → report.
-   * In demo mode every step hits our /api/* proxy, which serves realistic mock
-   * responses. Adding PANTA_API_KEY to .env.local flips the whole flow to real
-   * Panta with zero client-side changes.
-   */
   const trade = useCallback(async () => {
-    if (!walletAddress) return setToast("Connect a wallet before stepping in the ring.");
+    if (!walletAddress) return setToast("Connect a wallet before entering the ring.");
     const value = Number(amount);
-    if (!value || value <= 0) return setToast("Enter an amount greater than $0.");
-    if (value > 10_000) return setToast("Demo cap is $10,000 per position.");
+    if (!value || value <= 0) return setToast("Wager must be greater than $0.");
+    if (value > 10_000) return setToast("Demo cap is $10,000 per wager.");
 
     setTrading(true);
     try {
@@ -335,11 +334,11 @@ export default function Home() {
 
   const closePosition = useCallback((id: string) => {
     setPositions((prev) => prev.filter((p) => p.id !== id));
-    setToast("Position closed in demo mode.");
+    setToast("Position retired.");
   }, []);
 
   const claimPosition = useCallback(async (p: Position) => {
-    if (!walletAddress) return setToast("Connect a wallet to claim.");
+    if (!walletAddress) return setToast("Connect a wallet to claim the spoils.");
     try {
       const claim = await buildClaim({ wallet: walletAddress, marketId: p.marketId });
       const signed = await signAndBroadcast({ serializedTx: claim.serializedTx, wallet: walletAddress });
@@ -351,12 +350,12 @@ export default function Home() {
   }, [walletAddress]);
 
   const addLegToSlip = useCallback((market: Market, pickedSide: "YES" | "NO") => {
-    const price = pickedSide === "YES" ? market.yesPrice : 100 - market.yesPrice;
+    const p = pickedSide === "YES" ? market.yesPrice : 100 - market.yesPrice;
     const candidate: ParlayLeg = {
       marketId: market.id,
       question: market.question,
       side: pickedSide,
-      price,
+      price: p,
       correlationGroup: market.correlationGroup
     };
     setSlipLegs((prev) => {
@@ -377,16 +376,13 @@ export default function Home() {
   const clearSlip = useCallback(() => setSlipLegs([]), []);
 
   const placeParlay = useCallback(async () => {
-    if (!walletAddress) return setToast("Connect a wallet before placing a parlay.");
+    if (!walletAddress) return setToast("Connect a wallet before invoking a parlay.");
     if (slipLegs.length < 2) return setToast("A parlay needs at least two legs.");
     const stake = Number(slipStake);
-    if (!stake || stake <= 0) return setToast("Enter a stake greater than $0.");
+    if (!stake || stake <= 0) return setToast("Stake must be greater than $0.");
 
     setPlacingParlay(true);
     try {
-      // For every leg, run the Panta lifecycle in parallel. Panta doesn't
-      // have a native parlay endpoint, so a parlay is modelled as N linked
-      // primary orders that share a client-side parlayId.
       const parlayId = `parlay_${Date.now().toString(36)}`;
       const perLeg = parlayQuote.netStakeUsdc / slipLegs.length;
       const results = await Promise.all(slipLegs.map(async (leg) => {
@@ -415,7 +411,7 @@ export default function Home() {
       setSlipOpen(false);
       setServerQuote(null);
       setToast(
-        `${slipLegs.length}-leg parlay placed at ${parlayQuote.combinedPrice.toFixed(1)}¢ · combined odds ${parlayQuote.impliedOdds.toFixed(2)}× · payout up to ${usd.format(parlayQuote.potentialPayoutUsdc)}`
+        `${slipLegs.length}-leg parlay sworn · ${parlayQuote.combinedPrice.toFixed(1)}¢ combined · ${parlayQuote.impliedOdds.toFixed(2)}× · payout up to ${usd.format(parlayQuote.potentialPayoutUsdc)}`
       );
     } catch (err) {
       setToast(`Parlay failed: ${err instanceof Error ? err.message : "unknown"}`);
@@ -430,95 +426,165 @@ export default function Home() {
     const title = String(form.get("title") || "Untitled ring").trim() || "Untitled ring";
     setHosted((current) => [title, ...current]);
     setShowHost(false);
-    setToast(`"${title}" saved as a draft ring.`);
+    setToast(`"${title}" forged as a draft realm.`);
   }
 
   // ---- render --------------------------------------------------------
 
   const sourceBadge = dataSource === "panta"
-    ? { text: "LIVE · Panta API", cls: "src live" }
+    ? { text: "LIVE · PANTA", cls: "src live" }
     : dataSource === "mock"
-      ? { text: "DEMO · Mock data", cls: "src demo" }
-      : { text: "Connecting…", cls: "src pending" };
+      ? { text: "DEMO · MOCK", cls: "src demo" }
+      : { text: "CONNECTING…", cls: "src pending" };
 
   const legInSlip = slipLegs.find((l) => l.marketId === activeMarket.id);
+  const initials = walletAddress ? walletAddress.slice(0, 2).toUpperCase() : "?";
+  const lvl = Math.min(99, 1 + positions.length * 3 + parlays.length * 5);
 
   return (
     <main>
-      <nav>
-        <a className="brand" href="#top"><span>◒</span> ORACLE <b>RUMBLE</b></a>
-        <div className="nav-links">
-          <a href="#arena">Rings</a>
-          <a href="#positions">My ring</a>
-          <a href="#leaderboard">Leaderboard</a>
-          <a href="#how-it-works">Panta</a>
+      {/* -------- HUD BAR -------- */}
+      <nav className="hud-bar">
+        <a className="brand" href="#top">
+          <span className="sigil"><span>◈</span></span>
+          ORACLE <b>RUMBLE</b>
+        </a>
+        <div className="hud-nav">
+          <a href="#realms" className="on">RINGS</a>
+          <a href="#arena">BATTLE</a>
+          <a href="#warband">WARBAND</a>
+          <a href="#hall">HALL</a>
+          <a href="#codex">CODEX</a>
         </div>
-        <div className="nav-right">
-          <span className={sourceBadge.cls} title={dataSource === "panta" ? "Talking to live-api.panta.market" : "Set PANTA_API_KEY in .env.local to go live"}>{sourceBadge.text}</span>
+        <div className="hud-right">
+          <span
+            className={sourceBadge.cls}
+            title={dataSource === "panta" ? "Talking to live-api.panta.market" : "Set PANTA_API_KEY in .env.local to go live"}
+          >
+            {sourceBadge.text}
+          </span>
           <button
             className={connected ? "wallet connected" : "wallet"}
             onClick={connect}
             title={connected ? "Click to disconnect" : "Connect Phantom or spin up a demo wallet"}
           >
-            {connected ? `● ${shortenPk(walletAddress!)}` : "Connect wallet"}
+            <span className="avatar">{connected ? initials : "◈"}</span>
+            <div>
+              <div>{connected ? shortenPk(walletAddress!) : "ENTER THE WORLD"}</div>
+              {connected && <div className="lvl">LVL {lvl} · {walletKind === "phantom" ? "PHANTOM" : "DEMO"}</div>}
+            </div>
           </button>
         </div>
       </nav>
 
-      <section className="hero" id="top">
-        <div className="grid-glow" />
-        <p className="eyebrow">SEASON 01 · LIVE NOW · SOLANA MAINNET</p>
-        <h1>Call it.<br /><em>Prove it.</em><br />Climb.</h1>
-        <p className="hero-copy">
-          Oracle Rumble drops live prediction markets — powered by <a className="ilink" href="https://docs.panta.market/" target="_blank" rel="noreferrer">Panta</a> on Solana — into arenas where your hunches meet the crowd&apos;s.
-          Take a side, stack legs into a parlay, and earn a place on the board.
-        </p>
-        <div className="hero-actions">
-          <a href="#arena" className="button primary">Step into the ring <span>→</span></a>
-          <button className="button secondary" onClick={() => setShowHost(true)}>Host a rumble</button>
+      {/* -------- LIVE TICKER -------- */}
+      <div className="ticker">
+        <div className="ticker-track">
+          <span><b>SEASON 01</b> · GENESIS RUN</span>
+          <span><em>+$412.20</em> mira.vale on <b>SOL &gt; $200</b></span>
+          <span><i>−$88.10</i> dune on <b>KO finish</b></span>
+          <span>3-LEG PARLAY hit · <em>4.82×</em> · witness</span>
+          <span><b>1,248</b> RUMBLERS ONLINE</span>
+          <span><em>+$1,020.00</em> onchain.aya · OpenAI ships</span>
+          <span>NEW RING · <b>SHIPMAS</b> opens in 4H</span>
+          <span><b>SEASON 01</b> · GENESIS RUN</span>
+          <span><em>+$412.20</em> mira.vale on <b>SOL &gt; $200</b></span>
+          <span><i>−$88.10</i> dune on <b>KO finish</b></span>
+          <span>3-LEG PARLAY hit · <em>4.82×</em> · witness</span>
+          <span><b>1,248</b> RUMBLERS ONLINE</span>
+          <span><em>+$1,020.00</em> onchain.aya · OpenAI ships</span>
+          <span>NEW RING · <b>SHIPMAS</b> opens in 4H</span>
         </div>
-        <div className="stats">
-          <div><b>1,248</b><span>Rumblers</span></div>
-          <div><b>{arenas.length + hosted.length}</b><span>Live rings</span></div>
-          <div><b>$284K</b><span>Volume tracked</span></div>
-          <div><b>{PARLAY_MIN_LEGS}–{PARLAY_MAX_LEGS}</b><span>Parlay legs</span></div>
+      </div>
+
+      {/* -------- PORTAL HERO -------- */}
+      <section className="portal" id="top">
+        <div className="portal-inner">
+          <p className="eyebrow">SEASON 01 · GENESIS RUN · SOLANA MAINNET</p>
+          <h1>CALL IT.<br/><em>PROVE IT.</em><br/>CLIMB.</h1>
+          <p className="portal-copy">
+            Oracle Rumble is a game lobby for prediction markets. Pick a ring, stake your conviction on live
+            Panta markets, stack legs into a parlay, and carve your name into the hall of champions.
+          </p>
+          <div className="portal-actions">
+            <a href="#realms" className="gbtn primary">ENTER THE LOBBY <span className="arr">▸</span></a>
+            <button className="gbtn secondary" onClick={() => setShowHost(true)}>FORGE A RING <span className="arr">+</span></button>
+          </div>
+
+          <div className="hud-stats">
+            <div className="stat"><b>1,248</b><span>◈ RUMBLERS</span></div>
+            <div className="stat"><b>{arenas.length + hosted.length}</b><span>⚔ ACTIVE RINGS</span></div>
+            <div className="stat"><b>$284K</b><span>⛨ VOLUME TRACKED</span></div>
+            <div className="stat"><b>{PARLAY_MIN_LEGS}–{PARLAY_MAX_LEGS}</b><span>❖ PARLAY LEGS</span></div>
+          </div>
         </div>
       </section>
 
-      <section className="arena-shell" id="arena">
-        <div className="arena-heading">
+      {/* -------- REALM SELECT -------- */}
+      <section className="realm-shell" id="realms">
+        <div className="section-head">
           <div>
-            <p className="eyebrow">FEATURED RING</p>
+            <p className="eyebrow">CHOOSE YOUR REALM</p>
+            <h2>THE RINGS</h2>
+          </div>
+          <span className="flair"><i />LIVE · {arenas.length} RINGS RUNNING</span>
+        </div>
+
+        <div className="realm-grid">
+          {arenas.map((a) => {
+            const ms = hydrated ? Math.max(0, (deadlinesRef.current[a.id] ?? 0) - now) : a.endsInMs;
+            return (
+              <button
+                key={a.id}
+                className={a.id === activeArenaId ? "realm on" : "realm"}
+                onClick={() => { setActiveArenaId(a.id); document.getElementById("arena")?.scrollIntoView({ behavior: "smooth" }); }}
+              >
+                <span className="cnr bl" /><span className="cnr br" />
+                <span className="rank-tag">{realmSigil(a.id)} {realmClass(a.id)}</span>
+                <h3>{a.name}</h3>
+                <p>{a.tagline}</p>
+                <div className="realm-meta">
+                  <span>{a.markets.length} MKTS · {formatCountdown(ms)}</span>
+                  <span className="enter">{a.id === activeArenaId ? "ACTIVE ▸" : "ENTER ▸"}</span>
+                </div>
+              </button>
+            );
+          })}
+          {hosted.map((h, i) => (
+            <div key={`draft-${i}`} className="realm draft">
+              <span className="rank-tag">❖ DRAFT · UNSEALED</span>
+              <h3>{h}</h3>
+              <p>A ring waiting to be sealed on Panta. Complete the ritual to open it to rumblers.</p>
+              <div className="realm-meta">
+                <span>DRAFT</span>
+                <span className="enter">PENDING…</span>
+              </div>
+            </div>
+          ))}
+        </div>
+      </section>
+
+      {/* -------- BATTLE ARENA -------- */}
+      <section className="arena-shell" id="arena">
+        <div className="arena-crown">
+          <span className="cnr bl" /><span className="cnr br" />
+          <div>
+            <p className="eyebrow">◈ ACTIVE RING</p>
             <h2>{activeArena.name}</h2>
             <p>{activeArena.tagline}</p>
           </div>
-          <div className="live"><i /> LIVE · {countdownLabel} remaining</div>
+          <div className="timer">
+            ⌛ RING CLOSES IN
+            <b>{countdownLabel}</b>
+          </div>
         </div>
 
-        <div className="arena-tabs" role="tablist" aria-label="Rings">
-          {arenas.map((a) => (
-            <button
-              key={a.id}
-              role="tab"
-              aria-selected={a.id === activeArena.id}
-              className={a.id === activeArena.id ? "tab active" : "tab"}
-              onClick={() => setActiveArenaId(a.id)}
-            >
-              {a.name}
-            </button>
-          ))}
-          {hosted.map((h, i) => (
-            <span key={`draft-${i}`} className="tab draft" title="Draft ring — not live yet">
-              {h} · draft
-            </span>
-          ))}
-        </div>
-
-        <div className="arena-grid">
-          <div className="market-panel">
-            <div className="panel-title">
-              <span>MARKET BOARD</span>
-              <small>Panta market id · {shortenPk(activeMarket.id)}</small>
+        <div className="arena-body">
+          <div className="arena-panel">
+            <span className="cnr bl" /><span className="cnr br" />
+            <div className="panel-head">
+              <span>◈ MARKET BOARD</span>
+              <small>Panta id · {shortenPk(activeMarket.id)}</small>
             </div>
             <div className="chips">
               {categories.map((c) => (
@@ -531,117 +597,151 @@ export default function Home() {
                 </button>
               ))}
             </div>
-            {filteredMarkets.map((market) => {
-              const legHere = slipLegs.find((l) => l.marketId === market.id);
-              return (
-                <div key={market.id} className={activeMarket.id === market.id ? "market active" : "market"}>
-                  <button className="market-body" onClick={() => { setActiveMarketId(market.id); setSide("YES"); }}>
-                    <div>
-                      <span className="tag">{market.category}</span>
-                      <h3>{market.question}</h3>
-                      <p>{market.volume} volume · {market.closes}</p>
-                    </div>
-                    <div className="price">
-                      <b>{market.yesPrice}¢</b>
-                      <span className={market.change >= 0 ? "up" : "down"}>
-                        {market.change >= 0 ? "+" : ""}{market.change}¢
-                      </span>
-                    </div>
-                  </button>
-                  <div className="slip-add">
+            <div className="battle-list">
+              {filteredMarkets.map((market) => {
+                const legHere = slipLegs.find((l) => l.marketId === market.id);
+                return (
+                  <div key={market.id} className={activeMarket.id === market.id ? "battle active" : "battle"}>
                     <button
-                      className={legHere?.side === "YES" ? "slip-btn on" : "slip-btn"}
-                      onClick={() => addLegToSlip(market, "YES")}
-                      title="Add YES to your parlay slip"
+                      className="battle-body"
+                      onClick={() => { setActiveMarketId(market.id); setSide("YES"); }}
                     >
-                      + YES
+                      <div>
+                        <span className="cat">{market.category}</span>
+                        <h3>{market.question}</h3>
+                        <p className="sub">{market.volume} vol · {market.closes}</p>
+                      </div>
+                      <div className="odds">
+                        <b>{market.yesPrice}¢</b>
+                        <span className={market.change >= 0 ? "up" : "down"}>
+                          {market.change >= 0 ? "▲" : "▼"} {Math.abs(market.change)}¢
+                        </span>
+                      </div>
                     </button>
-                    <button
-                      className={legHere?.side === "NO" ? "slip-btn on" : "slip-btn"}
-                      onClick={() => addLegToSlip(market, "NO")}
-                      title="Add NO to your parlay slip"
-                    >
-                      + NO
-                    </button>
+                    <div className="pick-col">
+                      <button
+                        className={legHere?.side === "YES" ? "pick yes on" : "pick yes"}
+                        onClick={() => addLegToSlip(market, "YES")}
+                        title="Stack YES leg on the parlay scroll"
+                      >
+                        ▲ YES
+                      </button>
+                      <button
+                        className={legHere?.side === "NO" ? "pick no on" : "pick no"}
+                        onClick={() => addLegToSlip(market, "NO")}
+                        title="Stack NO leg on the parlay scroll"
+                      >
+                        ▼ NO
+                      </button>
+                    </div>
                   </div>
-                </div>
-              );
-            })}
-            {filteredMarkets.length === 0 && (
-              <div className="empty">No markets match that filter.</div>
-            )}
+                );
+              })}
+              {filteredMarkets.length === 0 && (
+                <div className="empty">No markets match that filter.</div>
+              )}
+            </div>
           </div>
 
-          <aside className="trade-panel">
-            <div className="panel-title"><span>PLACE POSITION</span><small>{walletKind === "phantom" ? "Phantom signer" : walletKind === "demo" ? "Demo signer" : "Wallet-controlled"}</small></div>
-            <span className="tag">{activeMarket.category}</span>
-            <h3>{activeMarket.question}</h3>
-            <div className="side-switch">
-              <button className={side === "YES" ? "yes selected" : "yes"} onClick={() => setSide("YES")}>
-                YES <b>{activeMarket.yesPrice}¢</b>
-              </button>
-              <button className={side === "NO" ? "no selected" : "no"} onClick={() => setSide("NO")}>
-                NO <b>{100 - activeMarket.yesPrice}¢</b>
-              </button>
+          <aside className="arena-panel combat">
+            <span className="cnr bl" /><span className="cnr br" />
+            <div className="panel-head">
+              <span>⚔ WAGER PANEL</span>
+              <small>{walletKind === "phantom" ? "PHANTOM SIGNER" : walletKind === "demo" ? "DEMO SIGNER" : "WALLET-CONTROLLED"}</small>
             </div>
-            <label>
-              Amount
-              <div className="amount">
-                <span>$</span>
-                <input
-                  value={amount}
-                  onChange={(e) => setAmount(e.target.value.replace(/[^0-9.]/g, ""))}
-                  inputMode="decimal"
-                  aria-label="Trade amount in USDC"
-                />
-                <button type="button" onClick={() => setAmount("100")}>MAX</button>
+            <div className="inner">
+              <div>
+                <span className="cat" style={{ marginBottom: 8, display: "inline-block" }}>{activeMarket.category}</span>
+                <h3 className="marketq">{activeMarket.question}</h3>
               </div>
-            </label>
-            <div className="summary">
-              <span>Avg. price</span><b>{price}¢</b>
-              <span>Est. shares</span><b>{quantity.toFixed(1)}</b>
-              <span>Potential payout</span><b>{usd.format(quantity)}</b>
-              <span>Route</span><b>{dataSource === "panta" ? "Panta primary_order_usdc" : "Panta (mocked)"}</b>
+
+              <div className="side-switch">
+                <button className={side === "YES" ? "side yes on" : "side yes"} onClick={() => setSide("YES")}>
+                  ▲ YES <span className="odds">{activeMarket.yesPrice}¢</span>
+                </button>
+                <button className={side === "NO" ? "side no on" : "side no"} onClick={() => setSide("NO")}>
+                  ▼ NO <span className="odds">{100 - activeMarket.yesPrice}¢</span>
+                </button>
+              </div>
+
+              <div className="field">
+                <label>Wager (USDC)</label>
+                <div className="amount-row">
+                  <span className="curr">$</span>
+                  <input
+                    value={amount}
+                    onChange={(e) => setAmount(e.target.value.replace(/[^0-9.]/g, ""))}
+                    inputMode="decimal"
+                    aria-label="Wager amount in USDC"
+                  />
+                  <button type="button" className="max" onClick={() => setAmount("100")}>MAX</button>
+                </div>
+              </div>
+
+              <div className="summary">
+                <span>Avg. price</span><b>{price}¢</b>
+                <span>Est. shares</span><b>{quantity.toFixed(1)}</b>
+                <span>Potential payout</span><b className="gold">{usd.format(quantity)}</b>
+                <span>Route</span><b>{dataSource === "panta" ? "Panta primary_order" : "Panta (mocked)"}</b>
+              </div>
+
+              <button className="gbtn primary full" onClick={trade} disabled={trading}>
+                {trading ? "ROUTING…" : connected ? `STRIKE ${side}` : "CONNECT TO STRIKE"} <span className="arr">▸</span>
+              </button>
+              <button
+                className="gbtn secondary full"
+                onClick={() => addLegToSlip(activeMarket, side)}
+                disabled={trading}
+              >
+                {legInSlip ? "UPDATE SCROLL" : "ADD TO SCROLL"} <span className="arr">+</span>
+              </button>
+
+              <p className="fine">
+                Quote → build → sign → submit → attribute. Your wallet signs the Panta VersionedTransaction;
+                Oracle Rumble never holds funds. Fees follow Panta&apos;s bonding-curve pricing.
+              </p>
             </div>
-            <button className="button primary full" onClick={trade} disabled={trading}>
-              {trading ? "Routing through Panta…" : connected ? `Buy ${side}` : "Connect to trade"} <span>→</span>
-            </button>
-            <button
-              className="button secondary full"
-              onClick={() => addLegToSlip(activeMarket, side)}
-              disabled={trading}
-            >
-              {legInSlip ? "Update slip" : "Add to slip"} <span>+</span>
-            </button>
-            <p className="fine-print">
-              Quote → build → sign → submit → attribute. Your wallet signs the Panta-built VersionedTransaction; Oracle Rumble never holds funds. Fees follow Panta&apos;s bonding-curve pricing.
-            </p>
           </aside>
         </div>
       </section>
 
-      <section className="positions-shell" id="positions">
-        <div className="section-intro">
-          <p className="eyebrow">MY RING</p>
-          <h2>Your open positions.</h2>
-          <p>
-            Live P&amp;L updates as prices move. Positions include the on-chain signature returned by Panta so
-            every trade is traceable and claimable on resolution.
-          </p>
+      {/* -------- WARBAND (positions) -------- */}
+      <section className="warband" id="warband">
+        <div className="section-head">
+          <div>
+            <p className="eyebrow">◈ YOUR WARBAND</p>
+            <h2>OPEN POSITIONS</h2>
+          </div>
+          <span className="flair">
+            <i />
+            {arenaPositions.length} POS · {parlays.filter((p) => p.arenaId === activeArena.id).length} PARLAYS · {activeArena.name.toUpperCase()}
+          </span>
         </div>
-        <div className="positions">
-          <div className="positions-summary">
-            <div><span>Open positions</span><b>{arenaPositions.length}</b></div>
-            <div><span>Parlays this ring</span><b>{parlays.filter((p) => p.arenaId === activeArena.id).length}</b></div>
-            <div><span>Cost basis</span><b>{usd2.format(arenaPositions.reduce((s, p) => s + p.cost, 0))}</b></div>
+
+        <div className="warband-frame">
+          <span className="cnr bl" /><span className="cnr br" />
+          <div className="warband-totals">
+            <div>
+              <span>◈ OPEN POSITIONS</span>
+              <b>{arenaPositions.length}</b>
+            </div>
+            <div>
+              <span>❖ PARLAYS THIS RING</span>
+              <b>{parlays.filter((p) => p.arenaId === activeArena.id).length}</b>
+            </div>
+            <div>
+              <span>⛨ COST BASIS</span>
+              <b>{usd2.format(arenaPositions.reduce((s, p) => s + p.cost, 0))}</b>
+            </div>
             <div className={openPnL >= 0 ? "pnl up" : "pnl down"}>
-              <span>Open P&amp;L</span>
+              <span>⚔ OPEN P&amp;L</span>
               <b>{openPnL >= 0 ? "+" : ""}{usd2.format(openPnL)}</b>
             </div>
           </div>
+
           {arenaPositions.length === 0 && parlays.filter((p) => p.arenaId === activeArena.id).length === 0 ? (
             <div className="empty tall">
-              You haven&apos;t stepped in yet. Pick a market above and lock in a position, or stack a parlay in the slip.
+              YOUR BLADE IS SHEATHED. PICK A MARKET ABOVE OR STACK A PARLAY SCROLL TO ENTER THE FRAY.
             </div>
           ) : (
             <>
@@ -654,12 +754,12 @@ export default function Home() {
                   return (
                     <li key={p.id} className="pos">
                       <div className="pos-main">
-                        <span className={p.side === "YES" ? "side yes" : "side no"}>{p.side}</span>
+                        <span className={p.side === "YES" ? "badge yes" : "badge no"}>{p.side}</span>
                         <div>
                           <h4>{p.question}</h4>
-                          <p>
-                            {p.shares.toFixed(1)} shares · entry {p.entryPrice}¢ · mark {mark}¢
-                            {p.signature ? ` · sig ${shortenPk(p.signature)}` : ""}
+                          <p className="pos-sub">
+                            {p.shares.toFixed(1)} SHARES · ENTRY {p.entryPrice}¢ · MARK {mark}¢
+                            {p.signature ? ` · SIG ${shortenPk(p.signature)}` : ""}
                           </p>
                         </div>
                       </div>
@@ -668,29 +768,29 @@ export default function Home() {
                           {pnl >= 0 ? "+" : ""}{usd2.format(pnl)}
                         </strong>
                         {claimable && (
-                          <button className="close-pos claim" onClick={() => claimPosition(p)}>Claim</button>
+                          <button className="gbtn small primary" onClick={() => claimPosition(p)}>CLAIM</button>
                         )}
-                        <button className="close-pos" onClick={() => closePosition(p.id)}>Close</button>
+                        <button className="gbtn small secondary" onClick={() => closePosition(p.id)}>RETIRE</button>
                       </div>
                     </li>
                   );
                 })}
               </ul>
               {parlays.filter((p) => p.arenaId === activeArena.id).length > 0 && (
-                <div className="parlay-list">
-                  <div className="parlay-title">PARLAYS</div>
+                <div>
+                  <div className="parlay-title">❖ PARLAY SCROLLS</div>
                   {parlays.filter((p) => p.arenaId === activeArena.id).map((p) => (
                     <div className="parlay-card" key={p.id}>
                       <div>
                         <div className="parlay-head">
-                          <span className="pill">{p.legs.length}-leg</span>
-                          <span className="pill soft">{p.combinedPrice.toFixed(1)}¢ combined</span>
-                          {p.signature && <span className="pill soft">sig {shortenPk(p.signature)}</span>}
+                          <span className="pill gold">{p.legs.length}-LEG</span>
+                          <span className="pill arcane">{p.combinedPrice.toFixed(1)}¢ COMBINED</span>
+                          {p.signature && <span className="pill soft">SIG {shortenPk(p.signature)}</span>}
                         </div>
                         <ul className="parlay-legs">
                           {p.legs.map((l) => (
                             <li key={l.marketId}>
-                              <span className={l.side === "YES" ? "side yes" : "side no"}>{l.side}</span>
+                              <span className={l.side === "YES" ? "badge yes" : "badge no"} style={{ padding: "3px 7px", minWidth: 40, fontSize: 10 }}>{l.side}</span>
                               <span>{l.question}</span>
                               <b>{l.price}¢</b>
                             </li>
@@ -698,8 +798,8 @@ export default function Home() {
                         </ul>
                       </div>
                       <div className="parlay-num">
-                        <div><span>Stake</span><b>{usd2.format(p.stake)}</b></div>
-                        <div><span>Payout if hit</span><b className="up">{usd2.format(p.potentialPayout)}</b></div>
+                        <div><span>STAKE</span><b>{usd2.format(p.stake)}</b></div>
+                        <div><span>PAYOUT IF HIT</span><b className="up">{usd2.format(p.potentialPayout)}</b></div>
                       </div>
                     </div>
                   ))}
@@ -710,176 +810,171 @@ export default function Home() {
         </div>
       </section>
 
-      <section className="leaderboard-section" id="leaderboard">
-        <div className="section-intro">
-          <p className="eyebrow">THE BOARD</p>
-          <h2>Conviction meets results.</h2>
-          <p>Live standings reflect verified rumble activity attributed via Panta. Final standings settle after markets resolve.</p>
+      {/* -------- HALL OF CHAMPIONS -------- */}
+      <section className="hall-shell" id="hall">
+        <div className="section-head">
+          <div>
+            <p className="eyebrow">◈ HALL OF CHAMPIONS</p>
+            <h2>THE BOARD</h2>
+          </div>
+          <span className="flair"><i />SEASON 01 STANDINGS · LIVE</span>
         </div>
-        <div className="leaderboard">
+
+        <div className="hall">
+          <span className="cnr bl" /><span className="cnr br" />
           {players.map((player) => (
             <div className="player" key={player.rank}>
-              <span className={`rank rank-${player.rank}`}>{player.rank}</span>
-              <span className={`avatar ${player.color}`}>{player.initials}</span>
+              <span className={`rank rank-${player.rank}`}>
+                {player.rank === 1 && <span className="crown">♛</span>}
+                {String(player.rank).padStart(2, "0")}
+              </span>
+              <span className={`avatar-lg ${player.color}`}>{player.initials}</span>
               <b>{player.name}</b>
-              <span className="player-meta">{player.markets} markets · {player.accuracy}% accuracy</span>
+              <span className="player-meta">{player.markets} MARKETS · {player.accuracy}% ACCURACY</span>
               <strong>+{player.returnPct}%</strong>
             </div>
           ))}
-          <button className="view-all">View full leaderboard →</button>
         </div>
       </section>
 
-      <section className="how" id="how-it-works">
-        <p className="eyebrow">POWERED BY PANTA · SETTLED ON SOLANA</p>
-        <h2>Deep integration, not a wrapper.</h2>
-        <p className="how-lead">
-          Every buy, claim, and attribution runs the real Panta lifecycle. Parlays are a client-space
-          bundle of N linked orders, priced live from Panta&apos;s single-market book — the same
-          quote-based liquidity idea parlayit uses. Solana is the settlement layer (~400ms slot times,
-          USDC 1:1).
+      {/* -------- CODEX -------- */}
+      <section className="codex-shell" id="codex">
+        <div className="section-head">
+          <div>
+            <p className="eyebrow">◈ THE CODEX · POWERED BY PANTA</p>
+            <h2>THE LIFECYCLE</h2>
+          </div>
+        </div>
+        <p className="codex-lead">
+          Every strike, claim, and attribution runs the real Panta lifecycle on Solana. Parlays are a
+          client-space bundle of N linked orders, priced live from Panta&apos;s single-market book — the same
+          quote-based liquidity idea parlayit uses. ~400ms slot times. USDC 1:1.
         </p>
-        <div className="steps five">
-          <article><span>01</span><h3>Discover</h3><p><code>GET /markets</code> — the market board is a Panta catalog view, filtered by category.</p></article>
-          <article><span>02</span><h3>Quote</h3><p><code>POST /orders/quote</code> — simulate the fill on the bonding curve; get a short-lived quote session.</p></article>
-          <article><span>03</span><h3>Build & sign</h3><p><code>POST /orders/build</code> — Panta returns an unsigned VersionedTransaction that your Solana wallet signs.</p></article>
-          <article><span>04</span><h3>Submit</h3><p><code>POST /orders/submit</code> — the signed tx is broadcast to your RPC, and the signature is registered with Panta.</p></article>
-          <article><span>05</span><h3>Attribute & claim</h3><p><code>POST /trades/report</code> then <code>POST /claims/build</code> — trades count on the leaderboard; winnings are claimable on resolution.</p></article>
+
+        <div className="steps">
+          <article><span>I.</span><h3>DISCOVER</h3><p><code>GET /markets</code> — the board is a Panta catalog view, filtered by category.</p></article>
+          <article><span>II.</span><h3>QUOTE</h3><p><code>POST /orders/quote</code> — simulate the fill on the bonding curve; short-lived quote session.</p></article>
+          <article><span>III.</span><h3>BUILD & SIGN</h3><p><code>POST /orders/build</code> — Panta returns a VersionedTransaction your wallet signs.</p></article>
+          <article><span>IV.</span><h3>SUBMIT</h3><p><code>POST /orders/submit</code> — the signed tx broadcasts to RPC, and Panta registers it.</p></article>
+          <article><span>V.</span><h3>ATTRIBUTE</h3><p><code>POST /trades/report</code> then <code>POST /claims/build</code> — trades count on the board; winnings claimable.</p></article>
         </div>
 
-        <h3 className="parlay-mech-title">Native parlays — the mechanics</h3>
+        <h3 className="parlay-mech-title">❖ PARLAY MECHANICS</h3>
         <div className="parlay-mech">
           <article>
-            <h4>Quote-based liquidity</h4>
-            <p>
-              <code>POST /api/parlay/quote</code> refreshes every leg&apos;s price from Panta and prices
-              the parlay dynamically. No pre-listed parlay market — the combined price is the product
-              of the live leg probabilities.
-            </p>
+            <h4>QUOTE-BASED LIQUIDITY</h4>
+            <p><code>POST /api/parlay/quote</code> refreshes every leg&apos;s price from Panta and prices the parlay dynamically.</p>
           </article>
           <article>
-            <h4>2–5 leg bounds</h4>
-            <p>
-              <code>PARLAY_MIN_LEGS</code> = 2, <code>PARLAY_MAX_LEGS</code> = 5. Enforced client-side on
-              add and server-side on quote.
-            </p>
+            <h4>2–5 LEG BOUNDS</h4>
+            <p><code>PARLAY_MIN_LEGS</code> = 2, <code>PARLAY_MAX_LEGS</code> = 5. Enforced on client and server.</p>
           </article>
           <article>
-            <h4>Correlation blocks</h4>
-            <p>
-              Legs that share a <code>correlationGroup</code> (KO vs Decision, up vs down) are mutually
-              exclusive and can&apos;t coexist in a slip. Duplicates are rejected too.
-            </p>
+            <h4>CORRELATION BLOCKS</h4>
+            <p>Legs sharing a <code>correlationGroup</code> (KO vs Decision) are mutually exclusive.</p>
           </article>
           <article>
-            <h4>Variance-based fee</h4>
-            <p>
-              Per-leg fee is <code>stake × 5% × 4p(1-p)</code>. Peaks at coinflip legs, near-zero for
-              high-conviction legs; aggregate is capped at 5% of stake.
-            </p>
+            <h4>VARIANCE-BASED FEE</h4>
+            <p>Per-leg fee is <code>stake × 5% × 4p(1-p)</code>. Peaks at coinflip legs; capped at 5% of stake overall.</p>
           </article>
           <article>
-            <h4>50/50 fallback</h4>
-            <p>
-              If a leg voids at resolution it pays 0.5×, so the parlay&apos;s payout is halved once per
-              voided leg. The slip shows both the all-hit payout and the one-void downside.
-            </p>
+            <h4>50/50 FALLBACK</h4>
+            <p>If a leg voids at resolution it pays 0.5×, so payout halves once per voided leg.</p>
           </article>
           <article>
-            <h4>Placement</h4>
-            <p>
-              A parlay is placed as N linked <code>primary_order_usdc</code> orders sharing a client
-              <code>parlayId</code>. Every leg runs the full Panta lifecycle in parallel.
-            </p>
+            <h4>PLACEMENT</h4>
+            <p>A parlay is placed as N linked <code>primary_order_usdc</code> orders sharing a client <code>parlayId</code>.</p>
           </article>
         </div>
       </section>
 
       <footer>
-        <span>◒ ORACLE RUMBLE</span>
-        <span>Prediction-market experiences, powered by <a className="ilink" href="https://www.panta.market/" target="_blank" rel="noreferrer">Panta</a> on <a className="ilink" href="https://solana.com/docs" target="_blank" rel="noreferrer">Solana</a>.</span>
-        <a className="ilink" href="https://docs.panta.market/" target="_blank" rel="noreferrer">Panta API docs ↗</a>
+        <span className="brand-mini">◈ ORACLE RUMBLE</span>
+        <span>Prediction-market rings on <a className="ilink" href="https://www.panta.market/" target="_blank" rel="noreferrer">Panta</a> · settled on <a className="ilink" href="https://solana.com/docs" target="_blank" rel="noreferrer">Solana</a></span>
+        <a className="ilink" href="https://docs.panta.market/" target="_blank" rel="noreferrer">PANTA API DOCS ▸</a>
       </footer>
 
-      {/* Parlay slip drawer */}
+      {/* -------- PARLAY SCROLL (fab + drawer) -------- */}
       <button
         className={slipLegs.length > 0 ? "slip-fab on" : "slip-fab"}
         onClick={() => setSlipOpen((v) => !v)}
-        aria-label="Toggle parlay slip"
+        aria-label="Toggle parlay scroll"
       >
-        SLIP <b>{slipLegs.length}</b>
+        ❖ SCROLL <b>{slipLegs.length}</b>
       </button>
       {slipOpen && (
         <div className="slip">
           <div className="slip-head">
             <div>
-              <b>Parlay slip</b>
-              <p>{slipLegs.length} leg{slipLegs.length === 1 ? "" : "s"} · combined {parlayQuote.combinedPrice.toFixed(1)}¢ · {parlayQuote.impliedOdds.toFixed(2)}×</p>
+              <b>◈ PARLAY SCROLL</b>
+              <p>{slipLegs.length} LEG{slipLegs.length === 1 ? "" : "S"} · COMBINED {parlayQuote.combinedPrice.toFixed(1)}¢ · {parlayQuote.impliedOdds.toFixed(2)}×</p>
             </div>
             <div className="slip-actions">
-              <button onClick={clearSlip} disabled={slipLegs.length === 0}>Clear</button>
+              <button onClick={clearSlip} disabled={slipLegs.length === 0}>CLEAR</button>
               <button onClick={() => setSlipOpen(false)} aria-label="Close">×</button>
             </div>
           </div>
 
           {slipLegs.length === 0 ? (
-            <div className="slip-empty">Tap +YES or +NO on any market to stack a leg. Parlays hit only if every leg lands.</div>
+            <div className="slip-empty">
+              STACK LEGS BY TAPPING ▲ YES OR ▼ NO ON ANY MARKET.<br/>
+              A PARLAY LANDS ONLY IF EVERY LEG HITS.
+            </div>
           ) : (
             <>
               <ul className="slip-legs">
                 {slipLegs.map((l) => (
                   <li key={l.marketId}>
-                    <span className={l.side === "YES" ? "side yes" : "side no"}>{l.side}</span>
+                    <span className={l.side === "YES" ? "badge yes" : "badge no"} style={{ padding: "4px 8px", minWidth: 42, fontSize: 10 }}>{l.side}</span>
                     <div className="slip-leg-body">
                       <b>{l.question}</b>
                       <span>{l.price}¢ · {shortenPk(l.marketId)}</span>
                     </div>
-                    <button onClick={() => removeLeg(l.marketId)} aria-label="Remove leg">×</button>
+                    <button className="rm" onClick={() => removeLeg(l.marketId)} aria-label="Remove leg">×</button>
                   </li>
                 ))}
               </ul>
-              <label className="slip-stake">
-                Stake
-                <div className="amount">
-                  <span>$</span>
-                  <input
-                    value={slipStake}
-                    onChange={(e) => setSlipStake(e.target.value.replace(/[^0-9.]/g, ""))}
-                    inputMode="decimal"
-                  />
-                </div>
-              </label>
-              <div className="slip-summary">
+              <label className="slip-stake">STAKE</label>
+              <div className="amount-row">
+                <span className="curr">$</span>
+                <input
+                  value={slipStake}
+                  onChange={(e) => setSlipStake(e.target.value.replace(/[^0-9.]/g, ""))}
+                  inputMode="decimal"
+                />
+              </div>
+              <div className="slip-summary" style={{ marginTop: 14 }}>
                 <span>Combined price</span><b>{parlayQuote.combinedPrice.toFixed(2)}¢</b>
                 <span>Implied odds</span><b>{parlayQuote.impliedOdds.toFixed(2)}×</b>
-                <span title="Per-leg fee is stake × 5% × 4p(1-p) — peaks at coinflip legs, near zero for high-conviction legs. Capped at 5% of stake overall.">Variance fee</span>
+                <span title="Per-leg fee is stake × 5% × 4p(1-p) — peaks at coinflip legs. Capped at 5% overall.">Variance fee</span>
                 <b>{usd2.format(parlayQuote.feeUsdc)}</b>
                 <span>Net stake</span><b>{usd2.format(parlayQuote.netStakeUsdc)}</b>
                 <span>Payout if every leg hits</span><b className="up">{usd2.format(parlayQuote.potentialPayoutUsdc)}</b>
-                <span title="If any leg voids to 50/50 at resolution, that leg pays 0.5× — the parlay payout is halved once per voided leg.">Payout if one leg voids</span>
+                <span title="If any leg voids to 50/50 at resolution, that leg pays 0.5×.">Payout if one voids</span>
                 <b>{usd2.format(parlayQuote.halfPayoutIfOneVoidUsdc)}</b>
               </div>
               <div className="slip-legfees">
                 {slipLegs.map((l, i) => (
                   <span key={l.marketId}>
-                    <em>{l.question.slice(0, 28)}{l.question.length > 28 ? "…" : ""}</em>
+                    <em>{l.question.slice(0, 30)}{l.question.length > 30 ? "…" : ""}</em>
                     <b>{usd2.format(parlayQuote.legFees[i] ?? 0)}</b>
                   </span>
                 ))}
-                <small>{quoting ? "Re-quoting from Panta…" : "Priced from live Panta prices · 15s TTL"}</small>
+                <small>{quoting ? "RE-QUOTING FROM PANTA…" : "PRICED FROM LIVE PANTA · 15S TTL"}</small>
               </div>
               <button
-                className="button primary full"
+                className="gbtn primary full"
                 onClick={placeParlay}
                 disabled={placingParlay || slipLegs.length < 2}
               >
-                {placingParlay ? "Placing parlay…" : slipLegs.length < 2 ? "Add another leg" : `Place ${slipLegs.length}-leg parlay`} <span>→</span>
+                {placingParlay ? "SEALING PARLAY…" : slipLegs.length < 2 ? "ADD ANOTHER LEG" : `SEAL ${slipLegs.length}-LEG PARLAY`} <span className="arr">▸</span>
               </button>
             </>
           )}
         </div>
       )}
 
+      {/* -------- TOAST -------- */}
       {toast && (
         <div className="toast" role="status">
           {toast}
@@ -887,18 +982,20 @@ export default function Home() {
         </div>
       )}
 
+      {/* -------- HOST MODAL -------- */}
       {showHost && (
         <div className="modal-backdrop" role="presentation" onClick={() => setShowHost(false)}>
           <form className="modal" onSubmit={createArena} onClick={(e) => e.stopPropagation()}>
+            <span className="cnr bl" /><span className="cnr br" />
             <button type="button" className="close" onClick={() => setShowHost(false)} aria-label="Close">×</button>
-            <p className="eyebrow">HOST A RUMBLE</p>
-            <h2>Make forecasting a fight.</h2>
+            <p className="eyebrow">◈ FORGE A RING</p>
+            <h2>OPEN THE GATES.</h2>
             <label>
-              Ring name
+              RING NAME
               <input name="title" required placeholder="e.g. DeFi Sunday" maxLength={60} />
             </label>
             <label>
-              Theme
+              REALM
               <select name="theme" defaultValue="Crypto & markets">
                 <option>Crypto &amp; markets</option>
                 <option>Sports &amp; events</option>
@@ -907,17 +1004,17 @@ export default function Home() {
               </select>
             </label>
             <label>
-              Duration
+              DURATION
               <select name="duration" defaultValue="72 hours">
                 <option>72 hours</option>
                 <option>1 week</option>
                 <option>1 month</option>
               </select>
             </label>
-            <button className="button primary full" type="submit">Create draft <span>→</span></button>
-            <p className="fine-print">
+            <button className="gbtn primary full" type="submit">FORGE DRAFT <span className="arr">▸</span></button>
+            <p className="fine">
               Draft rings live in this browser. In production the host would call
-              <code> POST /markets/quote</code> → <code>/markets/build</code> → <code>/markets/register</code> to spin up USDC markets on Panta.
+              <code> POST /markets/quote</code> → <code>/markets/build</code> → <code>/markets/register</code> to seal USDC markets on Panta.
             </p>
           </form>
         </div>
