@@ -6,7 +6,9 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "tsc --noEmit"
+    "lint": "tsc --noEmit",
+    "seed:devnet": "node scripts/seed-markets.mjs",
+    "seed:dry": "node scripts/seed-markets.mjs --dry"
   },
   "dependencies": {
     "@solana/web3.js": "^1.99.0",

@@ -86,14 +86,38 @@ export function quoteParlayLive(args: { legs: Array<Pick<ParlayLeg, "marketId" |
 
 // ---- Market creation (host-a-ring) lifecycle --------------------------
 
-export function marketCreateQuote(args: { question: string; category: string; endsAt: string; wallet: string }) {
-  return jpost<{ source: "panta" | "mock"; quoteId: string; creationFeeUsdc: string; expiresAt: string }>("/api/markets/quote", args);
+export type MarketCreateQuoteRequest = {
+  wallet: string;
+  question: string;
+  resolutionRule: string;
+  sourcesOfTruth: string[];
+  category: string;
+  startTime: number;     // unix seconds
+  endTime: number;       // unix seconds
+  resolutionTime: number;// unix seconds
+  imageUrl: string;
+};
+export type MarketCreateQuoteResponse = {
+  source: "panta" | "mock";
+  createId: string;
+  paymentUsdc: string;
+  liquidityInjectionUsdc?: string;
+  platformRevenueUsdc?: string;
+  expectedEventPda: string;
+  expiresAt?: string;
+};
+export function marketCreateQuote(args: MarketCreateQuoteRequest) {
+  return jpost<MarketCreateQuoteResponse>("/api/markets/quote", args);
 }
-export function marketCreateBuild(args: { quoteId: string; wallet: string }) {
-  return jpost<{ source: "panta" | "mock"; serializedTx: string; lastValidBlockHeight?: number }>("/api/markets/build", args);
+export function marketCreateBuild(args: { createId: string; wallet: string }) {
+  return jpost<{ source: "panta" | "mock"; transaction: string; buildFingerprint?: string; lastValidBlockHeight?: number; expiresAt?: string }>(
+    "/api/markets/build", args
+  );
 }
-export function marketCreateRegister(args: { quoteId: string; signature: string; wallet: string }) {
-  return jpost<{ source: "panta" | "mock"; marketId: string; status: "registered" | "pending" }>("/api/markets/register", args);
+export function marketCreateRegister(args: { createId: string; signature: string }) {
+  return jpost<{ source: "panta" | "mock"; marketId: string; status: "registered" | "pending"; title?: string; category?: string }>(
+    "/api/markets/register", args
+  );
 }
 
 // ---- Wallet detection -------------------------------------------------

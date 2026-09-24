@@ -3,31 +3,33 @@ import { PANTA_LIVE, pantaFetch, mockPubkey } from "@/lib/panta";
 
 /**
  * POST /api/markets/register
- * Maps to Panta's POST /markets/register.
+ * Proxies Panta's POST /markets/register/.
  *
- * Step 3 of the market creation lifecycle: after the host's wallet signs
- * and broadcasts the create-market transaction, this endpoint tells Panta
- * to verify the on-chain event and write catalog metadata (question,
- * category, image, resolution rules). Returns the new market's pubkey.
+ * Step 3 of the creation lifecycle. Body: { createId, signature }.
+ * Response: { marketId, status } — Panta verifies the signature on-chain
+ * and writes catalog metadata.
  */
 export async function POST(request: Request) {
-  const body = (await request.json()) as { quoteId: string; signature: string; wallet: string };
-  if (!body?.quoteId || !body?.signature || !body?.wallet) {
-    return NextResponse.json(
-      { error: "quoteId, signature, wallet required" },
-      { status: 400 }
-    );
+  const body = (await request.json()) as { createId: string; signature: string };
+  if (!body?.createId || !body?.signature) {
+    return NextResponse.json({ error: "createId, signature required" }, { status: 400 });
   }
 
   if (PANTA_LIVE) {
     try {
-      const data = await pantaFetch<{ marketId: string; status: "registered" | "pending" }>(
-        "/markets/register",
-        { method: "POST", body: JSON.stringify(body) }
-      );
+      const data = await pantaFetch<{
+        marketId: string;
+        status: "registered" | "pending";
+        signature?: string;
+        paymentUsdc?: string;
+        paymentUsdcBase?: string;
+        category?: string;
+        title?: string;
+      }>("/markets/register", { method: "POST", body: JSON.stringify(body) });
       return NextResponse.json({ source: "panta", ...data });
     } catch (err) {
-      console.error("panta /markets/register failed, serving mock:", err);
+      console.error("panta /markets/register failed:", err);
+      return NextResponse.json({ error: err instanceof Error ? err.message : "panta failed" }, { status: 502 });
     }
   }
 

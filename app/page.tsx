@@ -585,6 +585,18 @@ export default function Home() {
    * Without a connected wallet or on failure, falls back to a draft ring
    * saved in the local hosted[] list so the UI stays usable.
    */
+  // Panta's category enum. Anything outside it 400s at /markets/create/quote.
+  const PANTA_CATEGORIES = ["sports", "crypto", "politics", "entertainment", "finance", "science", "world", "other"] as const;
+  const THEME_TO_CATEGORY: Record<string, typeof PANTA_CATEGORIES[number]> = {
+    "Crypto & markets": "crypto",
+    "Sports & events": "sports",
+    "Community forecasts": "world",
+    "Product launches": "world",
+    "Politics & policy": "politics",
+    "Entertainment": "entertainment",
+    "Science & tech": "science"
+  };
+
   async function createArena(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const form = new FormData(event.currentTarget);
@@ -592,7 +604,7 @@ export default function Home() {
     const theme = String(form.get("theme") || "Community forecasts");
     const durationLabel = String(form.get("duration") || "72 hours");
     const HOURS: Record<string, number> = { "72 hours": 72, "1 week": 168, "1 month": 720 };
-    const endsAt = new Date(Date.now() + (HOURS[durationLabel] ?? 72) * 3_600_000).toISOString();
+    const endsAtMs = Date.now() + (HOURS[durationLabel] ?? 72) * 3_600_000;
 
     if (!walletAddress) {
       setHosted((current) => [title, ...current]);
@@ -603,25 +615,49 @@ export default function Home() {
 
     setHosting(true);
     try {
-      const q = await marketCreateQuote({ question: title, category: theme, endsAt, wallet: walletAddress });
-      const feeUsdc = (Number(q.creationFeeUsdc) / 1_000_000).toFixed(2);
+      const category = THEME_TO_CATEGORY[theme] ?? "world";
+      const nowSec = Math.floor(Date.now() / 1000);
+      const endSec = Math.floor(endsAtMs / 1000);
+      const resolutionSec = endSec + 7 * 86400;
+
+      const q = await marketCreateQuote({
+        wallet: walletAddress,
+        question: title,
+        resolutionRule: `Resolves according to public reporting on ${new Date(endsAtMs).toUTCString()}. Draft rule — sharpen before real volume.`,
+        sourcesOfTruth: ["https://oracle-rumble-production.up.railway.app"],
+        category,
+        startTime: nowSec,
+        endTime: endSec,
+        resolutionTime: resolutionSec,
+        imageUrl: `https://placehold.co/512x512/0b0d14/d4a24c/png?text=${encodeURIComponent(title.slice(0, 24))}`
+      });
+      const feeUsdc = (Number(q.paymentUsdc) / 1_000_000).toFixed(2);
       setToast(`Quoted ${feeUsdc} USDC creation fee · signing…`);
 
-      const b = await marketCreateBuild({ quoteId: q.quoteId, wallet: walletAddress });
-      const s = await signAndBroadcast({ serializedTx: b.serializedTx, wallet: walletAddress });
-      const reg = await marketCreateRegister({ quoteId: q.quoteId, signature: s.signature, wallet: walletAddress });
+      const b = await marketCreateBuild({ createId: q.createId, wallet: walletAddress });
+      let signature: string;
+      let signLabel: string;
+      if (!b.transaction) {
+        // Sandbox: Panta returns an empty tx — no keypair is signing anything.
+        signature = "sandboxSignature" + "1".repeat(43);
+        signLabel = "sandbox (no on-chain tx)";
+      } else {
+        const s = await signAndBroadcast({ serializedTx: b.transaction, wallet: walletAddress });
+        signature = s.signature;
+        signLabel = s.confirmed ? "on-chain, confirmed" : "on-chain, broadcasting";
+      }
+      const reg = await marketCreateRegister({ createId: q.createId, signature });
 
-      const label = s.confirmed ? "on-chain, confirmed" : "on-chain, broadcasting";
       setHosted((current) => [`${title} · ${reg.marketId.slice(0, 4)}…${reg.marketId.slice(-4)}`, ...current]);
       setShowHost(false);
-      setToast(`"${title}" registered · market ${shortenPk(reg.marketId)} (${label}).`);
+      setToast(`"${title}" registered · market ${shortenPk(reg.marketId)} (${signLabel}).`);
       // Force a fresh markets fetch so the new ring appears in the UI.
       try {
         const r = await fetchMarkets();
         if (r.source === "panta" && Array.isArray(r.arenas)) {
           setArenas(r.arenas.map((a) => ({
             id: a.id, name: a.name ?? a.id, tagline: a.tagline ?? "",
-            endsInMs: a.endsInMs ?? 8 * 3_600_000,
+            endsInMs: a.endsInMs ?? 24 * 3_600_000,
             markets: a.markets as Market[]
           })));
         }
@@ -1246,6 +1282,9 @@ export default function Home() {
               <select name="theme" defaultValue="Crypto & markets">
                 <option>Crypto &amp; markets</option>
                 <option>Sports &amp; events</option>
+                <option>Politics &amp; policy</option>
+                <option>Entertainment</option>
+                <option>Science &amp; tech</option>
                 <option>Community forecasts</option>
                 <option>Product launches</option>
               </select>
