@@ -1177,6 +1177,88 @@ main { min-height: 100vh; overflow: hidden; }
 .hall > .cnr.bl { bottom: -1px; left: -1px; border-width: 0 0 2px 2px; }
 .hall > .cnr.br { bottom: -1px; right: -1px; border-width: 0 2px 2px 0; }
 
+.hall-empty {
+  padding: 48px 32px;
+  display: grid;
+  justify-items: center;
+  gap: 14px;
+  text-align: center;
+}
+.hall-empty p { margin: 0; max-width: 520px; color: var(--text-2); line-height: 1.55; }
+.hall-empty p b { color: var(--text); }
+.hall-empty .gbtn { margin-top: 6px; }
+
+.hall-you {
+  display: grid;
+  grid-template-columns: 80px 44px 1fr auto auto;
+  gap: 20px;
+  align-items: center;
+  padding: 20px 24px;
+  border-bottom: 1px solid var(--line);
+  background: linear-gradient(180deg, rgba(212,162,76,.05), transparent);
+}
+.hall-body { display: grid; gap: 4px; min-width: 0; }
+.hall-body b {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 15px;
+  letter-spacing: 1px;
+  color: var(--text);
+}
+.hall-num { display: grid; gap: 3px; text-align: right; min-width: 130px; }
+.hall-num > span {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 10px;
+  letter-spacing: 1.4px;
+  color: var(--soft);
+}
+.hall-num > b {
+  font-family: 'Cinzel', serif;
+  font-size: 22px;
+  color: var(--text);
+}
+.hall-num.up > b { color: var(--jade); }
+.hall-num.down > b { color: var(--ember); }
+
+.avatar-lg.gold { background: linear-gradient(135deg, var(--gold), var(--amber)); color: #0a0a12; }
+
+.hall-positions { list-style: none; padding: 0; margin: 0; }
+.hall-positions li {
+  display: grid;
+  grid-template-columns: 60px 1fr auto auto;
+  gap: 14px;
+  align-items: center;
+  padding: 12px 24px;
+  border-bottom: 1px solid var(--line);
+}
+.hall-positions li:last-child { border-bottom: 0; }
+.hall-positions li b {
+  font-family: 'Cinzel', serif;
+  font-size: 14px;
+  letter-spacing: .3px;
+}
+.hall-positions li span:not(.side) {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 11px;
+  color: var(--text-2);
+}
+.hall-positions li strong {
+  font-family: 'JetBrains Mono', monospace;
+  color: var(--gold);
+  min-width: 80px;
+  text-align: right;
+}
+.hall-note {
+  padding: 24px;
+  color: var(--soft);
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 12px;
+  text-align: center;
+}
+
+.t-status { color: var(--gold); }
+.t-trade  { color: var(--jade); }
+.t-market { color: var(--text-2); }
+
 .player {
   display: grid;
   grid-template-columns: 60px 44px 1fr 1.4fr auto;

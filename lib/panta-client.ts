@@ -131,35 +131,32 @@ function b64ToBytes(b64: string): Uint8Array {
  * Sign a Panta-built VersionedTransaction with the connected wallet,
  * broadcast it via the configured Solana RPC, and wait for confirmation.
  *
- * Behaviour:
  *   1. Deserialize the base64 payload into a VersionedTransaction.
- *   2. Ask the wallet to sign + send (Phantom/Backpack/Solflare all
- *      implement `signAndSendTransaction`). This one call handles both
- *      signing and broadcasting to whichever RPC the wallet is using.
+ *   2. Ask the wallet to sign + send (Phantom / Backpack / Solflare all
+ *      implement `signAndSendTransaction`). One call signs and broadcasts.
  *   3. Fall back to `signTransaction` + Connection.sendRawTransaction if
  *      the wallet doesn't expose signAndSend.
- *   4. Poll the RPC for confirmation up to `CONFIRM_TIMEOUT_MS`.
- *   5. If no wallet is present, generate a mock signature (demo mode).
+ *   4. Poll the RPC for confirmation up to CONFIRM_TIMEOUT_MS.
+ *
+ * Every failure path throws — there is no mock-signature safety net. A
+ * caller in production wants a loud error, not a fake fill.
  */
 const CONFIRM_TIMEOUT_MS = 30_000;
+
+export class WalletUnavailableError extends Error { constructor() { super("No Solana wallet detected. Install Phantom, Backpack, or Solflare and reload."); } }
+export class WalletSignatureError extends Error { constructor(cause: unknown) { super(cause instanceof Error ? cause.message : String(cause)); } }
 
 export async function signAndBroadcast(args: {
   serializedTx: string;
   wallet: string;
-}): Promise<{ signature: string; simulated: boolean; confirmed: boolean }> {
+}): Promise<{ signature: string; confirmed: boolean }> {
   if (typeof window === "undefined") throw new Error("client only");
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const w = window as any;
   const provider = w.phantom?.solana ?? w.solana ?? w.backpack?.solana ?? w.solflare;
-
-  if (!provider) {
-    const { mockSignature } = await import("@/lib/panta");
-    return { signature: mockSignature(), simulated: true, confirmed: false };
-  }
+  if (!provider) throw new WalletUnavailableError();
 
   const bytes = b64ToBytes(args.serializedTx);
-
-  // Lazy-load web3.js so the mock/demo path doesn't drag it into the bundle.
   const { Connection, VersionedTransaction } = await import("@solana/web3.js");
   const connection = new Connection(SOLANA_RPC, "confirmed");
 
@@ -167,23 +164,24 @@ export async function signAndBroadcast(args: {
   try {
     tx = VersionedTransaction.deserialize(bytes);
   } catch (err) {
-    console.error("panta build tx not a valid VersionedTransaction:", err);
-    const { mockSignature } = await import("@/lib/panta");
-    return { signature: mockSignature(), simulated: true, confirmed: false };
+    throw new WalletSignatureError(new Error(`Panta returned an unparseable VersionedTransaction: ${err instanceof Error ? err.message : String(err)}`));
   }
 
   let signature = "";
-  if (typeof provider.signAndSendTransaction === "function") {
-    const res = await provider.signAndSendTransaction(tx);
-    signature = res.signature ?? "";
-  } else if (typeof provider.signTransaction === "function") {
-    const signed = await provider.signTransaction(tx);
-    signature = await connection.sendRawTransaction(signed.serialize(), { skipPreflight: false });
-  } else {
-    // wallet exposes neither method — fall back to mock so we don't hang
-    const { mockSignature } = await import("@/lib/panta");
-    return { signature: mockSignature(), simulated: true, confirmed: false };
+  try {
+    if (typeof provider.signAndSendTransaction === "function") {
+      const res = await provider.signAndSendTransaction(tx);
+      signature = res.signature ?? "";
+    } else if (typeof provider.signTransaction === "function") {
+      const signed = await provider.signTransaction(tx);
+      signature = await connection.sendRawTransaction(signed.serialize(), { skipPreflight: false });
+    } else {
+      throw new WalletUnavailableError();
+    }
+  } catch (err) {
+    throw new WalletSignatureError(err);
   }
+  if (!signature) throw new WalletSignatureError(new Error("wallet returned an empty signature"));
 
   // Poll for confirmation. We don't block indefinitely — Panta will also
   // pick up confirmations via the /orders/verify path.
@@ -194,12 +192,13 @@ export async function signAndBroadcast(args: {
       const st = await connection.getSignatureStatus(signature, { searchTransactionHistory: true });
       const v = st.value?.confirmationStatus;
       if (v === "confirmed" || v === "finalized") { confirmed = true; break; }
-      if (st.value?.err) throw new Error(JSON.stringify(st.value.err));
+      if (st.value?.err) throw new WalletSignatureError(new Error(JSON.stringify(st.value.err)));
     } catch (err) {
-      console.warn("getSignatureStatus failed, continuing to poll:", err);
+      if (err instanceof WalletSignatureError) throw err;
+      // transient — keep polling
     }
     await new Promise((r) => setTimeout(r, 1_500));
   }
 
-  return { signature, simulated: false, confirmed };
+  return { signature, confirmed };
 }

@@ -3,7 +3,6 @@
 import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   arenas as seedArenas,
-  players,
   type Arena,
   type Market,
   type Position,
@@ -35,12 +34,12 @@ import {
   type ParlayLeg,
   type ParlayQuote
 } from "@/lib/parlay";
-import { mockPubkey } from "@/lib/panta";
 
 const usd = new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 0 });
 const usd2 = new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 2 });
 
 const STORAGE_KEY = "oracle-rumble/state/v3";
+const CLUSTER = (process.env.NEXT_PUBLIC_SOLANA_CLUSTER ?? "devnet").toUpperCase();
 
 type Persisted = {
   walletAddress: string | null;
@@ -205,13 +204,19 @@ export default function Home() {
       try {
         const r = await fetchMarkets();
         if (r.source !== "panta" || !Array.isArray(r.arenas)) return;
-        setArenas(r.arenas.map((a) => ({
+        const next: Arena[] = r.arenas.map((a) => ({
           id: a.id,
           name: a.name ?? a.id,
           tagline: a.tagline ?? "",
-          endsInMs: a.endsInMs ?? 8 * 3_600_000,
+          endsInMs: a.endsInMs ?? 24 * 3_600_000,
           markets: a.markets as Market[]
-        })));
+        }));
+        setArenas(next);
+        // Add deadlines for any newly-appearing arenas (host flow).
+        const now = Date.now();
+        for (const a of next) {
+          if (!(a.id in deadlinesRef.current)) deadlinesRef.current[a.id] = now + a.endsInMs;
+        }
       } catch { /* ignore transient */ }
     }, 20_000);
     return () => window.clearInterval(id);
@@ -358,6 +363,44 @@ export default function Home() {
   const countdownMs = hydrated ? Math.max(0, (deadlinesRef.current[activeArena.id] ?? 0) - now) : activeArena.endsInMs;
   const countdownLabel = hydrated ? formatCountdown(countdownMs) : formatCountdown(activeArena.endsInMs);
 
+  // ---- honest hero stats + ticker (all derived from live data) ------
+
+  const totalMarkets = useMemo(() => arenas.reduce((s, a) => s + a.markets.length, 0), [arenas]);
+
+  // Volume tracked: parse each market's "$42.8k" / "$1.2M" / "$0.00" string
+  // (produced by /api/markets from Panta's volumeUsdc field) into a number.
+  const totalVolumeUsdc = useMemo(() => {
+    let sum = 0;
+    for (const a of arenas) for (const m of a.markets) {
+      const raw = (m.volume ?? "").replace(/[$,]/g, "").trim();
+      if (!raw) continue;
+      const mult = raw.endsWith("k") ? 1_000 : raw.endsWith("M") ? 1_000_000 : 1;
+      const n = parseFloat(raw);
+      if (Number.isFinite(n)) sum += n * mult;
+    }
+    return sum;
+  }, [arenas]);
+
+  const volumeLabel = useMemo(() => {
+    if (totalVolumeUsdc >= 1_000_000) return `$${(totalVolumeUsdc / 1_000_000).toFixed(1)}M`;
+    if (totalVolumeUsdc >= 1_000) return `$${(totalVolumeUsdc / 1_000).toFixed(1)}k`;
+    return usd2.format(totalVolumeUsdc);
+  }, [totalVolumeUsdc]);
+
+  // Ticker payload — honest data only. When there's nothing to say we
+  // show a status strip instead of fabricated events.
+  type TickerItem = { kind: "status" | "trade" | "market"; text: string };
+  const tickerItems = useMemo<TickerItem[]>(() => {
+    const items: TickerItem[] = [];
+    items.push({ kind: "status", text: `${dataSource === "panta" ? "LIVE · PANTA" : "DEMO · MOCK"} · ${CLUSTER}` });
+    items.push({ kind: "status", text: `${totalMarkets} MARKETS · ${arenas.length} RINGS` });
+    for (const t of marketTrades.slice(0, 4)) {
+      items.push({ kind: "trade", text: `${t.side} $${t.usdcAmount} @ ${t.priceCents}¢ · ${shortenPk(t.wallet)} · sig ${shortenPk(t.signature)}` });
+    }
+    if (activeMarket?.question) items.push({ kind: "market", text: `${activeMarket.category.toUpperCase()} · ${activeMarket.question} · YES ${activeMarket.yesPrice}¢` });
+    return items;
+  }, [dataSource, totalMarkets, arenas.length, marketTrades, activeMarket]);
+
   // ---- actions -------------------------------------------------------
 
   const connect = useCallback(async () => {
@@ -373,10 +416,9 @@ export default function Home() {
       setWalletKind("phantom");
       setToast(`Phantom connected · ${shortenPk(real)}`);
     } else {
-      const demo = mockPubkey();
-      setWalletAddress(demo);
-      setWalletKind("demo");
-      setToast(`Demo wallet spun up · ${shortenPk(demo)}`);
+      setWalletAddress(null);
+      setWalletKind(null);
+      setToast("No Solana wallet found. Install Phantom, Backpack, or Solflare and reload.");
     }
   }, [connected]);
 
@@ -413,12 +455,12 @@ export default function Home() {
         quoteId: quote.quoteId
       };
       setPositions((prev) => [pos, ...prev]);
-      const label = signed.simulated ? "simulated" : signed.confirmed ? "on-chain, confirmed" : "on-chain, broadcasting";
+      const label = signed.confirmed ? "on-chain, confirmed" : "on-chain, broadcasting";
       setToast(`${side} filled · ${quote.shares.toFixed(1)} shares at ${quote.price}¢ · sig ${shortenPk(signed.signature)} (${label})`);
 
-      // Poll Panta for its own confirmation view. This is Panta's async
-      // pickup — it may lag the RPC confirmation by a slot or two.
-      if (!signed.simulated) {
+      // Poll Panta for its own confirmation view. This may lag the RPC
+      // confirmation by a slot or two.
+      {
         (async () => {
           for (let i = 0; i < 8; i++) {
             try {
@@ -569,10 +611,21 @@ export default function Home() {
       const s = await signAndBroadcast({ serializedTx: b.serializedTx, wallet: walletAddress });
       const reg = await marketCreateRegister({ quoteId: q.quoteId, signature: s.signature, wallet: walletAddress });
 
-      const label = s.simulated ? "simulated" : s.confirmed ? "on-chain, confirmed" : "on-chain, broadcasting";
+      const label = s.confirmed ? "on-chain, confirmed" : "on-chain, broadcasting";
       setHosted((current) => [`${title} · ${reg.marketId.slice(0, 4)}…${reg.marketId.slice(-4)}`, ...current]);
       setShowHost(false);
       setToast(`"${title}" registered · market ${shortenPk(reg.marketId)} (${label}).`);
+      // Force a fresh markets fetch so the new ring appears in the UI.
+      try {
+        const r = await fetchMarkets();
+        if (r.source === "panta" && Array.isArray(r.arenas)) {
+          setArenas(r.arenas.map((a) => ({
+            id: a.id, name: a.name ?? a.id, tagline: a.tagline ?? "",
+            endsInMs: a.endsInMs ?? 8 * 3_600_000,
+            markets: a.markets as Market[]
+          })));
+        }
+      } catch { /* ignore */ }
     } catch (err) {
       setHosted((current) => [title, ...current]);
       setShowHost(false);
@@ -584,9 +637,8 @@ export default function Home() {
 
   // ---- render --------------------------------------------------------
 
-  const cluster = (process.env.NEXT_PUBLIC_SOLANA_CLUSTER ?? "devnet").toUpperCase();
   const sourceBadge = dataSource === "panta"
-    ? { text: `LIVE · PANTA · ${cluster}`, cls: "src live" }
+    ? { text: `LIVE · PANTA · ${CLUSTER}`, cls: "src live" }
     : dataSource === "mock"
       ? { text: "DEMO · SET PANTA_API_KEY", cls: "src demo" }
       : { text: "CONNECTING…", cls: "src pending" };
@@ -631,30 +683,19 @@ export default function Home() {
         </div>
       </nav>
 
-      {/* -------- LIVE TICKER -------- */}
+      {/* -------- LIVE TICKER (real Panta data) -------- */}
       <div className="ticker">
         <div className="ticker-track">
-          <span><b>SEASON 01</b> · GENESIS RUN</span>
-          <span><em>+$412.20</em> mira.vale on <b>SOL &gt; $200</b></span>
-          <span><i>−$88.10</i> dune on <b>KO finish</b></span>
-          <span>3-LEG PARLAY hit · <em>4.82×</em> · witness</span>
-          <span><b>1,248</b> RUMBLERS ONLINE</span>
-          <span><em>+$1,020.00</em> onchain.aya · OpenAI ships</span>
-          <span>NEW RING · <b>SHIPMAS</b> opens in 4H</span>
-          <span><b>SEASON 01</b> · GENESIS RUN</span>
-          <span><em>+$412.20</em> mira.vale on <b>SOL &gt; $200</b></span>
-          <span><i>−$88.10</i> dune on <b>KO finish</b></span>
-          <span>3-LEG PARLAY hit · <em>4.82×</em> · witness</span>
-          <span><b>1,248</b> RUMBLERS ONLINE</span>
-          <span><em>+$1,020.00</em> onchain.aya · OpenAI ships</span>
-          <span>NEW RING · <b>SHIPMAS</b> opens in 4H</span>
+          {[...tickerItems, ...tickerItems].map((t, i) => (
+            <span key={i} className={`t-${t.kind}`}>{t.text}</span>
+          ))}
         </div>
       </div>
 
       {/* -------- PORTAL HERO -------- */}
       <section className="portal" id="top">
         <div className="portal-inner">
-          <p className="eyebrow">SEASON 01 · GENESIS RUN · SOLANA MAINNET</p>
+          <p className="eyebrow">SEASON 01 · GENESIS RUN · SOLANA {CLUSTER}</p>
           <h1>CALL IT.<br/><em>PROVE IT.</em><br/>CLIMB.</h1>
           <p className="portal-copy">
             Oracle Rumble is a game lobby for prediction markets. Pick a ring, stake your conviction on live
@@ -666,9 +707,9 @@ export default function Home() {
           </div>
 
           <div className="hud-stats">
-            <div className="stat"><b>1,248</b><span>◈ RUMBLERS</span></div>
-            <div className="stat"><b>{arenas.length + hosted.length}</b><span>⚔ ACTIVE RINGS</span></div>
-            <div className="stat"><b>$284K</b><span>⛨ VOLUME TRACKED</span></div>
+            <div className="stat"><b>{totalMarkets}</b><span>◈ LIVE MARKETS</span></div>
+            <div className="stat"><b>{arenas.length}</b><span>⚔ ACTIVE RINGS</span></div>
+            <div className="stat"><b>{volumeLabel}</b><span>⛨ VOLUME (USDC)</span></div>
             <div className="stat"><b>{PARLAY_MIN_LEGS}–{PARLAY_MAX_LEGS}</b><span>❖ PARLAY LEGS</span></div>
           </div>
         </div>
@@ -985,30 +1026,61 @@ export default function Home() {
         </div>
       </section>
 
-      {/* -------- HALL OF CHAMPIONS -------- */}
+      {/* -------- YOUR HALL (real on-chain record) -------- */}
       <section className="hall-shell" id="hall">
         <div className="section-head">
           <div>
-            <p className="eyebrow">◈ HALL OF CHAMPIONS</p>
-            <h2>THE BOARD</h2>
+            <p className="eyebrow">◈ YOUR HALL</p>
+            <h2>YOUR RECORD</h2>
           </div>
-          <span className="flair"><i />SEASON 01 STANDINGS · LIVE</span>
+          <span className="flair"><i />PANTA · WALLET-SCOPED</span>
         </div>
 
         <div className="hall">
           <span className="cnr bl" /><span className="cnr br" />
-          {players.map((player) => (
-            <div className="player" key={player.rank}>
-              <span className={`rank rank-${player.rank}`}>
-                {player.rank === 1 && <span className="crown">♛</span>}
-                {String(player.rank).padStart(2, "0")}
-              </span>
-              <span className={`avatar-lg ${player.color}`}>{player.initials}</span>
-              <b>{player.name}</b>
-              <span className="player-meta">{player.markets} MARKETS · {player.accuracy}% ACCURACY</span>
-              <strong>+{player.returnPct}%</strong>
+          {!connected ? (
+            <div className="hall-empty">
+              <p><b>Connect a Solana wallet to see your on-chain record.</b></p>
+              <p>Panta does not publish a global leaderboard yet — Oracle Rumble scopes standings to the connected wallet so nothing on this page is fabricated.</p>
+              <button className="gbtn primary" onClick={connect}>CONNECT WALLET <span className="arr">▸</span></button>
             </div>
-          ))}
+          ) : (
+            <>
+              <div className="hall-you">
+                <span className="rank rank-1"><span className="crown">♛</span>YOU</span>
+                <span className="avatar-lg gold">{initials}</span>
+                <div className="hall-body">
+                  <b>{shortenPk(walletAddress!)}</b>
+                  <span className="player-meta">
+                    {remotePositions.length} PANTA POSITIONS · {positions.length} LOCAL FILLS · {parlays.length} PARLAYS
+                  </span>
+                </div>
+                <div className="hall-num">
+                  <span>COST BASIS</span>
+                  <b>{usd2.format(positions.reduce((s, p) => s + p.cost, 0))}</b>
+                </div>
+                <div className={`hall-num ${openPnL >= 0 ? "up" : "down"}`}>
+                  <span>OPEN P&amp;L (SESSION)</span>
+                  <b>{openPnL >= 0 ? "+" : ""}{usd2.format(openPnL)}</b>
+                </div>
+              </div>
+              {remotePositions.length > 0 && (
+                <ul className="hall-positions">
+                  {remotePositions.slice(0, 6).map((p) => (
+                    <li key={`${p.marketId}-${p.side}`}>
+                      <span className={p.side === "YES" ? "side yes" : "side no"}>{p.side}</span>
+                      <b>{p.question}</b>
+                      <span>{Number(p.shares).toFixed(1)} sh · entry {p.entryPrice}¢ · mark {p.markPrice}¢</span>
+                      <strong>{p.cost}</strong>
+                    </li>
+                  ))}
+                </ul>
+              )}
+              {remotePositions.length === 0 && (
+                <p className="hall-note">No open positions on Panta yet. Buy YES/NO from the wager panel to fill your hall.</p>
+              )}
+            </>
+          )}
         </div>
       </section>
 

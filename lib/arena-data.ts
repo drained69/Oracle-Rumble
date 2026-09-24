@@ -18,6 +18,10 @@ export type Market = {
   correlationGroup?: string;
 };
 
+// Player = a rumbler on the leaderboard. Kept as a type so the UI can
+// render a "your record" row when a wallet is connected. Panta doesn't
+// expose a global leaderboard endpoint yet, so we render only the
+// connected wallet's own on-chain stats — no fabricated peers.
 export type Player = {
   rank: number;
   name: string;
@@ -107,13 +111,10 @@ export const arenas: Arena[] = [
   }
 ];
 
-export const players: Player[] = [
-  { rank: 1, name: "Mira Vale", initials: "MV", returnPct: 28.4, accuracy: 83, markets: 6, color: "violet" },
-  { rank: 2, name: "dune", initials: "DU", returnPct: 21.7, accuracy: 78, markets: 7, color: "cyan" },
-  { rank: 3, name: "Theo L.", initials: "TL", returnPct: 18.2, accuracy: 75, markets: 4, color: "orange" },
-  { rank: 4, name: "onchain.aya", initials: "OA", returnPct: 12.9, accuracy: 71, markets: 8, color: "pink" },
-  { rank: 5, name: "witness", initials: "WI", returnPct: 8.4, accuracy: 67, markets: 5, color: "lime" }
-];
+// No seeded players — the leaderboard renders your own on-chain record
+// from Panta, not fabricated peers. Left as an empty array so any stray
+// import stays type-safe until it's removed.
+export const players: Player[] = [];
 
 // Back-compat for any consumer still importing the flat list.
 export const markets: Market[] = arenas[0].markets;

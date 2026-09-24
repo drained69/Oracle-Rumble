@@ -110,18 +110,28 @@ function pantaMarketToUi(m: PantaLiveMarket): PantaMarket {
 }
 
 function buildArenasFromPantaMarkets(markets: PantaLiveMarket[]) {
-  const byCategory = new Map<string, PantaMarket[]>();
-  for (const m of markets.map(pantaMarketToUi)) {
-    const key = slug(m.category || "general");
+  // Preserve each market's endTime so the arena countdown reflects reality
+  // (min endTime across the arena's markets = the next resolution boundary).
+  const byCategory = new Map<string, Array<{ ui: PantaMarket; endTime?: string }>>();
+  for (const m of markets) {
+    const ui = pantaMarketToUi(m);
+    const key = slug(ui.category || "general");
     if (!byCategory.has(key)) byCategory.set(key, []);
-    byCategory.get(key)!.push(m);
+    byCategory.get(key)!.push({ ui, endTime: m.endTime });
   }
-  return Array.from(byCategory.entries()).map(([id, marketsInArena]) => {
-    const meta = REALM_NAMES[id] ?? { name: marketsInArena[0].category, tagline: `Live Panta markets in the ${marketsInArena[0].category} category.` };
-    // Longest 8h horizon so the countdown looks alive; the source of truth
-    // for resolution is each market's individual `closes` string.
-    const endsInMs = 8 * 3_600_000;
-    return { id, name: meta.name, tagline: meta.tagline, endsInMs, markets: marketsInArena };
+  return Array.from(byCategory.entries()).map(([id, rows]) => {
+    const meta = REALM_NAMES[id] ?? { name: rows[0].ui.category, tagline: `Live Panta markets in the ${rows[0].ui.category} category.` };
+    // Next resolution boundary — earliest endTime in the arena. Falls
+    // back to 24h if Panta didn't send endTimes.
+    let earliest = Number.POSITIVE_INFINITY;
+    for (const r of rows) {
+      const t = r.endTime ? Date.parse(r.endTime) : NaN;
+      if (Number.isFinite(t)) earliest = Math.min(earliest, t);
+    }
+    const endsInMs = Number.isFinite(earliest)
+      ? Math.max(0, earliest - Date.now())
+      : 24 * 3_600_000;
+    return { id, name: meta.name, tagline: meta.tagline, endsInMs, markets: rows.map((r) => r.ui) };
   });
 }
 
