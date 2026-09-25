@@ -74,12 +74,9 @@ main { min-height: 100vh; }
   font-weight: 700;
   font-size: 14px;
   letter-spacing: -.2px;
+  color: var(--text);
 }
-.brand .dot {
-  width: 8px; height: 8px;
-  border-radius: 2px;
-  background: var(--accent);
-}
+.brand .mark { display: block; flex-shrink: 0; }
 
 .hud-nav {
   display: flex;

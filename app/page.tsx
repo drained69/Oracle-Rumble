@@ -164,7 +164,15 @@ export default function Home() {
     <main>
       {/* ── HUD ─────────────────────────────────────────────── */}
       <nav className="hud-bar">
-        <a href="#top" className="brand"><span className="dot" />Oracle Rumble</a>
+        <a href="#top" className="brand" aria-label="Oracle Rumble">
+          <svg className="mark" viewBox="0 0 64 64" width="24" height="24" aria-hidden="true">
+            <path d="M26 16 C27 7 37 7 38 16 Z" fill="#4ade80" />
+            <path d="M17 51 C13 22 22 15 32 15 C42 15 51 22 47 51 C47 55 43 56 39 54 L39 37 L25 37 L25 54 C21 56 17 55 17 51 Z" fill="#7aa2ff" />
+            <rect x="21" y="32" width="22" height="5" rx="1.5" fill="#0e1017" />
+            <rect x="29.5" y="32" width="5" height="16" rx="1.5" fill="#0e1017" />
+          </svg>
+          Oracle Rumble
+        </a>
         <div className="hud-nav">
           <a href="#arena">Arena</a>
           <a href="#how">How it works</a>
