@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { STORE_ENABLED, getActiveRound, withKeeperLock } from "@/lib/round-store";
-import { advanceToNext, bootstrapRound, marketYesPrice, pickMarket, tick } from "@/lib/round-keeper";
+import { advanceToNext, bootstrapRound, buildPriceMap, marketYesPrice, pickMarket, tick } from "@/lib/round-keeper";
 import { cutLine, humanCount, standings, type Round } from "@/lib/royale";
 
 export const dynamic = "force-dynamic";
@@ -24,6 +24,7 @@ async function currentWithTick(): Promise<Round | null> {
   const peek = await getActiveRound();
   const priceMarketId = peek?.config.marketId;
   const yesPrice = priceMarketId ? await marketYesPrice(priceMarketId) : 50;
+  const priceMap = buildPriceMap(priceMarketId ? { marketId: priceMarketId, yesPrice } : undefined);
   // Only pre-fetch a next market when the round could actually advance.
   const mayAdvance = peek?.status === "live";
   const nextMarket = mayAdvance ? await pickMarket(priceMarketId) : null;
@@ -46,7 +47,7 @@ async function currentWithTick(): Promise<Round | null> {
     // Retire any older forked/zombie active rounds so only this one is live.
     await ctx.cancelOtherActive(round.id);
 
-    tick(round, yesPrice);
+    tick(round, yesPrice, priceMap);
     if (round.status === "advancing") {
       const next = advanceToNext(round, nextMarket);
       await ctx.save(round);   // persist the settled round

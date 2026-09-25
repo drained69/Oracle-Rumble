@@ -192,7 +192,7 @@ main { min-height: 100vh; }
 .enroll-cta b { color: var(--ink); }
 
 .vault {
-  display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; margin-bottom: 18px;
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(90px, 1fr)); gap: 10px; margin-bottom: 18px;
 }
 .vault > div { background: var(--card-2); padding: 12px 14px; border-radius: 12px; display: grid; gap: 4px; border: 2px solid var(--line); }
 .vault span { font-family: 'Baloo 2', sans-serif; font-weight: 600; font-size: 10px; letter-spacing: .3px; color: var(--muted); text-transform: uppercase; }
@@ -227,6 +227,26 @@ main { min-height: 100vh; }
 .summary b.accent { color: var(--blue); }
 
 .trade-actions { display: grid; grid-template-columns: 1fr auto; gap: 10px; }
+
+/* ── bet mode + parlay builder ─────────────────────────────────────── */
+.bet-mode { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; padding: 4px; margin-bottom: 16px; background: var(--card-2); border: 2px solid var(--line); border-radius: 14px; }
+.bm { padding: 9px; border-radius: 10px; border: 0; background: transparent; color: var(--ink-2); font-family: 'Baloo 2', sans-serif; font-weight: 800; font-size: 14px; cursor: pointer; }
+.bm.on { background: #fff; color: var(--ink); box-shadow: 0 2px 6px rgba(23,40,77,.12); }
+.parlay-build { display: block; }
+.pb-hint { margin: 0 0 14px; font-size: 13px; font-weight: 600; color: var(--ink-2); line-height: 1.5; }
+.pb-board { display: grid; gap: 8px; margin-bottom: 16px; }
+.pb-mkt { display: grid; grid-template-columns: 1fr auto; gap: 10px; align-items: center; padding: 10px 12px; background: var(--card-2); border: 2px solid var(--line); border-radius: 12px; }
+.pb-mkt-q { font-family: 'Baloo 2', sans-serif; font-weight: 700; font-size: 14px; color: var(--ink); }
+.pb-mkt-q b { color: var(--blue-d); margin-right: 4px; }
+.pb-mkt-sides { display: flex; gap: 6px; }
+.pb-side {
+  min-width: 62px; padding: 7px 10px; border-radius: 9px; border: 2px solid var(--line-2); background: #fff;
+  font-family: 'Baloo 2', sans-serif; font-weight: 800; font-size: 12px; color: var(--ink-2); cursor: pointer;
+}
+.pb-side.up:hover { border-color: var(--green); }
+.pb-side.down:hover { border-color: var(--coral); }
+.pb-side.up.on { border-color: var(--green); background: #e3fbea; color: var(--green-d); }
+.pb-side.down.on { border-color: var(--coral); background: var(--down-bg); color: var(--down); }
 
 /* ── roster ───────────────────────────────────────────────────────── */
 

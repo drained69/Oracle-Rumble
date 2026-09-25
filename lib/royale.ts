@@ -42,7 +42,39 @@ export type Entrant = {
   eliminatedRound: number | null;
   rank: number | null;    // filled at settlement
   prizeUsdc: number;      // prize-pool share won at the final (0 until then)
+  parlays: ParlayTicket[];// open + settled parlay tickets bought from the vault
 };
+
+/** One leg of a placed parlay — an UP/DOWN call on a board market. */
+export type ParlayLegState = {
+  marketId: string;
+  asset: string;
+  question: string;
+  side: Side;
+  entryPrice: number;     // cents, the leg's side price at placement
+};
+
+/**
+ * A native parlay bought from a player's vault. Priced by lib/parlay.ts
+ * (variance fee, combined price). It pays `shares` USDC if every leg lands,
+ * with a 50/50 fallback per voided leg — the parlayit model. Held inside the
+ * round vault so it marks-to-market and settles alongside single trades.
+ */
+export type ParlayTicket = {
+  id: string;
+  legs: ParlayLegState[];
+  stake: number;              // gross USDC staked from the vault
+  fee: number;                // variance fee withheld
+  shares: number;             // payout units if all legs win (== max payout)
+  combinedEntryPrice: number; // cents, combined price at placement
+  potentialPayout: number;    // USDC if every leg lands
+  status: "open" | "won" | "lost" | "void";
+  settledPayout: number;      // USDC credited at settlement
+  placedAt: number;
+};
+
+/** Live YES price (cents) per market id, for valuing multi-asset parlays. */
+export type PriceMap = Record<string, number>;
 
 /**
  * Single Round is a quick match — one market, one settlement, pay the top
@@ -216,7 +248,8 @@ export function makeEntrant(round: Round, wallet: string, nickname: string, isBo
     avgPrice: 0,
     eliminatedRound: null,
     rank: null,
-    prizeUsdc: 0
+    prizeUsdc: 0,
+    parlays: []
   };
 }
 
@@ -289,10 +322,58 @@ export function liquidate(entrant: Entrant, markYesPrice: number): void {
   markToMarket(entrant, markYesPrice);
 }
 
-/** Recompute bankroll = cash + mark value of open position. */
-export function markToMarket(entrant: Entrant, markYesPrice: number): void {
+/**
+ * Fair value of an open parlay ticket right now: payout units × the product of
+ * each leg's live side probability. Settled tickets return 0 — their payout
+ * has already been credited to cash. Without a price map, legs are valued at
+ * their entry price so the number stays stable between keeper ticks.
+ */
+export function parlayMarkValue(t: ParlayTicket, priceMap?: PriceMap): number {
+  if (t.status !== "open") return 0;
+  let prob = 1;
+  for (const leg of t.legs) {
+    const yes = priceMap?.[leg.marketId];
+    const sideNow = yes === undefined ? leg.entryPrice : leg.side === "YES" ? yes : 100 - yes;
+    prob *= Math.max(1, Math.min(99, sideNow)) / 100;
+  }
+  return t.shares * prob;
+}
+
+/** Recompute bankroll = cash + mark value of the single position + open parlays. */
+export function markToMarket(entrant: Entrant, markYesPrice: number, priceMap?: PriceMap): void {
   const mark = entrant.side === "YES" ? markYesPrice : entrant.side === "NO" ? 100 - markYesPrice : 0;
-  entrant.bankroll = entrant.cash + entrant.shares * (mark / 100);
+  let parlayVal = 0;
+  for (const t of entrant.parlays) parlayVal += parlayMarkValue(t, priceMap);
+  entrant.bankroll = entrant.cash + entrant.shares * (mark / 100) + parlayVal;
+}
+
+/** Buy a parlay ticket from the vault. Stake (incl. variance fee) leaves cash. */
+export function placeParlay(entrant: Entrant, ticket: ParlayTicket): { ok: boolean; reason?: string } {
+  if (entrant.eliminatedRound !== null) return { ok: false, reason: "Eliminated." };
+  if (!ticket.legs || ticket.legs.length < 2) return { ok: false, reason: "A parlay needs at least 2 legs." };
+  if (ticket.stake <= 0) return { ok: false, reason: "Stake must be positive." };
+  if (ticket.stake > entrant.cash + 1e-9) return { ok: false, reason: "Insufficient vault cash." };
+  entrant.cash -= ticket.stake;
+  entrant.parlays.push(ticket);
+  return { ok: true };
+}
+
+/** Resolve every open parlay at the final prices, crediting winnings to cash. */
+export function settleParlays(entrant: Entrant, priceMap: PriceMap): void {
+  for (const t of entrant.parlays) {
+    if (t.status !== "open") continue;
+    let mult = 1;
+    for (const leg of t.legs) {
+      const yes = priceMap[leg.marketId] ?? leg.entryPrice;
+      const sideFinal = leg.side === "YES" ? yes : 100 - yes;
+      if (sideFinal > 50) continue;            // leg landed
+      else if (sideFinal === 50) mult *= 0.5;  // dead heat → 50/50 fallback
+      else { mult = 0; break; }                // leg missed → parlay is dead
+    }
+    t.settledPayout = t.shares * mult;
+    t.status = mult === 0 ? "lost" : mult < 1 ? "void" : "won";
+    entrant.cash += t.settledPayout;
+  }
 }
 
 // ── bots ──────────────────────────────────────────────────────────────
@@ -326,12 +407,14 @@ export function botTick(entrant: Entrant, markYesPrice: number): void {
  * mark is used (mark-to-market settlement). Ranks entrants by final
  * bankroll, breaking ties by earlier entry, and eliminates the bottom half.
  */
-export function settle(round: Round, finalYesPrice: number): void {
+export function settle(round: Round, finalYesPrice: number, priceMap?: PriceMap): void {
   round.status = "settling";
+  const finalMap: PriceMap = { ...(priceMap ?? {}), [round.config.marketId]: finalYesPrice };
   const alive = round.entrants.filter((e) => e.eliminatedRound === null);
   for (const e of alive) {
-    liquidate(e, finalYesPrice);     // redeem all shares at settlement price
-    markToMarket(e, finalYesPrice);
+    settleParlays(e, finalMap);      // resolve open parlays at final prices
+    liquidate(e, finalYesPrice);     // redeem all single-position shares
+    markToMarket(e, finalYesPrice, finalMap);
   }
   // Rank: higher bankroll first; tie → earlier joinedAt.
   const ranked = [...alive].sort((a, b) => (b.bankroll - a.bankroll) || (a.joinedAt - b.joinedAt));
@@ -420,7 +503,8 @@ export function advance(round: Round, nextMarket: { marketId: string; marketQues
       side: null,
       avgPrice: 0,
       rank: null,
-      prizeUsdc: 0
+      prizeUsdc: 0,
+      parlays: []
     })),
     prizePoolUsdc: round.prizePoolUsdc,
     createdAt: Date.now(),

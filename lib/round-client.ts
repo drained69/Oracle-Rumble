@@ -39,6 +39,18 @@ export async function tradeRound(args: { wallet: string; action: "buy" | "sell";
   return res.json();
 }
 
+export type ParlayLegInput = { marketId: string; side: "YES" | "NO" };
+
+/** Place a native parlay from the vault into the live round. */
+export async function placeParlayApi(wallet: string, legs: ParlayLegInput[], stakeUsdc: number): Promise<{ round?: Round; entrant?: Entrant; error?: string }> {
+  const res = await fetch("/api/round/parlay", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ wallet, legs, stakeUsdc })
+  });
+  return res.json();
+}
+
 /** Host a rumble with an optional config (asset, format, entry, vault, players, rounds). */
 export async function newRound(config?: HostConfig): Promise<RoundView & { error?: string }> {
   const res = await fetch("/api/round", {

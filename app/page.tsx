@@ -2,8 +2,10 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { connectSolanaWallet, fetchCategories } from "@/lib/panta-client";
-import { getRound, enrollRound, tradeRound, newRound, type RoundView } from "@/lib/round-client";
+import { getRound, enrollRound, tradeRound, newRound, placeParlayApi, type RoundView } from "@/lib/round-client";
 import type { Entrant, Round } from "@/lib/royale";
+import { markets as boardMarkets } from "@/lib/arena-data";
+import { quoteParlay, PARLAY_MAX_LEGS, type ParlayLeg } from "@/lib/parlay";
 
 const usd = new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 0 });
 const usd2 = new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 2 });
@@ -43,6 +45,9 @@ export default function Home() {
   const [now, setNow] = useState(() => Date.now());
   const [amount, setAmount] = useState("100");
   const [side, setSide] = useState<"YES" | "NO">("YES");
+  const [betMode, setBetMode] = useState<"single" | "parlay">("single");
+  const [parlayLegs, setParlayLegs] = useState<{ marketId: string; side: "YES" | "NO" }[]>([]);
+  const [parlayStake, setParlayStake] = useState("5");
   const [busy, setBusy] = useState(false);
   const [toast, setToast] = useState("");
   const [showEnroll, setShowEnroll] = useState(false);
@@ -160,6 +165,46 @@ export default function Home() {
     } finally { setBusy(false); }
   }, [refresh]);
 
+  // ── parlay builder ────────────────────────────────────────────────
+  const toggleLeg = useCallback((marketId: string, legSide: "YES" | "NO") => {
+    setParlayLegs((prev) => {
+      const existing = prev.find((l) => l.marketId === marketId);
+      if (existing && existing.side === legSide) return prev.filter((l) => l.marketId !== marketId); // deselect
+      // Correlation block: at most one horizon per asset (shared correlationGroup).
+      const target = boardMarkets.find((m) => m.id === marketId);
+      const group = target?.correlationGroup;
+      const kept = prev.filter((l) => {
+        if (l.marketId === marketId) return false;
+        if (!group) return true;
+        const m = boardMarkets.find((b) => b.id === l.marketId);
+        return m?.correlationGroup !== group;
+      });
+      if (kept.length >= PARLAY_MAX_LEGS) { setToast(`Parlays cap at ${PARLAY_MAX_LEGS} legs.`); return prev; }
+      return [...kept, { marketId, side: legSide }];
+    });
+  }, []);
+
+  const parlayQuote = useMemo(() => {
+    const legs: ParlayLeg[] = parlayLegs.map((l) => {
+      const m = boardMarkets.find((b) => b.id === l.marketId)!;
+      return { marketId: l.marketId, side: l.side, question: m.question, price: l.side === "YES" ? m.yesPrice : 100 - m.yesPrice, correlationGroup: m.correlationGroup };
+    });
+    return quoteParlay(legs, Number(parlayStake) || 0);
+  }, [parlayLegs, parlayStake]);
+
+  const doPlaceParlay = useCallback(async () => {
+    if (!wallet || !enrolled) return setToast("Enroll in the round first.");
+    if (parlayLegs.length < 2) return setToast("Add at least 2 legs.");
+    const v = Number(parlayStake);
+    if (!v || v <= 0) return setToast("Enter a stake.");
+    setBusy(true);
+    try {
+      const r = await placeParlayApi(wallet, parlayLegs, v);
+      if (r.error) setToast(r.error);
+      else { setToast(`Parlay placed · ${parlayLegs.length} legs.`); setParlayLegs([]); await refresh(); }
+    } finally { setBusy(false); }
+  }, [wallet, enrolled, parlayLegs, parlayStake, refresh]);
+
   const doHost = useCallback(async () => {
     setBusy(true);
     try {
@@ -189,6 +234,8 @@ export default function Home() {
 
   const myMark = me ? (me.side === "YES" ? yesPrice : me.side === "NO" ? 100 - yesPrice : 0) : 0;
   const myPnl = me ? me.bankroll - (round?.config.startingBankroll ?? 0) : 0;
+  const openParlays = (me?.parlays ?? []).filter((p) => p.status === "open");
+  const openParlayPotential = openParlays.reduce((s, t) => s + t.potentialPayout, 0);
 
   return (
     <main>
@@ -326,32 +373,78 @@ export default function Home() {
                     <div><span>Vault</span><b>{usd2.format(me!.bankroll)}</b></div>
                     <div><span>Cash</span><b>{usd2.format(me!.cash)}</b></div>
                     <div><span>Position</span><b>{me!.side ? `${me!.shares.toFixed(1)} ${me!.side} @ ${me!.avgPrice.toFixed(0)}¢` : "—"}</b></div>
+                    <div><span>Parlays</span><b>{openParlays.length ? `${openParlays.length} · pays ${usd.format(openParlayPotential)}` : "—"}</b></div>
                     <div className={myPnl >= 0 ? "up" : "down"}><span>Vault P&amp;L</span><b>{myPnl >= 0 ? "+" : ""}{usd2.format(myPnl)}</b></div>
                   </div>
 
                   {round?.status === "live" ? (
                     <>
-                      <div className="sides">
-                        <button className={side === "YES" ? "side yes on" : "side yes"} onClick={() => setSide("YES")}>YES <b>{yesPrice}¢</b></button>
-                        <button className={side === "NO" ? "side no on" : "side no"} onClick={() => setSide("NO")}>NO <b>{100 - yesPrice}¢</b></button>
+                      <div className="bet-mode">
+                        <button className={betMode === "single" ? "bm on" : "bm"} onClick={() => setBetMode("single")}>Single trade</button>
+                        <button className={betMode === "parlay" ? "bm on" : "bm"} onClick={() => setBetMode("parlay")}>Parlay</button>
                       </div>
-                      <label className="field">
-                        Stake from your vault (USDC)
-                        <div className="field-input">
-                          <span className="curr">$</span>
-                          <input value={amount} onChange={(e) => setAmount(e.target.value.replace(/[^0-9.]/g, ""))} inputMode="decimal" />
-                          <button type="button" className="max" onClick={() => setAmount(String(Math.floor(me!.cash)))}>MAX</button>
+
+                      {betMode === "single" ? (
+                        <>
+                          <div className="sides">
+                            <button className={side === "YES" ? "side yes on" : "side yes"} onClick={() => setSide("YES")}>YES <b>{yesPrice}¢</b></button>
+                            <button className={side === "NO" ? "side no on" : "side no"} onClick={() => setSide("NO")}>NO <b>{100 - yesPrice}¢</b></button>
+                          </div>
+                          <label className="field">
+                            Stake from your vault (USDC)
+                            <div className="field-input">
+                              <span className="curr">$</span>
+                              <input value={amount} onChange={(e) => setAmount(e.target.value.replace(/[^0-9.]/g, ""))} inputMode="decimal" />
+                              <button type="button" className="max" onClick={() => setAmount(String(Math.floor(me!.cash)))}>MAX</button>
+                            </div>
+                          </label>
+                          <div className="summary">
+                            <span>Entry price</span><b>{side === "YES" ? yesPrice : 100 - yesPrice}¢</b>
+                            <span>Shares</span><b>{(Number(amount || 0) / ((side === "YES" ? yesPrice : 100 - yesPrice) / 100)).toFixed(1)}</b>
+                            <span>Payout if side wins</span><b className="accent">{usd.format(Number(amount || 0) / ((side === "YES" ? yesPrice : 100 - yesPrice) / 100))}</b>
+                          </div>
+                          <div className="trade-actions">
+                            <button className="btn primary full" onClick={doBuy} disabled={busy}>Buy {side}</button>
+                            <button className="btn secondary" onClick={doSell} disabled={busy || !me!.side}>Liquidate</button>
+                          </div>
+                        </>
+                      ) : (
+                        <div className="parlay-build">
+                          <p className="pb-hint">Stack BTC/ETH/SOL up-or-down calls into one bet. Every leg must land — longer odds, bigger payout. One horizon per asset.</p>
+                          <div className="pb-board">
+                            {boardMarkets.map((m) => {
+                              const sel = parlayLegs.find((l) => l.marketId === m.id);
+                              return (
+                                <div className="pb-mkt" key={m.id}>
+                                  <div className="pb-mkt-q"><b>{m.asset}</b> up in {m.horizon === "HOUR" ? "1h" : "1d"}?</div>
+                                  <div className="pb-mkt-sides">
+                                    <button className={sel?.side === "YES" ? "pb-side up on" : "pb-side up"} onClick={() => toggleLeg(m.id, "YES")}>UP {m.yesPrice}¢</button>
+                                    <button className={sel?.side === "NO" ? "pb-side down on" : "pb-side down"} onClick={() => toggleLeg(m.id, "NO")}>DN {100 - m.yesPrice}¢</button>
+                                  </div>
+                                </div>
+                              );
+                            })}
+                          </div>
+                          <label className="field">
+                            Stake from your vault (USDC)
+                            <div className="field-input">
+                              <span className="curr">$</span>
+                              <input value={parlayStake} onChange={(e) => setParlayStake(e.target.value.replace(/[^0-9.]/g, ""))} inputMode="decimal" />
+                              <button type="button" className="max" onClick={() => setParlayStake(String(Math.floor(me!.cash)))}>MAX</button>
+                            </div>
+                          </label>
+                          <div className="summary">
+                            <span>Legs</span><b>{parlayLegs.length}</b>
+                            <span>Combined odds</span><b>{parlayLegs.length >= 2 ? `${parlayQuote.impliedOdds.toFixed(2)}×` : "—"}</b>
+                            <span>Variance fee</span><b>{parlayLegs.length >= 2 ? usd2.format(parlayQuote.feeUsdc) : "—"}</b>
+                            <span>Pays if all land</span><b className="accent">{parlayLegs.length >= 2 ? usd.format(parlayQuote.potentialPayoutUsdc) : "—"}</b>
+                            <span>If one leg voids</span><b>{parlayLegs.length >= 2 ? usd.format(parlayQuote.halfPayoutIfOneVoidUsdc) : "—"}</b>
+                          </div>
+                          <button className="btn primary full" onClick={doPlaceParlay} disabled={busy || parlayLegs.length < 2}>
+                            {parlayLegs.length < 2 ? "Pick at least 2 legs" : `Place ${parlayLegs.length}-leg parlay`}
+                          </button>
                         </div>
-                      </label>
-                      <div className="summary">
-                        <span>Entry price</span><b>{side === "YES" ? yesPrice : 100 - yesPrice}¢</b>
-                        <span>Shares</span><b>{(Number(amount || 0) / ((side === "YES" ? yesPrice : 100 - yesPrice) / 100)).toFixed(1)}</b>
-                        <span>Payout if side wins</span><b className="accent">{usd.format(Number(amount || 0) / ((side === "YES" ? yesPrice : 100 - yesPrice) / 100))}</b>
-                      </div>
-                      <div className="trade-actions">
-                        <button className="btn primary full" onClick={doBuy} disabled={busy}>Buy {side}</button>
-                        <button className="btn secondary" onClick={doSell} disabled={busy || !me!.side}>Liquidate</button>
-                      </div>
+                      )}
                     </>
                   ) : (
                     <div className="enroll-cta"><p>You&apos;re in. Waiting for the round to go live — bots and rivals are locking in.</p></div>

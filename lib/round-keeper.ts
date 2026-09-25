@@ -21,6 +21,7 @@ import {
   markToMarket,
   normalizeConfig,
   settle,
+  type PriceMap,
   type Round,
   type RoundConfig
 } from "@/lib/royale";
@@ -116,6 +117,19 @@ export async function bootstrapRound(overrides?: Partial<RoundConfig>): Promise<
   return createRound(config, 1);
 }
 
+/**
+ * YES price (cents) for every board market, so multi-asset parlays can be
+ * valued and settled. The round's own market gets the live price; the other
+ * assets use the board's current prices. (A per-asset price oracle can enrich
+ * this later; the shape stays the same.)
+ */
+export function buildPriceMap(liveOverride?: { marketId: string; yesPrice: number }): PriceMap {
+  const map: PriceMap = {};
+  for (const m of directionMarkets) map[m.id] = m.yesPrice;
+  if (liveOverride) map[liveOverride.marketId] = liveOverride.yesPrice;
+  return map;
+}
+
 /** Pick the market for a specific asset if asked, else any of the three. */
 async function pickMarketForAsset(asset?: string): Promise<MarketPick | null> {
   if (!asset) return pickMarket();
@@ -134,7 +148,7 @@ async function pickMarketForAsset(asset?: string): Promise<MarketPick | null> {
  * run safely inside a locked transaction. If it transitions to `advancing`,
  * the caller spins up the next round via `advanceToNext`.
  */
-export function tick(round: Round, yesPrice: number): Round {
+export function tick(round: Round, yesPrice: number, priceMap?: PriceMap): Round {
   const now = Date.now();
 
   if (round.status === "enrolling" && now >= round.enrollDeadline) {
@@ -159,10 +173,10 @@ export function tick(round: Round, yesPrice: number): Round {
   if (round.status === "live") {
     for (const e of round.entrants) {
       if (e.isBot) botTick(e, yesPrice);
-      markToMarket(e, yesPrice);
+      markToMarket(e, yesPrice, priceMap);
     }
     if (now >= round.liveDeadline) {
-      settle(round, yesPrice);
+      settle(round, yesPrice, priceMap);
     }
   }
 
