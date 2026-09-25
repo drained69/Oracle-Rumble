@@ -157,6 +157,88 @@ export async function mutateActiveRound(
   }
 }
 
+/**
+ * Keeper context — reads/writes bound to one locked transaction so the
+ * whole tick/bootstrap/advance sequence is atomic.
+ */
+export type KeeperCtx = {
+  getActive: () => Promise<Round | null>;
+  getLatest: () => Promise<Round | null>;
+  save: (r: Round) => Promise<void>;
+  /** Retire any active round other than `keepId` (cleans forked zombies). */
+  cancelOtherActive: (keepId: string) => Promise<void>;
+};
+
+/**
+ * Run the keeper under a global advisory lock so only one tick executes at
+ * a time across all concurrent /api/round reads. Fetch any external data
+ * (Panta price, market pick) BEFORE calling this — the lock is held only
+ * for the fast DB ops inside `fn`.
+ */
+export async function withKeeperLock<T>(fn: (ctx: KeeperCtx) => Promise<T>): Promise<T> {
+  if (!STORE_ENABLED) {
+    return fn({
+      getActive: async () => memActive(),
+      getLatest: async () => memLatest(),
+      save: async (r) => { memSave(r); },
+      cancelOtherActive: async (keepId) => {
+        for (const r of _mem.values()) {
+          if (r.id !== keepId && ["enrolling", "live", "settling", "advancing"].includes(r.status)) {
+            r.status = "cancelled";
+            if (!r.endedAt) r.endedAt = Date.now();
+          }
+        }
+      }
+    });
+  }
+  await initSchema();
+  const client = await pool().connect();
+  try {
+    await client.query("BEGIN");
+    await client.query("SELECT pg_advisory_xact_lock($1)", [4242]); // global keeper lock
+    const ctx: KeeperCtx = {
+      getActive: async () => {
+        const { rows } = await client.query(
+          `SELECT data FROM rounds WHERE status = ANY($1) ORDER BY created_at DESC LIMIT 1`, [ACTIVE]
+        );
+        return rows[0]?.data ?? null;
+      },
+      getLatest: async () => {
+        const { rows } = await client.query(`SELECT data FROM rounds ORDER BY created_at DESC LIMIT 1`);
+        return rows[0]?.data ?? null;
+      },
+      save: async (r) => {
+        await client.query(
+          `INSERT INTO rounds (id, status, round_no, data, created_at, updated_at)
+             VALUES ($1,$2,$3,$4,$5, now())
+           ON CONFLICT (id) DO UPDATE SET status=EXCLUDED.status, round_no=EXCLUDED.round_no, data=EXCLUDED.data, updated_at=now()`,
+          [r.id, r.status, r.roundNumber, JSON.stringify(r), r.createdAt]
+        );
+      },
+      cancelOtherActive: async (keepId) => {
+        // Mark forked/zombie active rounds cancelled + stamp endedAt in the JSON.
+        await client.query(
+          `UPDATE rounds
+              SET status='cancelled',
+                  data = jsonb_set(jsonb_set(data, '{status}', '"cancelled"'),
+                                   '{endedAt}', to_jsonb((extract(epoch from now())*1000)::bigint), true),
+                  updated_at = now()
+            WHERE status = ANY($1) AND id <> $2`,
+          [ACTIVE, keepId]
+        );
+      }
+    };
+    const result = await fn(ctx);
+    await client.query("COMMIT");
+    return result;
+  } catch (e) {
+    await client.query("ROLLBACK").catch(() => {});
+    throw e;
+  } finally {
+    client.release();
+  }
+}
+
 export async function recentRounds(limit = 10): Promise<Round[]> {
   if (!STORE_ENABLED) return [..._mem.values()].sort((a, b) => b.createdAt - a.createdAt).slice(0, limit);
   await initSchema();

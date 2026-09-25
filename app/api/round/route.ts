@@ -1,49 +1,63 @@
 import { NextResponse } from "next/server";
-import { STORE_ENABLED, getActiveRound, getLatestRound, saveRound } from "@/lib/round-store";
-export const dynamic = "force-dynamic";
-import { advanceToNext, bootstrapRound, marketYesPrice, tick } from "@/lib/round-keeper";
+import { STORE_ENABLED, getActiveRound, saveRound, withKeeperLock } from "@/lib/round-store";
+import { advanceToNext, bootstrapRound, marketYesPrice, pickMarket, tick } from "@/lib/round-keeper";
 import { cutLine, standings, type Round } from "@/lib/royale";
+
+export const dynamic = "force-dynamic";
+
+const HOLD_MS = 20_000; // keep a finished round on screen this long
 
 /**
  * GET /api/round
  *
  * Returns the current round with live standings. Runs the keeper on every
  * read: bootstraps a round if none exists, fills bots + opens the window at
- * lock, lets bots trade, settles + advances when timers expire. Idempotent.
+ * lock, lets bots trade, settles + advances when timers expire.
  *
- * Response: { round, yesPrice, cutLine, standings, persisted }
+ * The whole tick/bootstrap/advance sequence runs under a global advisory
+ * lock (withKeeperLock) so concurrent reads can't fork the round. External
+ * I/O — the live Panta price and market selection — is fetched BEFORE the
+ * lock so the lock is held only for fast DB ops.
  */
 async function currentWithTick(): Promise<Round | null> {
-  const HOLD_MS = 20_000; // keep a finished round on screen this long
-  let round = await getActiveRound();
-  if (!round) {
-    const latest = await getLatestRound();
-    if (latest && (latest.status === "complete" || latest.status === "cancelled")) {
-      // Hold the result on screen briefly so players see the outcome, then
-      // auto-open the next lobby.
-      if (latest.endedAt && Date.now() - latest.endedAt < HOLD_MS) {
-        return latest;
-      }
-      const fresh = await bootstrapRound();
-      if (fresh) { await saveRound(fresh); round = fresh; }
-      else round = latest;
-    } else {
-      const fresh = await bootstrapRound();
-      if (fresh) { await saveRound(fresh); round = fresh; }
-    }
-  }
-  if (!round) return null;
+  // Phase 1 — unlocked peek + external I/O (kept out of the lock).
+  const peek = await getActiveRound();
+  const priceMarketId = peek?.config.marketId;
+  const yesPrice = priceMarketId ? await marketYesPrice(priceMarketId) : 50;
+  // Only pre-fetch a next market when the round could actually advance.
+  const mayAdvance = peek?.status === "live";
+  const nextMarket = mayAdvance ? await pickMarket(priceMarketId) : null;
+  // Only pre-build a boot round when nothing is active.
+  const bootRound = peek ? null : await bootstrapRound();
 
-  round = await tick(round);
-  if (round.status === "advancing") {
-    const next = await advanceToNext(round);
-    await saveRound(round);   // persist the settled round
-    await saveRound(next);    // and the promoted one
-    round = next;
-  } else {
-    await saveRound(round);
-  }
-  return round;
+  // Phase 2 — locked, atomic keeper.
+  return withKeeperLock(async (ctx) => {
+    let round = await ctx.getActive();
+    if (!round) {
+      const latest = await ctx.getLatest();
+      if (latest && (latest.status === "complete" || latest.status === "cancelled")
+          && latest.endedAt && Date.now() - latest.endedAt < HOLD_MS) {
+        return latest; // hold the result on screen briefly
+      }
+      if (bootRound) { await ctx.save(bootRound); await ctx.cancelOtherActive(bootRound.id); return bootRound; }
+      return latest ?? null;
+    }
+
+    // Retire any older forked/zombie active rounds so only this one is live.
+    await ctx.cancelOtherActive(round.id);
+
+    tick(round, yesPrice);
+    if (round.status === "advancing") {
+      const next = advanceToNext(round, nextMarket);
+      await ctx.save(round);   // persist the settled round
+      await ctx.save(next);    // and the promoted one
+      await ctx.cancelOtherActive(next.id);
+      round = next;
+    } else {
+      await ctx.save(round);
+    }
+    return round;
+  });
 }
 
 export async function GET() {

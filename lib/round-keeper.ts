@@ -77,16 +77,15 @@ export async function bootstrapRound(overrides?: Partial<RoundConfig>): Promise<
 }
 
 /**
- * Advance a round in place based on wall-clock time. Returns the (possibly
- * mutated) round; if it transitions to `advancing`, the caller should spin
- * up the next round via `advanceToNext`.
+ * Advance a round in place based on wall-clock time. Pure/synchronous — the
+ * live YES price is passed in (fetched before the keeper lock) so this can
+ * run safely inside a locked transaction. If it transitions to `advancing`,
+ * the caller spins up the next round via `advanceToNext`.
  */
-export async function tick(round: Round): Promise<Round> {
+export function tick(round: Round, yesPrice: number): Round {
   const now = Date.now();
 
   if (round.status === "enrolling" && now >= round.enrollDeadline) {
-    // A round needs at least one real player — otherwise cancel rather than
-    // run a bots-only match.
     if (humanCount(round) === 0) {
       round.status = "cancelled";
       round.endedAt = now;
@@ -106,27 +105,24 @@ export async function tick(round: Round): Promise<Round> {
   }
 
   if (round.status === "live") {
-    const yes = await marketYesPrice(round.config.marketId);
     for (const e of round.entrants) {
-      if (e.isBot) botTick(e, yes);
-      markToMarket(e, yes);
+      if (e.isBot) botTick(e, yesPrice);
+      markToMarket(e, yesPrice);
     }
     if (now >= round.liveDeadline) {
-      settle(round, yes);
+      settle(round, yesPrice);
     }
   }
 
   return round;
 }
 
-/** Given a settled `advancing` round, build the next round on a new market. */
-export async function advanceToNext(round: Round): Promise<Round> {
-  const market = await pickMarket(round.config.marketId);
-  const next = advance(round, market ?? {
+/** Build the next round from a settled `advancing` round on a pre-picked market. */
+export function advanceToNext(round: Round, nextMarket: { marketId: string; marketQuestion: string; category: string; asset: string } | null): Round {
+  return advance(round, nextMarket ?? {
     marketId: round.config.marketId,
     marketQuestion: round.config.marketQuestion,
     category: round.config.category,
     asset: round.config.asset
   });
-  return next;
 }
