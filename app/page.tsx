@@ -231,8 +231,8 @@ export default function Home() {
             <p className="eyebrow">Round {round.roundNumber} · final</p>
             <h1>{standings[0] ? `${standings[0].nickname} takes the pool` : "Round complete"}</h1>
             <p className="lead">
-              {standings[0] ? `${usd.format(round.prizePoolUsdc)} paid to the last survivor.` : "No survivors."}
-              {" "}Ties broke to earliest entry.
+              {standings[0] ? `${usd.format(round.prizePoolUsdc)} pool to the last survivor.` : "No survivors."}
+              {" "}Everyone cashes out their remaining vault. Ties broke to earliest entry.
             </p>
             <button className="btn primary" onClick={startNew} disabled={busy}>Open a new arena →</button>
             <div className="final-board">
@@ -264,7 +264,9 @@ export default function Home() {
                 <div className="enroll-cta">
                   {round?.status === "enrolling" ? (
                     <>
-                      <p>Enter the arena for <b>{usd.format(round.config.entryUsdc)}</b>. Every entrant starts with the same <b>{usd.format(round.config.startingBankroll)}</b> bankroll. Trade the market, outlast the cut, take the pool.</p>
+                      <p>
+                        Your seat is <b>{usd.format(round.config.entryUsdc + round.config.startingBankroll)}</b>: <b>{usd.format(round.config.entryUsdc)}</b> entry into the shared pool plus a <b>{usd.format(round.config.startingBankroll)}</b> trading vault that&apos;s yours to cash out. Everyone starts equal — trade the market, outlast the cut, win the pool.
+                      </p>
                       <button className="btn primary" onClick={() => (wallet ? setShowEnroll(true) : connect())} disabled={busy}>
                         {wallet ? "Enter the arena" : "Connect to enter"}
                       </button>
@@ -276,10 +278,10 @@ export default function Home() {
               ) : (
                 <>
                   <div className="vault">
-                    <div><span>Bankroll</span><b>{usd2.format(me!.bankroll)}</b></div>
+                    <div><span>Vault</span><b>{usd2.format(me!.bankroll)}</b></div>
                     <div><span>Cash</span><b>{usd2.format(me!.cash)}</b></div>
                     <div><span>Position</span><b>{me!.side ? `${me!.shares.toFixed(1)} ${me!.side} @ ${me!.avgPrice.toFixed(0)}¢` : "—"}</b></div>
-                    <div className={myPnl >= 0 ? "up" : "down"}><span>Round P&amp;L</span><b>{myPnl >= 0 ? "+" : ""}{usd2.format(myPnl)}</b></div>
+                    <div className={myPnl >= 0 ? "up" : "down"}><span>Vault P&amp;L</span><b>{myPnl >= 0 ? "+" : ""}{usd2.format(myPnl)}</b></div>
                   </div>
 
                   {round?.status === "live" ? (
@@ -289,7 +291,7 @@ export default function Home() {
                         <button className={side === "NO" ? "side no on" : "side no"} onClick={() => setSide("NO")}>NO <b>{100 - yesPrice}¢</b></button>
                       </div>
                       <label className="field">
-                        Stake from bankroll (USDC)
+                        Stake from your vault (USDC)
                         <div className="field-input">
                           <span className="curr">$</span>
                           <input value={amount} onChange={(e) => setAmount(e.target.value.replace(/[^0-9.]/g, ""))} inputMode="decimal" />
@@ -353,17 +355,17 @@ export default function Home() {
       <section className="how-shell" id="how">
         <h2>How the arena works</h2>
         <div className="how-grid">
-          <div><b>1 · Enter</b><p>Deposit the entry fee. Every entrant gets the same isolated starting bankroll.</p></div>
-          <div><b>2 · Trade</b><p>Buy YES or NO on the round&apos;s live Panta market. Bankroll marks to the live price.</p></div>
-          <div><b>3 · Settle</b><p>When the window closes the oracle price ranks everyone by final bankroll.</p></div>
-          <div><b>4 · Cut</b><p>The bottom half is eliminated. Survivors advance to a fresh market.</p></div>
-          <div><b>5 · Win</b><p>Last survivor — or the top of the final round — takes the entry pool.</p></div>
-          <div><b>Fair play</b><p>Ties break to earliest entry. Bots fill empty seats so the loop always runs.</p></div>
+          <div><b>1 · One seat, two purposes</b><p>Your deposit splits: a small entry joins the shared prize pool, the rest becomes your own trading vault.</p></div>
+          <div><b>2 · Everyone starts equal</b><p>Same entry, same starting vault. Nobody begins with more trading money than you.</p></div>
+          <div><b>3 · Trade the same market</b><p>Buy YES or NO on the round&apos;s live market. Your vault grows or falls with your trades.</p></div>
+          <div><b>4 · The oracle ranks vaults</b><p>When the market closes, winning shares become cash and everyone is ranked by vault value.</p></div>
+          <div><b>5 · The bottom half is cut</b><p>Survivors keep going to a fresh market until one remains or the round limit is hit.</p></div>
+          <div><b>6 · Cash out &amp; win</b><p>Everyone withdraws their remaining vault. Top finishers also share the prize pool.</p></div>
         </div>
         <p className="disclaimer">
-          Rounds, bankrolls, elimination and the prize pool are real server-side game state on Postgres, priced by
-          live Panta markets on Solana {CLUSTER}. On-chain entry-fee escrow via an Anchor TraderVault is the next
-          milestone — until then the pool is a ledger figure.
+          Rounds, vaults, elimination and the prize pool are real server-side game state on Postgres, priced by
+          live Panta markets on Solana {CLUSTER}. Bots fill empty seats. On-chain vault escrow via an Anchor
+          program is the next milestone — until then vaults and the pool are ledger figures.
         </p>
       </section>
 
@@ -373,16 +375,18 @@ export default function Home() {
         <div className="modal-backdrop" onClick={() => setShowEnroll(false)}>
           <div className="modal" onClick={(e) => e.stopPropagation()}>
             <button className="close" onClick={() => setShowEnroll(false)} aria-label="Close">×</button>
-            <h2>Enter the arena</h2>
-            <p className="sub">Round {round.roundNumber} · entry {usd.format(round.config.entryUsdc)} · bankroll {usd.format(round.config.startingBankroll)} · {round.config.asset}</p>
+            <h2>Take your seat</h2>
+            <p className="sub">
+              {usd.format(round.config.entryUsdc)} entry → pool &nbsp;+&nbsp; {usd.format(round.config.startingBankroll)} vault → yours to trade &nbsp;=&nbsp; <b>{usd.format(round.config.entryUsdc + round.config.startingBankroll)} total</b>
+            </p>
             <label>
               Callsign
               <input value={nickname} onChange={(e) => setNickname(e.target.value)} placeholder={shortPk(wallet ?? "")} maxLength={16} />
             </label>
             <button className="btn primary full" onClick={doEnroll} disabled={busy} style={{ marginTop: 8 }}>
-              {busy ? "Entering…" : `Enter for ${usd.format(round.config.entryUsdc)}`}
+              {busy ? "Entering…" : `Lock in ${usd.format(round.config.entryUsdc + round.config.startingBankroll)}`}
             </button>
-            <p className="disclaimer" style={{ marginTop: 12 }}>Entry is ledgered to the prize pool. On-chain escrow ships with the TraderVault program.</p>
+            <p className="disclaimer" style={{ marginTop: 12 }}>Entry funds the pool; the vault stays yours to trade and withdraw. On-chain escrow ships with the vault program.</p>
           </div>
         </div>
       )}

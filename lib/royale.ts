@@ -74,13 +74,16 @@ export type Round = {
 
 // ── defaults ──────────────────────────────────────────────────────────
 
+// Market-Royale seat model: every player funds one combined deposit that
+// splits into an ENTRY (→ shared prize pool) and a starting VAULT (their own
+// real trading balance, withdrawn at the end). startingBankroll IS the vault.
 export const DEFAULT_CONFIG: RoundConfig = {
   marketId: "",
   marketQuestion: "",
   category: "crypto",
   asset: "SOL",
-  entryUsdc: 25,
-  startingBankroll: 1000,
+  entryUsdc: 2,          // → shared prize pool
+  startingBankroll: 10,  // → your isolated trading vault (real, withdrawable)
   capacity: 8,
   minEntrants: 2,
   enrollmentSec: 30,
