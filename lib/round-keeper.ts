@@ -26,18 +26,32 @@ import {
   type RoundConfig
 } from "@/lib/royale";
 
-/** Live YES price (cents 0..100) for a market. Panta first, then mock. */
+/**
+ * Normalize a Panta YES price to cents (0..100). Panta returns a decimal like
+ * "0.50" (= 50%); some responses may already be in cents. Clamped to 1..99.
+ */
+export function pantaPriceToCents(raw: number | string | undefined): number {
+  const n = typeof raw === "number" ? raw : parseFloat(String(raw ?? "0.5"));
+  const cents = n > 1 ? Math.round(n) : Math.round(n * 100);
+  return Math.max(1, Math.min(99, cents));
+}
+
+/**
+ * Live YES price (cents 0..100) for a market. Our own BTC/ETH/SOL board
+ * markets are synthetic (not on Panta), so they're priced from the board —
+ * querying the Panta sandbox for them returns a 50¢ fixture for ANY id, which
+ * would flatten every asset. Only real Panta market ids hit Panta.
+ */
 export async function marketYesPrice(marketId: string): Promise<number> {
+  const local = findMockMarket(marketId);
+  if (local && assetOfMarketId(marketId)) return local.market.yesPrice;
   if (PANTA_LIVE) {
     try {
       const m = await pantaFetch<PantaMarket & { yesPrice?: number | string }>(`/markets/${encodeURIComponent(marketId)}`);
-      const raw = (m as { yesPrice?: number | string }).yesPrice;
-      const n = typeof raw === "number" ? raw : parseFloat(String(raw ?? "0.5"));
-      return Math.max(1, Math.min(99, n > 1 ? Math.round(n) : Math.round(n * 100)));
+      return pantaPriceToCents((m as { yesPrice?: number | string }).yesPrice);
     } catch { /* fall through */ }
   }
-  const hit = findMockMarket(marketId);
-  return hit ? hit.market.yesPrice : 50;
+  return local ? local.market.yesPrice : 50;
 }
 
 type MarketPick = { marketId: string; marketQuestion: string; category: string; asset: string };

@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { getActiveRound, mutateActiveRound } from "@/lib/round-store";
 import { markToMarket, placeParlay, standings, type ParlayLegState, type ParlayTicket } from "@/lib/royale";
-import { buildPriceMap, marketYesPrice } from "@/lib/round-keeper";
+import { buildPriceMap, marketYesPrice, pantaPriceToCents } from "@/lib/round-keeper";
 import { quoteParlay, validateParlay, type ParlayLeg } from "@/lib/parlay";
 import { findMockMarket } from "@/lib/arena-data";
 import { assetOfMarketId } from "@/lib/assets";
@@ -30,32 +30,38 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: "stakeUsdc > 0 required" }, { status: 400 });
   }
 
-  // Refresh each leg's price + metadata from the market layer.
+  // Refresh each leg's price + metadata. Our own BTC/ETH/SOL board markets are
+  // synthetic — price them from the board, never the Panta sandbox (which
+  // returns a 50¢ fixture for any id). Only real Panta ids hit Panta.
   const refreshed: ParlayLeg[] = [];
   const legState: ParlayLegState[] = [];
   for (const leg of body.legs) {
     let question = "";
-    let price = 50;
+    let yes = 50;
     let correlationGroup: string | undefined;
-    let asset = assetOfMarketId(leg.marketId) ?? "";
+    let asset: string = assetOfMarketId(leg.marketId) ?? "";
 
-    let live: PantaMarket | null = null;
-    if (PANTA_LIVE) {
-      try { live = await pantaFetch<PantaMarket>(`/markets/${encodeURIComponent(leg.marketId)}`); }
-      catch { live = null; }
-    }
-    if (live) {
-      question = live.question;
-      price = leg.side === "YES" ? live.yesPrice : 100 - live.yesPrice;
+    const local = findMockMarket(leg.marketId);
+    if (local && assetOfMarketId(leg.marketId)) {
+      question = local.market.question;
+      correlationGroup = local.market.correlationGroup;
+      asset = local.market.asset;
+      yes = local.market.yesPrice;
+    } else if (PANTA_LIVE) {
+      try {
+        const live = await pantaFetch<PantaMarket & { yesPrice?: number | string }>(`/markets/${encodeURIComponent(leg.marketId)}`);
+        question = live.question;
+        yes = pantaPriceToCents(live.yesPrice);
+      } catch {
+        if (!local) return NextResponse.json({ error: `market not found: ${leg.marketId}` }, { status: 404 });
+        question = local.market.question; correlationGroup = local.market.correlationGroup; asset = local.market.asset; yes = local.market.yesPrice;
+      }
     } else {
-      const hit = findMockMarket(leg.marketId);
-      if (!hit) return NextResponse.json({ error: `market not found: ${leg.marketId}` }, { status: 404 });
-      question = hit.market.question;
-      correlationGroup = hit.market.correlationGroup;
-      asset = hit.market.asset;
-      price = leg.side === "YES" ? hit.market.yesPrice : 100 - hit.market.yesPrice;
+      if (!local) return NextResponse.json({ error: `market not found: ${leg.marketId}` }, { status: 404 });
+      question = local.market.question; correlationGroup = local.market.correlationGroup; asset = local.market.asset; yes = local.market.yesPrice;
     }
 
+    const price = leg.side === "YES" ? yes : 100 - yes;
     refreshed.push({ marketId: leg.marketId, side: leg.side, question, price, correlationGroup });
     legState.push({ marketId: leg.marketId, asset: String(asset), question, side: leg.side, entryPrice: price });
   }
