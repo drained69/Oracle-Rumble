@@ -46,6 +46,13 @@ export default function Home() {
   const [busy, setBusy] = useState(false);
   const [toast, setToast] = useState("");
   const [showEnroll, setShowEnroll] = useState(false);
+  const [showHost, setShowHost] = useState(false);
+  const [hAsset, setHAsset] = useState<"BTC" | "ETH" | "SOL">("SOL");
+  const [hFormat, setHFormat] = useState<"single" | "royale">("royale");
+  const [hRounds, setHRounds] = useState(3);
+  const [hCapacity, setHCapacity] = useState(8);
+  const [hEntry, setHEntry] = useState("2");
+  const [hVault, setHVault] = useState("10");
   const pollRef = useRef<number | null>(null);
 
   // ── boot ──────────────────────────────────────────────────────────
@@ -153,6 +160,29 @@ export default function Home() {
     } finally { setBusy(false); }
   }, [refresh]);
 
+  const doHost = useCallback(async () => {
+    setBusy(true);
+    try {
+      const v = await newRound({
+        asset: hAsset,
+        format: hFormat,
+        entryUsdc: Number(hEntry) || 1,
+        startingBankroll: Number(hVault) || 5,
+        capacity: hCapacity,
+        roundLimit: hFormat === "royale" ? hRounds : 1,
+        host: wallet ?? ""
+      });
+      if (v.error) { setToast(v.error); await refresh(); }
+      else {
+        setView(v);
+        setShowHost(false);
+        setToast(`Rumble hosted · ${hAsset} · ${hFormat === "single" ? "single round" : `${hRounds} rounds`}`);
+      }
+    } finally { setBusy(false); }
+  }, [hAsset, hFormat, hEntry, hVault, hCapacity, hRounds, wallet, refresh]);
+
+  const hostSeat = (Number(hEntry) || 0) + (Number(hVault) || 0);
+
   const sourceBadge = dataSource === "panta"
     ? { text: `LIVE · ${CLUSTER}`, cls: "src live" }
     : dataSource === "mock" ? { text: "DEMO", cls: "src demo" } : { text: "…", cls: "src pending" };
@@ -179,6 +209,7 @@ export default function Home() {
         </div>
         <div className="hud-right">
           <span className={sourceBadge.cls}>{sourceBadge.text}</span>
+          <button className="btn host-btn" onClick={() => setShowHost(true)}>+ Host a rumble</button>
           <button className={wallet ? "wallet connected" : "wallet"} onClick={connect}>
             <span className="avatar">{wallet ? wallet.slice(0, 2).toUpperCase() : "?"}</span>
             {wallet ? shortPk(wallet) : "Connect"}
@@ -228,22 +259,33 @@ export default function Home() {
       <section className="arena-shell" id="arena">
         {round?.status === "complete" ? (
           <div className="champion">
-            <p className="eyebrow">Round {round.roundNumber} · final</p>
-            <h1>{standings[0] ? `${standings[0].nickname} takes the pool` : "Round complete"}</h1>
-            <p className="lead">
-              {standings[0] ? `${usd.format(round.prizePoolUsdc)} pool to the last survivor.` : "No survivors."}
-              {" "}Everyone cashes out their remaining vault. Ties broke to earliest entry.
-            </p>
-            <button className="btn primary" onClick={startNew} disabled={busy}>Open a new arena →</button>
-            <div className="final-board">
-              {standings.map((e) => (
-                <div key={e.id} className={`fb-row ${e.wallet === wallet ? "me" : ""}`}>
-                  <span className="fb-rank">{e.rank ?? "—"}</span>
-                  <span className="fb-name">{e.nickname}{e.isBot ? " ·bot" : ""}</span>
-                  <span className="fb-bank">{usd2.format(e.bankroll)}</span>
-                </div>
-              ))}
-            </div>
+            {(() => {
+              const champ = standings.find((e) => e.id === round.championId) ?? standings[0] ?? null;
+              const paid = [...standings].filter((e) => e.prizeUsdc > 0).sort((a, b) => b.prizeUsdc - a.prizeUsdc);
+              return (
+                <>
+                  <p className="eyebrow">{round.config.format === "single" ? "Single round" : `Round ${round.roundNumber}`} · final</p>
+                  <h1>{champ ? `${champ.nickname} wins ${usd2.format(champ.prizeUsdc)}` : "Rumble complete"}</h1>
+                  <p className="lead">
+                    {paid.length > 1
+                      ? `${usd.format(round.prizePoolUsdc)} pool split across the top ${paid.length}.`
+                      : `${usd.format(round.prizePoolUsdc)} pool to the winner.`}
+                    {" "}Everyone withdraws their remaining vault; winners also take the pool share.
+                  </p>
+                  <button className="btn primary" onClick={() => setShowHost(true)} disabled={busy}>Host the next rumble →</button>
+                  <div className="final-board">
+                    {standings.map((e, i) => (
+                      <div key={e.id} className={`fb-row ${e.wallet === wallet ? "me" : ""}`}>
+                        <span className="fb-rank">{i + 1}</span>
+                        <span className="fb-name">{e.nickname}{e.isBot ? " ·bot" : ""}</span>
+                        <span className="fb-bank">{usd2.format(e.bankroll)}</span>
+                        <span className="fb-prize">{e.prizeUsdc > 0 ? `+${usd2.format(e.prizeUsdc)}` : ""}</span>
+                      </div>
+                    ))}
+                  </div>
+                </>
+              );
+            })()}
           </div>
         ) : (
           <div className="cockpit">
@@ -267,9 +309,12 @@ export default function Home() {
                       <p>
                         Your seat is <b>{usd.format(round.config.entryUsdc + round.config.startingBankroll)}</b>: <b>{usd.format(round.config.entryUsdc)}</b> entry into the shared pool plus a <b>{usd.format(round.config.startingBankroll)}</b> trading vault that&apos;s yours to cash out. Everyone starts equal — trade the market, outlast the cut, win the pool.
                       </p>
-                      <button className="btn primary" onClick={() => (wallet ? setShowEnroll(true) : connect())} disabled={busy}>
-                        {wallet ? "Enter the arena" : "Connect to enter"}
-                      </button>
+                      <div className="cta-row">
+                        <button className="btn primary" onClick={() => (wallet ? setShowEnroll(true) : connect())} disabled={busy}>
+                          {wallet ? "Enter the arena" : "Connect to enter"}
+                        </button>
+                        <button className="btn secondary" onClick={() => setShowHost(true)} disabled={busy}>Host your own</button>
+                      </div>
                     </>
                   ) : (
                     <p>This round is <b>{STATUS_LABEL[round?.status ?? ""]?.toLowerCase()}</b>. Enrollment is closed — the next arena opens when this one settles.</p>
@@ -355,17 +400,18 @@ export default function Home() {
       <section className="how-shell" id="how">
         <h2>How the arena works</h2>
         <div className="how-grid">
-          <div><b>1 · One seat, two purposes</b><p>Your deposit splits: a small entry joins the shared prize pool, the rest becomes your own trading vault.</p></div>
-          <div><b>2 · Everyone starts equal</b><p>Same entry, same starting vault. Nobody begins with more trading money than you.</p></div>
-          <div><b>3 · Trade the same market</b><p>Buy YES or NO on the round&apos;s live market. Your vault grows or falls with your trades.</p></div>
-          <div><b>4 · The oracle ranks vaults</b><p>When the market closes, winning shares become cash and everyone is ranked by vault value.</p></div>
-          <div><b>5 · The bottom half is cut</b><p>Survivors keep going to a fresh market until one remains or the round limit is hit.</p></div>
-          <div><b>6 · Cash out &amp; win</b><p>Everyone withdraws their remaining vault. Top finishers also share the prize pool.</p></div>
+          <div><b>1 · Host chooses the game</b><p>The host picks BTC, ETH or SOL, the player limit, the entry, the starting vault, and one to four rounds.</p></div>
+          <div><b>2 · Everyone funds the same seat</b><p>Same entry, same starting vault. Nobody can begin with more trading money than you.</p></div>
+          <div><b>3 · Entry and vault separate</b><p>Your entry joins the shared prize pool. Your starting vault stays in your own game account to trade.</p></div>
+          <div><b>4 · Trade the same market</b><p>Everyone trades UP and DOWN on the same live market. Buy, sell, or hold cash until it closes.</p></div>
+          <div><b>5 · The oracle ranks every vault</b><p>Winning shares become USDC and players are ranked by vault value. In a royale the bottom half is cut and survivors keep the bankroll they earned.</p></div>
+          <div><b>6 · Winners claim &amp; progress</b><p>Everyone withdraws their remaining vault. Top finishers share the pool — 62.5% / 23.4% / 14.1%, or the whole pool in a duel.</p></div>
         </div>
         <p className="disclaimer">
           Rounds, vaults, elimination and the prize pool are real server-side game state on Postgres, priced by
-          live Panta markets on Solana {CLUSTER}. Bots fill empty seats. On-chain vault escrow via an Anchor
-          program is the next milestone — until then vaults and the pool are ledger figures.
+          live Panta markets on Solana {CLUSTER}. Bots fill empty seats. Player funds are held in a non-custodial
+          escrow program on Solana {CLUSTER} — testnet USDC has no monetary value. If a game can&apos;t finish,
+          recovery lets players reclaim their entry and remaining vault.
         </p>
       </section>
 
@@ -386,7 +432,80 @@ export default function Home() {
             <button className="btn primary full" onClick={doEnroll} disabled={busy} style={{ marginTop: 8 }}>
               {busy ? "Entering…" : `Lock in ${usd.format(round.config.entryUsdc + round.config.startingBankroll)}`}
             </button>
-            <p className="disclaimer" style={{ marginTop: 12 }}>Entry funds the pool; the vault stays yours to trade and withdraw. On-chain escrow ships with the vault program.</p>
+            <p className="disclaimer" style={{ marginTop: 12 }}>Entry funds the pool; the vault stays yours to trade and withdraw. Funds are held in a non-custodial escrow program on {CLUSTER}.</p>
+          </div>
+        </div>
+      )}
+
+      {showHost && (
+        <div className="modal-backdrop" onClick={() => setShowHost(false)}>
+          <div className="modal host-modal" onClick={(e) => e.stopPropagation()}>
+            <button className="close" onClick={() => setShowHost(false)} aria-label="Close">×</button>
+            <h2>Host a rumble</h2>
+            <p className="sub">You set the terms. Every player funds the same seat — you can&apos;t hand anyone a bigger vault.</p>
+
+            <div className="host-field">
+              <span className="host-label">Asset</span>
+              <div className="seg">
+                {(["BTC", "ETH", "SOL"] as const).map((a) => (
+                  <button key={a} className={hAsset === a ? "seg-opt on" : "seg-opt"} onClick={() => setHAsset(a)}>{a}</button>
+                ))}
+              </div>
+            </div>
+
+            <div className="host-field">
+              <span className="host-label">Format</span>
+              <div className="seg">
+                <button className={hFormat === "single" ? "seg-opt on" : "seg-opt"} onClick={() => setHFormat("single")}>Single round</button>
+                <button className={hFormat === "royale" ? "seg-opt on" : "seg-opt"} onClick={() => setHFormat("royale")}>Royale</button>
+              </div>
+            </div>
+
+            {hFormat === "royale" && (
+              <div className="host-field">
+                <span className="host-label">Rounds</span>
+                <div className="seg">
+                  {[2, 3, 4].map((n) => (
+                    <button key={n} className={hRounds === n ? "seg-opt on" : "seg-opt"} onClick={() => setHRounds(n)}>{n}</button>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            <div className="host-field">
+              <span className="host-label">Player limit</span>
+              <div className="seg">
+                {[2, 4, 8, 12, 16].map((n) => (
+                  <button key={n} className={hCapacity === n ? "seg-opt on" : "seg-opt"} onClick={() => setHCapacity(n)}>{n}</button>
+                ))}
+              </div>
+            </div>
+
+            <div className="host-2col">
+              <label className="host-num">
+                Entry (USDC)
+                <input value={hEntry} onChange={(e) => setHEntry(e.target.value.replace(/[^0-9.]/g, ""))} inputMode="decimal" />
+                <em>→ shared pool</em>
+              </label>
+              <label className="host-num">
+                Starting vault (USDC)
+                <input value={hVault} onChange={(e) => setHVault(e.target.value.replace(/[^0-9.]/g, ""))} inputMode="decimal" />
+                <em>→ each player trades</em>
+              </label>
+            </div>
+
+            <div className="host-summary">
+              <div><span>Seat per player</span><b>{usd2.format(hostSeat)}</b></div>
+              <div><span>Pool if full</span><b className="accent">{usd2.format((Number(hEntry) || 0) * hCapacity)}</b></div>
+              <div><span>Format</span><b>{hFormat === "single" ? "1 round" : `${hRounds} rounds · cut`}</b></div>
+            </div>
+
+            <button className="btn primary full" onClick={doHost} disabled={busy} style={{ marginTop: 12 }}>
+              {busy ? "Opening…" : `Host ${hAsset} rumble`}
+            </button>
+            <p className="disclaimer" style={{ marginTop: 10 }}>
+              Opens enrollment for a new rumble. If a rumble is already live or players have joined, yours starts when it settles.
+            </p>
           </div>
         </div>
       )}

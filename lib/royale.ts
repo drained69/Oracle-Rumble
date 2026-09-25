@@ -41,21 +41,102 @@ export type Entrant = {
   avgPrice: number;       // cents, cost basis of current position
   eliminatedRound: number | null;
   rank: number | null;    // filled at settlement
+  prizeUsdc: number;      // prize-pool share won at the final (0 until then)
 };
+
+/**
+ * Single Round is a quick match — one market, one settlement, pay the top
+ * finishers. Royale is 2–4 rounds — each settlement cuts the bottom half and
+ * survivors carry the bankroll they earned into the next round.
+ */
+export type RoundFormat = "single" | "royale";
 
 export type RoundConfig = {
   marketId: string;
   marketQuestion: string;
   category: string;
   asset: string;          // display label, e.g. "SOL" / "BTC"
-  entryUsdc: number;      // entry fee everyone pays
-  startingBankroll: number;
-  capacity: number;       // max entrants
+  format: RoundFormat;    // single quick match or multi-round royale
+  host: string;           // wallet that configured the rumble, or "" (auto)
+  entryUsdc: number;      // entry fee everyone pays → shared prize pool
+  startingBankroll: number; // starting trading vault everyone gets
+  capacity: number;       // max entrants (player limit)
   minEntrants: number;    // below this at lock → cancel/refund
   enrollmentSec: number;  // enrollment window
   liveSec: number;        // trading window per round
-  roundLimit: number;     // max rounds before forced finish
+  roundLimit: number;     // rounds before forced finish (1 for single, 2–4 royale)
 };
+
+// Host-configurable bounds. The host picks values inside these; the engine
+// clamps anything out of range so a malformed config can't grief the arena.
+export const HOST_LIMITS = {
+  entryUsdc: { min: 1, max: 100 },
+  startingBankroll: { min: 5, max: 500 },
+  capacity: { min: 2, max: 16 },
+  royaleRounds: { min: 2, max: 4 },
+  enrollmentSec: { min: 20, max: 300 },
+  liveSec: { min: 60, max: 900 }
+} as const;
+
+const clamp = (n: number, lo: number, hi: number) =>
+  Math.min(hi, Math.max(lo, Math.round(Number.isFinite(n) ? n : lo)));
+
+/**
+ * Sanitize a host-supplied config into a safe RoundConfig. Every player gets
+ * the SAME entry and the SAME starting vault — a host can never hand anyone a
+ * bigger vault, which is the core fairness rule of Market Royale.
+ */
+export function normalizeConfig(base: RoundConfig, patch: Partial<RoundConfig>): RoundConfig {
+  const format: RoundFormat = patch.format === "single" ? "single" : patch.format === "royale" ? "royale" : base.format;
+  const L = HOST_LIMITS;
+  const capacity = clamp(patch.capacity ?? base.capacity, L.capacity.min, L.capacity.max);
+  const roundLimit = format === "single"
+    ? 1
+    : clamp(patch.roundLimit ?? base.roundLimit, L.royaleRounds.min, L.royaleRounds.max);
+  return {
+    ...base,
+    ...patch,
+    format,
+    entryUsdc: clamp(patch.entryUsdc ?? base.entryUsdc, L.entryUsdc.min, L.entryUsdc.max),
+    startingBankroll: clamp(patch.startingBankroll ?? base.startingBankroll, L.startingBankroll.min, L.startingBankroll.max),
+    capacity,
+    minEntrants: clamp(patch.minEntrants ?? base.minEntrants, 2, capacity),
+    enrollmentSec: clamp(patch.enrollmentSec ?? base.enrollmentSec, L.enrollmentSec.min, L.enrollmentSec.max),
+    liveSec: clamp(patch.liveSec ?? base.liveSec, L.liveSec.min, L.liveSec.max),
+    roundLimit
+  };
+}
+
+// Market-Royale prize split of the shared pool among the top finishers.
+// A 2-player game is a duel — winner takes the whole pool. With 3+ funded
+// players the pool splits 62.5% / 23.4375% / 14.0625%, and 1st absorbs any
+// rounding remainder. The arena takes no cut.
+const SPLIT_3 = [0.625, 0.234375, 0.140625] as const;
+
+/**
+ * Distribute `prizePoolUsdc` across the ranked winners (rank 1 first).
+ * `fundedPlayers` is how many real players funded the pool — it decides
+ * whether this is a duel (1 paid place) or a 3-way split. Works in integer
+ * micro-USDC so the parts always re-sum to the pool exactly.
+ */
+export function computePayouts(prizePoolUsdc: number, rankedWinnerIds: string[], fundedPlayers: number): Record<string, number> {
+  const pool = Math.max(0, Math.round(prizePoolUsdc * 1e6)); // micro-USDC
+  const out: Record<string, number> = {};
+  if (pool === 0 || rankedWinnerIds.length === 0) return out;
+  if (fundedPlayers <= 2) {
+    out[rankedWinnerIds[0]] = pool / 1e6;
+    return out;
+  }
+  const places = Math.min(3, rankedWinnerIds.length);
+  let assigned = 0;
+  for (let i = 1; i < places; i++) {
+    const part = Math.floor(pool * SPLIT_3[i]);
+    out[rankedWinnerIds[i]] = part / 1e6;
+    assigned += part;
+  }
+  out[rankedWinnerIds[0]] = (pool - assigned) / 1e6; // 1st gets the remainder
+  return out;
+}
 
 export type Round = {
   id: string;
@@ -82,6 +163,8 @@ export const DEFAULT_CONFIG: RoundConfig = {
   marketQuestion: "",
   category: "crypto",
   asset: "SOL",
+  format: "royale",
+  host: "",
   entryUsdc: 2,          // → shared prize pool
   startingBankroll: 10,  // → your isolated trading vault (real, withdrawable)
   capacity: 8,
@@ -132,7 +215,8 @@ export function makeEntrant(round: Round, wallet: string, nickname: string, isBo
     side: null,
     avgPrice: 0,
     eliminatedRound: null,
-    rank: null
+    rank: null,
+    prizeUsdc: 0
   };
 }
 
@@ -266,17 +350,60 @@ export function settle(round: Round, finalYesPrice: number): void {
   if (survivors.length <= 1 || round.roundNumber >= round.config.roundLimit) {
     round.status = "complete";
     round.endedAt = Date.now();
-    round.championId = survivors[0]?.id ?? null;
-    const champ = survivors[0];
-    round.history.push(champ ? `${champ.nickname} wins the pool of ${round.prizePoolUsdc} USDC.` : `Round complete.`);
+    // Overall finishing order across ALL entrants, then split the shared pool
+    // among the top HUMAN finishers (bots are sponsor-backed seat fillers and
+    // never take real prize money).
+    const order = finishingOrder(round);
+    const humanWinners = order.filter((e) => !e.isBot).map((e) => e.id);
+    const funded = round.config.entryUsdc > 0
+      ? Math.round(round.prizePoolUsdc / round.config.entryUsdc)
+      : humanWinners.length;
+    const payouts = computePayouts(round.prizePoolUsdc, humanWinners.slice(0, 3), funded);
+    for (const e of round.entrants) e.prizeUsdc = payouts[e.id] ?? 0;
+    round.championId = humanWinners[0] ?? survivors[0]?.id ?? null;
+    const champ = round.entrants.find((e) => e.id === round.championId);
+    const champPrize = champ ? (payouts[champ.id] ?? 0) : 0;
+    round.history.push(champ
+      ? `${champ.nickname} takes ${champPrize.toFixed(2)} USDC of the ${round.prizePoolUsdc} USDC pool.`
+      : `Round complete.`);
   } else {
     round.status = "advancing";
   }
 }
 
 /**
- * Promote survivors into a fresh round on a new market, resetting bankrolls
- * to the starting stack and carrying the prize pool forward.
+ * Overall finishing order across every entrant: survivors first, then whoever
+ * was cut later, then higher final bankroll, then earlier entry. Used to award
+ * the prize split at the final.
+ */
+export function finishingOrder(round: Round): Entrant[] {
+  return [...round.entrants].sort((a, b) => {
+    const aAlive = a.eliminatedRound === null;
+    const bAlive = b.eliminatedRound === null;
+    if (aAlive !== bAlive) return aAlive ? -1 : 1;
+    if (!aAlive && !bAlive && a.eliminatedRound !== b.eliminatedRound) {
+      return b.eliminatedRound! - a.eliminatedRound!; // cut later = better finish
+    }
+    return (b.bankroll - a.bankroll) || (a.joinedAt - b.joinedAt);
+  });
+}
+
+/**
+ * What a player can withdraw from escrow. Mid-game: nothing. At the final:
+ * their remaining vault plus any prize share. On recovery (cancelled): their
+ * entry back plus whatever vault remains — the Market Royale fair-play rule.
+ */
+export function entitlementUsdc(round: Round, e: Entrant): number {
+  if (e.isBot) return 0;
+  if (round.status === "cancelled") return round.config.entryUsdc + e.cash;
+  if (round.status === "complete") return e.cash + e.prizeUsdc;
+  return 0;
+}
+
+/**
+ * Promote survivors into a fresh round on a new market. Survivors CARRY the
+ * bankroll they earned into the next round (Market Royale rule) — they do not
+ * reset to the starting stack. The prize pool carries forward untouched.
  */
 export function advance(round: Round, nextMarket: { marketId: string; marketQuestion: string; category: string; asset: string }): Round {
   const survivors = round.entrants.filter((e) => e.eliminatedRound === null);
@@ -287,12 +414,13 @@ export function advance(round: Round, nextMarket: { marketId: string; marketQues
     status: "live",
     entrants: survivors.map((e) => ({
       ...e,
-      bankroll: round.config.startingBankroll,
-      cash: round.config.startingBankroll,
+      bankroll: e.cash,   // carry forward the vault they earned
+      cash: e.cash,
       shares: 0,
       side: null,
       avgPrice: 0,
-      rank: null
+      rank: null,
+      prizeUsdc: 0
     })),
     prizePoolUsdc: round.prizePoolUsdc,
     createdAt: Date.now(),

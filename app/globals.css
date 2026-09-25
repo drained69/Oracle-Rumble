@@ -259,12 +259,39 @@ main { min-height: 100vh; }
 .champion h1 { font-size: clamp(30px, 5vw, 46px); font-weight: 800; color: var(--ink); margin: 10px 0 14px; }
 .champion .lead { color: var(--ink-2); font-weight: 600; margin: 0 0 20px; }
 .final-board { margin-top: 26px; background: #fff; border: 2px solid var(--line); border-radius: 18px; overflow: hidden; text-align: left; box-shadow: var(--shadow); }
-.fb-row { display: grid; grid-template-columns: 44px 1fr auto; gap: 12px; padding: 12px 18px; border-bottom: 1px solid var(--line); align-items: center; }
+.fb-row { display: grid; grid-template-columns: 44px 1fr auto 84px; gap: 12px; padding: 12px 18px; border-bottom: 1px solid var(--line); align-items: center; }
 .fb-row:last-child { border-bottom: 0; }
 .fb-row.me { background: #eef4ff; }
 .fb-rank { font-family: 'Baloo 2', sans-serif; font-weight: 800; color: var(--yellow); text-align: center; font-size: 18px; }
 .fb-name { font-weight: 800; color: var(--ink); }
 .fb-bank { font-family: 'Baloo 2', sans-serif; font-weight: 800; color: var(--ink); }
+.fb-prize { font-family: 'Baloo 2', sans-serif; font-weight: 800; color: var(--green-d); text-align: right; font-size: 14px; }
+
+/* ── host a rumble ─────────────────────────────────────── */
+.host-btn { background: linear-gradient(180deg, #ff9a5a, var(--orange)); color: #fff; padding: 8px 16px; font-size: 14px; }
+.host-btn:hover { filter: brightness(1.05); }
+.cta-row { display: flex; gap: 10px; flex-wrap: wrap; justify-content: center; }
+.host-modal { width: min(520px, 100%); }
+.host-field { display: grid; gap: 8px; margin-bottom: 16px; }
+.host-label { font-family: 'Baloo 2', sans-serif; font-weight: 700; font-size: 12px; color: var(--ink-2); text-transform: uppercase; letter-spacing: .4px; }
+.seg { display: flex; gap: 6px; flex-wrap: wrap; }
+.seg-opt {
+  flex: 1; min-width: 52px; padding: 10px 12px; border-radius: 12px; cursor: pointer;
+  background: var(--card-2); border: 2px solid var(--line-2); color: var(--ink-2);
+  font-family: 'Baloo 2', sans-serif; font-weight: 800; font-size: 14px;
+}
+.seg-opt:hover { border-color: var(--blue); }
+.seg-opt.on { background: linear-gradient(180deg, #4a84ff, var(--blue)); color: #fff; border-color: var(--blue-d); }
+.host-2col { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 8px; }
+.host-num { display: grid; gap: 6px; font-family: 'Baloo 2', sans-serif; font-weight: 600; font-size: 12px; color: var(--ink-2); }
+.host-num input { background: var(--card-2); border: 2px solid var(--line-2); border-radius: 12px; padding: 12px 14px; color: var(--ink); outline: 0; font-weight: 800; font-size: 18px; font-family: 'Baloo 2', sans-serif; }
+.host-num input:focus { border-color: var(--blue); }
+.host-num em { font-style: normal; color: var(--muted); font-size: 11px; font-weight: 700; }
+.host-summary { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; margin-top: 14px; }
+.host-summary > div { background: var(--card-2); border: 2px solid var(--line); border-radius: 12px; padding: 10px 12px; display: grid; gap: 3px; text-align: center; }
+.host-summary span { font-size: 11px; color: var(--ink-2); font-weight: 700; text-transform: uppercase; letter-spacing: .3px; }
+.host-summary b { font-family: 'Baloo 2', sans-serif; font-weight: 800; font-size: 16px; color: var(--ink); }
+.host-summary b.accent { color: var(--blue); }
 
 /* ── how it works ─────────────────────────────────────────────────── */
 

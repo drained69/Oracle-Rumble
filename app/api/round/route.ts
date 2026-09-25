@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
-import { STORE_ENABLED, getActiveRound, saveRound, withKeeperLock } from "@/lib/round-store";
+import { STORE_ENABLED, getActiveRound, withKeeperLock } from "@/lib/round-store";
 import { advanceToNext, bootstrapRound, marketYesPrice, pickMarket, tick } from "@/lib/round-keeper";
-import { cutLine, standings, type Round } from "@/lib/royale";
+import { cutLine, humanCount, standings, type Round } from "@/lib/royale";
 
 export const dynamic = "force-dynamic";
 
@@ -82,25 +82,43 @@ export async function GET() {
 
 /**
  * POST /api/round  { action: "new", config? }
- * Force a fresh round (host action). Optional config overrides.
+ *
+ * Host a rumble. A host configures the next rumble (asset, format, entry,
+ * vault, capacity, rounds). Hosting is allowed when nothing is active, or when
+ * the current round is still an EMPTY enrolling lobby (no humans have joined) —
+ * in which case the host's config replaces the auto-opened lobby. A rumble that
+ * players have already joined, or one that's live, can't be hijacked (409)
+ * unless forced with the ROUND_HOST_SECRET.
  */
 export async function POST(request: Request) {
   const body = (await request.json().catch(() => ({}))) as { action?: string; config?: Record<string, unknown>; force?: boolean };
-  if (body.action === "new") {
-    // Guard against griefing: don't blow away an in-progress round. Only
-    // open a fresh one when nothing is active (or when a host explicitly
-    // forces it with the ROUND_HOST_SECRET).
-    const active = await getActiveRound();
-    const forceOk = body.force === true && !!process.env.ROUND_HOST_SECRET
-      && request.headers.get("x-host-secret") === process.env.ROUND_HOST_SECRET;
-    if (active && !forceOk) {
-      return NextResponse.json({ error: "a round is already active", round: active }, { status: 409 });
-    }
-    const fresh = await bootstrapRound(body.config as never);
-    if (!fresh) return NextResponse.json({ error: "no market available" }, { status: 503 });
-    await saveRound(fresh);
-    const yesPrice = await marketYesPrice(fresh.config.marketId);
-    return NextResponse.json({ round: fresh, yesPrice, cutLine: cutLine(fresh), standings: standings(fresh), persisted: STORE_ENABLED });
+  if (body.action !== "new") {
+    return NextResponse.json({ error: "unknown action" }, { status: 400 });
   }
-  return NextResponse.json({ error: "unknown action" }, { status: 400 });
+
+  const forceOk = body.force === true && !!process.env.ROUND_HOST_SECRET
+    && request.headers.get("x-host-secret") === process.env.ROUND_HOST_SECRET;
+
+  // Build the fresh round OUTSIDE the lock (external I/O: market pick).
+  const fresh = await bootstrapRound(body.config as never);
+  if (!fresh) return NextResponse.json({ error: "no market available" }, { status: 503 });
+
+  const result = await withKeeperLock(async (ctx) => {
+    const active = await ctx.getActive();
+    if (active && !forceOk) {
+      const emptyLobby = active.status === "enrolling" && humanCount(active) === 0;
+      if (!emptyLobby) {
+        return { conflict: active } as const;
+      }
+    }
+    await ctx.save(fresh);
+    await ctx.cancelOtherActive(fresh.id); // retire the auto lobby / zombies
+    return { round: fresh } as const;
+  });
+
+  if ("conflict" in result) {
+    return NextResponse.json({ error: "a rumble is already in progress", round: result.conflict }, { status: 409 });
+  }
+  const yesPrice = await marketYesPrice(fresh.config.marketId);
+  return NextResponse.json({ round: fresh, yesPrice, cutLine: cutLine(fresh), standings: standings(fresh), persisted: STORE_ENABLED });
 }

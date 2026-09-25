@@ -19,6 +19,7 @@ import {
   fillWithBots,
   humanCount,
   markToMarket,
+  normalizeConfig,
   settle,
   type Round,
   type RoundConfig
@@ -91,19 +92,40 @@ export async function pickMarket(excludeId?: string): Promise<MarketPick | null>
   };
 }
 
-/** Bootstrap a fresh enrolling round on a chosen market. */
+/**
+ * Bootstrap a fresh enrolling round. A host can pass config overrides (asset,
+ * format, entry, vault, capacity, rounds); they're clamped to safe bounds by
+ * normalizeConfig. If the host picked an asset, we run on that asset's market;
+ * otherwise the keeper picks one.
+ */
 export async function bootstrapRound(overrides?: Partial<RoundConfig>): Promise<Round | null> {
-  const market = await pickMarket();
+  const wantAsset = overrides?.asset ? String(overrides.asset).toUpperCase() : undefined;
+  const market = await pickMarketForAsset(wantAsset);
   if (!market) return null;
-  const config: RoundConfig = {
+  const base: RoundConfig = {
     ...DEFAULT_CONFIG,
     marketId: market.marketId,
     marketQuestion: market.marketQuestion,
     category: market.category,
-    asset: market.asset,
-    ...overrides
+    asset: market.asset
   };
+  // Market fields are authoritative; host overrides shape the rules only.
+  const { marketId: _m, marketQuestion: _q, category: _c, asset: _a, ...rules } = overrides ?? {};
+  void _m; void _q; void _c; void _a;
+  const config = normalizeConfig(base, rules);
   return createRound(config, 1);
+}
+
+/** Pick the market for a specific asset if asked, else any of the three. */
+async function pickMarketForAsset(asset?: string): Promise<MarketPick | null> {
+  if (!asset) return pickMarket();
+  const want = asset.toUpperCase();
+  // Prefer a live/mock market on the requested asset.
+  const direct = directionMarkets.find((m) => m.asset === want);
+  if (direct) {
+    return { marketId: direct.id, marketQuestion: direct.question, category: direct.category, asset: direct.asset };
+  }
+  return pickMarket();
 }
 
 /**
