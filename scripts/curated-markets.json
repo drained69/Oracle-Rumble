@@ -1,0 +1,74 @@
+[
+  {
+    "question": "Will Bitcoin close above $150,000 by end of 2026?",
+    "category": "crypto",
+    "asset": "BTC",
+    "resolutionRule": "Resolves YES if BTC/USD closing price on Coinbase is >= $150,000 at 23:59 UTC on Dec 31, 2026. Coinbase daily close is the source of truth; Binance BTC/USDT is the tiebreaker.",
+    "sourcesOfTruth": [
+      "https://www.coinbase.com/price/bitcoin",
+      "https://www.binance.com/en/trade/BTC_USDT"
+    ],
+    "imageUrl": "https://placehold.co/512x512/0b0d14/f7931a/png?text=BTC",
+    "endTime": "2026-12-31T23:59:00Z"
+  },
+  {
+    "question": "Will Bitcoin set a new all-time high in 2026?",
+    "category": "crypto",
+    "asset": "BTC",
+    "resolutionRule": "Resolves YES if BTC/USD trades strictly above its previous all-time high (INDEX:BTCUSD on TradingView) at any moment before Dec 31 2026 23:59 UTC.",
+    "sourcesOfTruth": [
+      "https://www.tradingview.com/symbols/BTCUSD/",
+      "https://www.coinbase.com/price/bitcoin"
+    ],
+    "imageUrl": "https://placehold.co/512x512/0b0d14/f7931a/png?text=BTC",
+    "endTime": "2026-12-31T23:59:00Z"
+  },
+  {
+    "question": "Will Ethereum close above $6,000 by end of 2026?",
+    "category": "crypto",
+    "asset": "ETH",
+    "resolutionRule": "Resolves YES if ETH/USD closing price on Coinbase is >= $6,000 at 23:59 UTC on Dec 31, 2026. Coinbase daily close is the source of truth; Binance ETH/USDT is the tiebreaker.",
+    "sourcesOfTruth": [
+      "https://www.coinbase.com/price/ethereum",
+      "https://www.binance.com/en/trade/ETH_USDT"
+    ],
+    "imageUrl": "https://placehold.co/512x512/0b0d14/627eea/png?text=ETH",
+    "endTime": "2026-12-31T23:59:00Z"
+  },
+  {
+    "question": "Will Ethereum outperform Bitcoin in Q4 2026?",
+    "category": "crypto",
+    "asset": "ETH",
+    "resolutionRule": "Resolves YES if ETH/USD percentage return exceeds BTC/USD percentage return over Q4 2026 (Oct 1 00:00 UTC open to Dec 31 23:59 UTC close, Coinbase prices).",
+    "sourcesOfTruth": [
+      "https://www.coinbase.com/price/ethereum",
+      "https://www.coinbase.com/price/bitcoin"
+    ],
+    "imageUrl": "https://placehold.co/512x512/0b0d14/627eea/png?text=ETH",
+    "endTime": "2026-12-31T23:59:00Z"
+  },
+  {
+    "question": "Will Solana close above $400 by end of 2026?",
+    "category": "crypto",
+    "asset": "SOL",
+    "resolutionRule": "Resolves YES if SOL/USD closing price on Coinbase is >= $400 at 23:59 UTC on Dec 31, 2026. Coinbase daily close is the source of truth; Binance SOL/USDT is the tiebreaker.",
+    "sourcesOfTruth": [
+      "https://www.coinbase.com/price/solana",
+      "https://www.binance.com/en/trade/SOL_USDT"
+    ],
+    "imageUrl": "https://placehold.co/512x512/0b0d14/14f195/png?text=SOL",
+    "endTime": "2026-12-31T23:59:00Z"
+  },
+  {
+    "question": "Will Solana flip Ethereum in daily DEX volume before 2027?",
+    "category": "crypto",
+    "asset": "SOL",
+    "resolutionRule": "Resolves YES if Solana's 24h DEX volume (DefiLlama) exceeds Ethereum's 24h DEX volume on any single UTC day before Jan 1 2027.",
+    "sourcesOfTruth": [
+      "https://defillama.com/dexs/chains/solana",
+      "https://defillama.com/dexs/chains/ethereum"
+    ],
+    "imageUrl": "https://placehold.co/512x512/0b0d14/14f195/png?text=SOL",
+    "endTime": "2026-12-31T23:59:00Z"
+  }
+]

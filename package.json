@@ -6,11 +6,15 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "tsc --noEmit"
+    "lint": "tsc --noEmit",
+    "seed:devnet": "node scripts/seed-markets.mjs",
+    "seed:dry": "node scripts/seed-markets.mjs --dry"
   },
   "dependencies": {
     "@solana/web3.js": "^1.99.0",
+    "@types/pg": "^8.23.1",
     "next": "15.5.26",
+    "pg": "^8.23.0",
     "react": "19.1.1",
     "react-dom": "19.1.1"
   },

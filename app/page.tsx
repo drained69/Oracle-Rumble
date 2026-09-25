@@ -1,1153 +1,605 @@
 "use client";
 
-import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import {
-  arenas as seedArenas,
-  players,
-  type Arena,
-  type Market,
-  type Position,
-  type StoredParlay
-} from "@/lib/arena-data";
-import {
-  buildClaim,
-  buildOrder,
-  connectSolanaWallet,
-  fetchCategories,
-  fetchMarketTrades,
-  fetchPositions,
-  marketCreateBuild,
-  marketCreateQuote,
-  marketCreateRegister,
-  quoteOrder,
-  quoteParlayLive,
-  reportTrade,
-  signAndBroadcast,
-  submitOrder,
-  verifyOrder
-} from "@/lib/panta-client";
-import type { PantaPosition } from "@/lib/panta";
-import {
-  PARLAY_MAX_LEGS,
-  PARLAY_MIN_LEGS,
-  quoteParlay,
-  validateAddLeg,
-  type ParlayLeg,
-  type ParlayQuote
-} from "@/lib/parlay";
-import { mockPubkey } from "@/lib/panta";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { connectSolanaWallet, fetchCategories } from "@/lib/panta-client";
+import { getRound, enrollRound, tradeRound, newRound, placeParlayApi, type RoundView } from "@/lib/round-client";
+import type { Entrant, Round } from "@/lib/royale";
+import { markets as boardMarkets } from "@/lib/arena-data";
+import { quoteParlay, PARLAY_MAX_LEGS, type ParlayLeg } from "@/lib/parlay";
 
 const usd = new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 0 });
 const usd2 = new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 2 });
 
-const STORAGE_KEY = "oracle-rumble/state/v3";
+const WALLET_KEY = "oracle-rumble/wallet/v1";
+const CLUSTER = (process.env.NEXT_PUBLIC_SOLANA_CLUSTER ?? "devnet").toLowerCase();
 
-type Persisted = {
-  walletAddress: string | null;
-  walletKind: "phantom" | "demo" | null;
-  positions: Position[];
-  hosted: string[];
-  parlays: StoredParlay[];
-};
-
-function loadPersisted(): Persisted {
-  const empty: Persisted = { walletAddress: null, walletKind: null, positions: [], hosted: [], parlays: [] };
-  if (typeof window === "undefined") return empty;
-  try {
-    const raw = window.localStorage.getItem(STORAGE_KEY);
-    if (!raw) return empty;
-    const p = JSON.parse(raw);
-    return {
-      walletAddress: typeof p.walletAddress === "string" ? p.walletAddress : null,
-      walletKind: p.walletKind === "phantom" || p.walletKind === "demo" ? p.walletKind : null,
-      positions: Array.isArray(p.positions) ? p.positions : [],
-      hosted: Array.isArray(p.hosted) ? p.hosted : [],
-      parlays: Array.isArray(p.parlays) ? p.parlays : []
-    };
-  } catch {
-    return empty;
-  }
-}
-
-function formatCountdown(ms: number) {
-  if (ms <= 0) return "CLOSED";
-  const s = Math.floor(ms / 1000);
-  const d = Math.floor(s / 86400);
-  const h = Math.floor((s % 86400) / 3600);
-  const m = Math.floor((s % 3600) / 60);
-  const sec = s % 60;
-  if (d > 0) return `${d}D ${h}H ${m}M`;
-  if (h > 0) return `${h}H ${m}M ${sec}S`;
-  return `${m}M ${sec}S`;
-}
-
-function shortenPk(pk: string) {
+function shortPk(pk: string) {
   if (!pk) return "";
-  if (pk.length <= 12) return pk;
+  if (pk.startsWith("bot:")) return pk.slice(4).toUpperCase();
+  if (pk.length <= 10) return pk;
   return `${pk.slice(0, 4)}…${pk.slice(-4)}`;
 }
 
-function realmSigil(id: string) {
-  // Deterministic little rune for each realm.
-  switch (id) {
-    case "solana-signals": return "◈";
-    case "fight-night": return "⚔";
-    case "shipmas": return "⛨";
-    default: return "❖";
-  }
+function fmtClock(ms: number) {
+  if (ms <= 0) return "0:00";
+  const s = Math.floor(ms / 1000);
+  const m = Math.floor(s / 60);
+  const sec = s % 60;
+  return `${m}:${String(sec).padStart(2, "0")}`;
 }
 
-function realmClass(id: string) {
-  switch (id) {
-    case "solana-signals": return "MAGE · SIGNAL RUNE";
-    case "fight-night": return "WARRIOR · BLOOD CIRCLE";
-    case "shipmas": return "ARCHITECT · SIEGE RING";
-    default: return "WANDERER · OPEN RING";
-  }
-}
+const STATUS_LABEL: Record<string, string> = {
+  enrolling: "Enrolling",
+  live: "Live",
+  settling: "Settling",
+  advancing: "Advancing",
+  complete: "Complete",
+  cancelled: "Cancelled"
+};
 
 export default function Home() {
-  // Persisted state — hydrated on mount to avoid SSR mismatch.
-  const [walletAddress, setWalletAddress] = useState<string | null>(null);
-  const [walletKind, setWalletKind] = useState<"phantom" | "demo" | null>(null);
-  const [positions, setPositions] = useState<Position[]>([]);
-  const [hosted, setHosted] = useState<string[]>([]);
-  const [parlays, setParlays] = useState<StoredParlay[]>([]);
-  const [hydrated, setHydrated] = useState(false);
-
-  // Arenas + live prices.
-  const [arenas, setArenas] = useState<Arena[]>(() => seedArenas.map((a) => ({ ...a, markets: a.markets.map((m) => ({ ...m })) })));
-  const [activeArenaId, setActiveArenaId] = useState<string>(seedArenas[0].id);
-  const activeArena = useMemo(() => arenas.find((a) => a.id === activeArenaId) ?? arenas[0], [arenas, activeArenaId]);
-
-  const deadlinesRef = useRef<Record<string, number>>({});
-  const [now, setNow] = useState<number>(() => (typeof performance !== "undefined" ? Date.now() : 0));
-
-  const [activeMarketId, setActiveMarketId] = useState<string>(seedArenas[0].markets[0].id);
-  const activeMarket: Market = useMemo(
-    () => activeArena.markets.find((m) => m.id === activeMarketId) ?? activeArena.markets[0],
-    [activeArena, activeMarketId]
-  );
-  const [side, setSide] = useState<"YES" | "NO">("YES");
-  const [amount, setAmount] = useState("25");
-  const [categoryFilter, setCategoryFilter] = useState<string>("All");
-  const [trading, setTrading] = useState(false);
-
-  const [slipLegs, setSlipLegs] = useState<ParlayLeg[]>([]);
-  const [slipStake, setSlipStake] = useState("10");
-  const [slipOpen, setSlipOpen] = useState(false);
-  const [placingParlay, setPlacingParlay] = useState(false);
-
-  const [serverQuote, setServerQuote] = useState<ParlayQuote | null>(null);
-  const [quoting, setQuoting] = useState(false);
-
+  const [wallet, setWallet] = useState<string | null>(null);
+  const [nickname, setNickname] = useState("");
+  const [view, setView] = useState<RoundView | null>(null);
   const [dataSource, setDataSource] = useState<"panta" | "mock" | "unknown">("unknown");
-
-  // Live market trade tape for the active market (Panta /markets/{id}/trades).
-  type MarketTrade = { signature: string; side: "YES" | "NO"; shares: number; priceCents: number; usdcAmount: string; wallet: string; ts: string };
-  const [marketTrades, setMarketTrades] = useState<MarketTrade[]>([]);
-
-  // Panta-authoritative positions when a wallet is connected.
-  const [remotePositions, setRemotePositions] = useState<PantaPosition[]>([]);
-
+  const [now, setNow] = useState(() => Date.now());
+  const [amount, setAmount] = useState("100");
+  const [side, setSide] = useState<"YES" | "NO">("YES");
+  const [betMode, setBetMode] = useState<"single" | "parlay">("single");
+  const [parlayLegs, setParlayLegs] = useState<{ marketId: string; side: "YES" | "NO" }[]>([]);
+  const [parlayStake, setParlayStake] = useState("5");
+  const [busy, setBusy] = useState(false);
   const [toast, setToast] = useState("");
+  const [showEnroll, setShowEnroll] = useState(false);
   const [showHost, setShowHost] = useState(false);
-  const [hosting, setHosting] = useState(false);
+  const [hAsset, setHAsset] = useState<"BTC" | "ETH" | "SOL">("SOL");
+  const [hFormat, setHFormat] = useState<"single" | "royale">("royale");
+  const [hRounds, setHRounds] = useState(3);
+  const [hCapacity, setHCapacity] = useState(8);
+  const [hEntry, setHEntry] = useState("2");
+  const [hVault, setHVault] = useState("10");
+  const pollRef = useRef<number | null>(null);
 
-  // ---- lifecycle -----------------------------------------------------
-
+  // ── boot ──────────────────────────────────────────────────────────
   useEffect(() => {
-    const p = loadPersisted();
-    setWalletAddress(p.walletAddress);
-    setWalletKind(p.walletKind);
-    setPositions(p.positions);
-    setHosted(p.hosted);
-    setParlays(p.parlays);
-    const t = Date.now();
-    setNow(t);
-    const deadlines: Record<string, number> = {};
-    for (const a of seedArenas) deadlines[a.id] = t + a.endsInMs;
-    deadlinesRef.current = deadlines;
-    setHydrated(true);
-
-    fetchCategories()
-      .then((c) => setDataSource(c.source === "panta" ? "panta" : "mock"))
-      .catch(() => setDataSource("mock"));
-  }, []);
-
-  useEffect(() => {
-    if (!hydrated || typeof window === "undefined") return;
     try {
-      const payload: Persisted = { walletAddress, walletKind, positions, hosted, parlays };
-      window.localStorage.setItem(STORAGE_KEY, JSON.stringify(payload));
+      const w = localStorage.getItem(WALLET_KEY);
+      if (w) setWallet(w);
     } catch { /* ignore */ }
-  }, [walletAddress, walletKind, positions, hosted, parlays, hydrated]);
+    fetchCategories().then((c) => setDataSource(c.source === "panta" ? "panta" : "mock")).catch(() => setDataSource("mock"));
+  }, []);
 
-  useEffect(() => {
-    const id = window.setInterval(() => {
-      setArenas((prev) => prev.map((arena) => ({
-        ...arena,
-        markets: arena.markets.map((m) => {
-          const delta = Math.round((Math.random() - 0.5) * 4);
-          const next = Math.min(96, Math.max(4, m.yesPrice + delta));
-          return { ...m, yesPrice: next, change: m.change + delta };
-        })
-      })));
-    }, 4000);
-    return () => window.clearInterval(id);
+  // ── round polling (drives the keeper) ─────────────────────────────
+  const refresh = useCallback(async () => {
+    try { setView(await getRound()); } catch { /* transient */ }
   }, []);
 
   useEffect(() => {
-    const id = window.setInterval(() => setNow(Date.now()), 1000);
+    refresh();
+    pollRef.current = window.setInterval(refresh, 3000);
+    return () => { if (pollRef.current) window.clearInterval(pollRef.current); };
+  }, [refresh]);
+
+  useEffect(() => {
+    const id = window.setInterval(() => setNow(Date.now()), 500);
     return () => window.clearInterval(id);
   }, []);
 
   useEffect(() => {
     if (!toast) return;
-    const id = window.setTimeout(() => setToast(""), 4200);
+    const id = window.setTimeout(() => setToast(""), 4000);
     return () => window.clearTimeout(id);
   }, [toast]);
 
-  useEffect(() => {
-    if (slipLegs.length === 0) { setServerQuote(null); return; }
-    const stake = Number(slipStake);
-    if (!Number.isFinite(stake) || stake <= 0) { setServerQuote(null); return; }
-    let cancelled = false;
-    const id = window.setTimeout(async () => {
-      setQuoting(true);
-      try {
-        const res = await quoteParlayLive({
-          legs: slipLegs.map((l) => ({
-            marketId: l.marketId,
-            side: l.side,
-            correlationGroup: l.correlationGroup,
-            question: l.question
-          })),
-          stakeUsdc: stake
-        });
-        if (!cancelled) setServerQuote(res.quote);
-      } catch {
-        if (!cancelled) setServerQuote(null);
-      } finally {
-        if (!cancelled) setQuoting(false);
-      }
-    }, 400);
-    return () => { cancelled = true; window.clearTimeout(id); };
-  }, [slipLegs, slipStake]);
+  const round: Round | null = view?.round ?? null;
+  const standings: Entrant[] = view?.standings ?? [];
+  const yesPrice = view?.yesPrice ?? 50;
+  const cut = view?.cutLine ?? 0;
 
-  useEffect(() => {
-    if (!activeArena.markets.some((m) => m.id === activeMarketId)) {
-      setActiveMarketId(activeArena.markets[0].id);
-      setSide("YES");
-    }
-    setCategoryFilter("All");
-  }, [activeArena, activeMarketId]);
+  const me = useMemo(() => (wallet ? standings.find((e) => e.wallet === wallet) ?? null : null), [standings, wallet]);
+  const enrolled = !!me;
+  const aliveCount = standings.filter((e) => e.eliminatedRound === null).length;
 
-  // Live trade tape for the focused market — refreshes on market change
-  // and every 8s. When PANTA_LIVE=true this is /markets/{id}/trades.
-  useEffect(() => {
-    let cancelled = false;
-    async function pull() {
-      try {
-        const r = await fetchMarketTrades(activeMarket.id);
-        if (!cancelled) setMarketTrades(r.trades);
-      } catch { /* ignore */ }
-    }
-    pull();
-    const id = window.setInterval(pull, 8_000);
-    return () => { cancelled = true; window.clearInterval(id); };
-  }, [activeMarket.id]);
+  const deadline = round?.status === "enrolling" ? round.enrollDeadline : round?.status === "live" ? round.liveDeadline : 0;
+  const timeLeft = deadline ? Math.max(0, deadline - now) : 0;
 
-  // Remote positions from Panta when a wallet is connected. Refreshes on
-  // connect and every 12s while connected.
-  useEffect(() => {
-    if (!walletAddress) { setRemotePositions([]); return; }
-    let cancelled = false;
-    async function pull() {
-      try {
-        const r = await fetchPositions(walletAddress!);
-        if (!cancelled) setRemotePositions(r.positions);
-      } catch { /* ignore */ }
-    }
-    pull();
-    const id = window.setInterval(pull, 12_000);
-    return () => { cancelled = true; window.clearInterval(id); };
-  }, [walletAddress]);
-
-  // ---- derived -------------------------------------------------------
-
-  const connected = !!walletAddress;
-  const price = side === "YES" ? activeMarket.yesPrice : 100 - activeMarket.yesPrice;
-  const quantity = useMemo(() => Number(amount || 0) / (price / 100), [amount, price]);
-
-  const categories = useMemo(() => {
-    const set = new Set<string>();
-    activeArena.markets.forEach((m) => set.add(m.category));
-    return ["All", ...Array.from(set)];
-  }, [activeArena]);
-
-  const filteredMarkets = useMemo(
-    () => (categoryFilter === "All" ? activeArena.markets : activeArena.markets.filter((m) => m.category === categoryFilter)),
-    [activeArena, categoryFilter]
-  );
-
-  const arenaPositions = useMemo(
-    () => positions.filter((p) => p.arenaId === activeArena.id),
-    [positions, activeArena.id]
-  );
-
-  const openPnL = useMemo(() => {
-    let total = 0;
-    for (const p of arenaPositions) {
-      const m = activeArena.markets.find((x) => x.id === p.marketId);
-      if (!m) continue;
-      const mark = p.side === "YES" ? m.yesPrice : 100 - m.yesPrice;
-      total += (mark - p.entryPrice) * p.shares / 100;
-    }
-    return total;
-  }, [arenaPositions, activeArena]);
-
-  const localQuote = useMemo(() => quoteParlay(slipLegs, Number(slipStake) || 0), [slipLegs, slipStake]);
-  const parlayQuote: ParlayQuote = serverQuote ?? localQuote;
-
-  const countdownMs = hydrated ? Math.max(0, (deadlinesRef.current[activeArena.id] ?? 0) - now) : activeArena.endsInMs;
-  const countdownLabel = hydrated ? formatCountdown(countdownMs) : formatCountdown(activeArena.endsInMs);
-
-  // ---- actions -------------------------------------------------------
-
+  // ── wallet ────────────────────────────────────────────────────────
   const connect = useCallback(async () => {
-    if (connected) {
-      setWalletAddress(null);
-      setWalletKind(null);
-      setToast("Wallet disconnected · your rumbler has left the realm.");
+    if (wallet) {
+      setWallet(null);
+      try { localStorage.removeItem(WALLET_KEY); } catch { /* ignore */ }
+      setToast("Wallet disconnected.");
       return;
     }
     const real = await connectSolanaWallet();
     if (real) {
-      setWalletAddress(real);
-      setWalletKind("phantom");
-      setToast(`Phantom connected · ${shortenPk(real)}`);
+      setWallet(real);
+      try { localStorage.setItem(WALLET_KEY, real); } catch { /* ignore */ }
+      setToast(`Connected · ${shortPk(real)}`);
     } else {
-      const demo = mockPubkey();
-      setWalletAddress(demo);
-      setWalletKind("demo");
-      setToast(`Demo wallet spun up · ${shortenPk(demo)}`);
+      setToast("No Solana wallet found. Install Phantom, Backpack, or Solflare and reload.");
     }
-  }, [connected]);
+  }, [wallet]);
 
-  const trade = useCallback(async () => {
-    if (!walletAddress) return setToast("Connect a wallet before entering the ring.");
-    const value = Number(amount);
-    if (!value || value <= 0) return setToast("Wager must be greater than $0.");
-    if (value > 10_000) return setToast("Demo cap is $10,000 per wager.");
-
-    setTrading(true);
+  // ── actions ───────────────────────────────────────────────────────
+  const doEnroll = useCallback(async () => {
+    if (!wallet) { setShowEnroll(false); setToast("Connect a wallet first."); return; }
+    setBusy(true);
     try {
-      const quote = await quoteOrder({
-        marketId: activeMarket.id,
-        side,
-        usdcAmount: value.toFixed(2),
-        wallet: walletAddress
+      const nick = (nickname || shortPk(wallet)).slice(0, 16);
+      const r = await enrollRound(wallet, nick);
+      if (r.error) setToast(r.error);
+      else { setToast(`Entered the arena as ${nick}.`); setShowEnroll(false); await refresh(); }
+    } finally { setBusy(false); }
+  }, [wallet, nickname, refresh]);
+
+  const doBuy = useCallback(async () => {
+    if (!wallet) return setToast("Connect a wallet first.");
+    if (!enrolled) return setToast("Enroll in the round first.");
+    const v = Number(amount);
+    if (!v || v <= 0) return setToast("Enter an amount.");
+    setBusy(true);
+    try {
+      const r = await tradeRound({ wallet, action: "buy", side, usdc: v });
+      if (r.error) setToast(r.error);
+      else { setToast(`Bought ${side} $${v.toFixed(0)}.`); await refresh(); }
+    } finally { setBusy(false); }
+  }, [wallet, enrolled, amount, side, refresh]);
+
+  const doSell = useCallback(async () => {
+    if (!wallet || !enrolled) return;
+    setBusy(true);
+    try {
+      const r = await tradeRound({ wallet, action: "sell" });
+      if (r.error) setToast(r.error);
+      else { setToast("Position liquidated."); await refresh(); }
+    } finally { setBusy(false); }
+  }, [wallet, enrolled, refresh]);
+
+  const startNew = useCallback(async () => {
+    setBusy(true);
+    try {
+      const v = await newRound();
+      if (v.error) { await refresh(); }   // a round is already active — jump to it
+      else { setView(v); setToast("New round opened."); }
+    } finally { setBusy(false); }
+  }, [refresh]);
+
+  // ── parlay builder ────────────────────────────────────────────────
+  const toggleLeg = useCallback((marketId: string, legSide: "YES" | "NO") => {
+    setParlayLegs((prev) => {
+      const existing = prev.find((l) => l.marketId === marketId);
+      if (existing && existing.side === legSide) return prev.filter((l) => l.marketId !== marketId); // deselect
+      // Correlation block: at most one horizon per asset (shared correlationGroup).
+      const target = boardMarkets.find((m) => m.id === marketId);
+      const group = target?.correlationGroup;
+      const kept = prev.filter((l) => {
+        if (l.marketId === marketId) return false;
+        if (!group) return true;
+        const m = boardMarkets.find((b) => b.id === l.marketId);
+        return m?.correlationGroup !== group;
       });
-      const built = await buildOrder({ quoteId: quote.quoteId, wallet: walletAddress });
-      const signed = await signAndBroadcast({ serializedTx: built.serializedTx, wallet: walletAddress });
-      const submitted = await submitOrder({ quoteId: quote.quoteId, signature: signed.signature, wallet: walletAddress });
-      await reportTrade({ signature: signed.signature, wallet: walletAddress, marketId: activeMarket.id });
-
-      const pos: Position = {
-        id: `${activeMarket.id}-${Date.now().toString(36)}`,
-        arenaId: activeArena.id,
-        marketId: activeMarket.id,
-        question: activeMarket.question,
-        side,
-        entryPrice: quote.price,
-        shares: quote.shares,
-        cost: Number(quote.usdcAmount),
-        ts: Date.now(),
-        signature: submitted.signature,
-        quoteId: quote.quoteId
-      };
-      setPositions((prev) => [pos, ...prev]);
-      const label = signed.simulated ? "simulated" : signed.confirmed ? "on-chain, confirmed" : "on-chain, broadcasting";
-      setToast(`${side} filled · ${quote.shares.toFixed(1)} shares at ${quote.price}¢ · sig ${shortenPk(signed.signature)} (${label})`);
-
-      // Poll Panta for its own confirmation view. This is Panta's async
-      // pickup — it may lag the RPC confirmation by a slot or two.
-      if (!signed.simulated) {
-        (async () => {
-          for (let i = 0; i < 8; i++) {
-            try {
-              const v = await verifyOrder({ signature: signed.signature });
-              if (v.status === "confirmed") {
-                setToast(`Panta confirmed · sig ${shortenPk(signed.signature)} settled on-chain.`);
-                return;
-              }
-              if (v.status === "failed") {
-                setToast(`Panta rejected · sig ${shortenPk(signed.signature)} did not settle.`);
-                return;
-              }
-            } catch { /* keep polling */ }
-            await new Promise((r) => setTimeout(r, 2_500));
-          }
-        })();
-      }
-    } catch (err) {
-      console.error(err);
-      setToast(`Trade failed: ${err instanceof Error ? err.message : "unknown"}`);
-    } finally {
-      setTrading(false);
-    }
-  }, [walletAddress, amount, side, activeMarket, activeArena.id]);
-
-  const closePosition = useCallback((id: string) => {
-    setPositions((prev) => prev.filter((p) => p.id !== id));
-    setToast("Position retired.");
-  }, []);
-
-  const claimPosition = useCallback(async (p: Position) => {
-    if (!walletAddress) return setToast("Connect a wallet to claim the spoils.");
-    try {
-      const claim = await buildClaim({ wallet: walletAddress, marketId: p.marketId });
-      const signed = await signAndBroadcast({ serializedTx: claim.serializedTx, wallet: walletAddress });
-      await reportTrade({ signature: signed.signature, wallet: walletAddress, marketId: p.marketId });
-      setToast(`Claimed $${claim.amountUsdc} · sig ${shortenPk(signed.signature)}`);
-    } catch (err) {
-      setToast(`Claim failed: ${err instanceof Error ? err.message : "unknown"}`);
-    }
-  }, [walletAddress]);
-
-  const addLegToSlip = useCallback((market: Market, pickedSide: "YES" | "NO") => {
-    const p = pickedSide === "YES" ? market.yesPrice : 100 - market.yesPrice;
-    const candidate: ParlayLeg = {
-      marketId: market.id,
-      question: market.question,
-      side: pickedSide,
-      price: p,
-      correlationGroup: market.correlationGroup
-    };
-    setSlipLegs((prev) => {
-      const check = validateAddLeg(prev, candidate);
-      if (!check.ok) { setToast(check.reason); return prev; }
-      if (prev.some((l) => l.marketId === market.id)) {
-        return prev.map((l) => l.marketId === market.id ? candidate : l);
-      }
-      return [...prev, candidate];
+      if (kept.length >= PARLAY_MAX_LEGS) { setToast(`Parlays cap at ${PARLAY_MAX_LEGS} legs.`); return prev; }
+      return [...kept, { marketId, side: legSide }];
     });
-    setSlipOpen(true);
   }, []);
 
-  const removeLeg = useCallback((marketId: string) => {
-    setSlipLegs((prev) => prev.filter((l) => l.marketId !== marketId));
-  }, []);
+  const parlayQuote = useMemo(() => {
+    const legs: ParlayLeg[] = parlayLegs.map((l) => {
+      const m = boardMarkets.find((b) => b.id === l.marketId)!;
+      return { marketId: l.marketId, side: l.side, question: m.question, price: l.side === "YES" ? m.yesPrice : 100 - m.yesPrice, correlationGroup: m.correlationGroup };
+    });
+    return quoteParlay(legs, Number(parlayStake) || 0);
+  }, [parlayLegs, parlayStake]);
 
-  const clearSlip = useCallback(() => setSlipLegs([]), []);
-
-  const placeParlay = useCallback(async () => {
-    if (!walletAddress) return setToast("Connect a wallet before invoking a parlay.");
-    if (slipLegs.length < 2) return setToast("A parlay needs at least two legs.");
-    const stake = Number(slipStake);
-    if (!stake || stake <= 0) return setToast("Stake must be greater than $0.");
-
-    setPlacingParlay(true);
+  const doPlaceParlay = useCallback(async () => {
+    if (!wallet || !enrolled) return setToast("Enroll in the round first.");
+    if (parlayLegs.length < 2) return setToast("Add at least 2 legs.");
+    const v = Number(parlayStake);
+    if (!v || v <= 0) return setToast("Enter a stake.");
+    setBusy(true);
     try {
-      const parlayId = `parlay_${Date.now().toString(36)}`;
-      const perLeg = parlayQuote.netStakeUsdc / slipLegs.length;
-      const results = await Promise.all(slipLegs.map(async (leg) => {
-        const q = await quoteOrder({ marketId: leg.marketId, side: leg.side, usdcAmount: perLeg.toFixed(2), wallet: walletAddress });
-        const b = await buildOrder({ quoteId: q.quoteId, wallet: walletAddress });
-        const s = await signAndBroadcast({ serializedTx: b.serializedTx, wallet: walletAddress });
-        await submitOrder({ quoteId: q.quoteId, signature: s.signature, wallet: walletAddress });
-        await reportTrade({ signature: s.signature, wallet: walletAddress, marketId: leg.marketId });
-        return { legId: leg.marketId, signature: s.signature };
-      }));
+      const r = await placeParlayApi(wallet, parlayLegs, v);
+      if (r.error) setToast(r.error);
+      else { setToast(`Parlay placed · ${parlayLegs.length} legs.`); setParlayLegs([]); await refresh(); }
+    } finally { setBusy(false); }
+  }, [wallet, enrolled, parlayLegs, parlayStake, refresh]);
 
-      const parlay: StoredParlay = {
-        id: parlayId,
-        arenaId: activeArena.id,
-        ts: Date.now(),
-        legs: slipLegs.map((l) => ({ marketId: l.marketId, question: l.question, side: l.side, price: l.price })),
-        combinedPrice: parlayQuote.combinedPrice,
-        stake: parlayQuote.stakeUsdc,
-        fee: parlayQuote.feeUsdc,
-        shares: parlayQuote.shares,
-        potentialPayout: parlayQuote.potentialPayoutUsdc,
-        signature: results[0]?.signature
-      };
-      setParlays((prev) => [parlay, ...prev]);
-      setSlipLegs([]);
-      setSlipOpen(false);
-      setServerQuote(null);
-      setToast(
-        `${slipLegs.length}-leg parlay sworn · ${parlayQuote.combinedPrice.toFixed(1)}¢ combined · ${parlayQuote.impliedOdds.toFixed(2)}× · payout up to ${usd.format(parlayQuote.potentialPayoutUsdc)}`
-      );
-    } catch (err) {
-      setToast(`Parlay failed: ${err instanceof Error ? err.message : "unknown"}`);
-    } finally {
-      setPlacingParlay(false);
-    }
-  }, [walletAddress, slipLegs, slipStake, parlayQuote, activeArena.id]);
-
-  /**
-   * Host a rumble = create a Panta market. Runs the full three-step
-   * lifecycle:
-   *   1. POST /markets/quote     → creation fee + short-lived quoteId
-   *   2. POST /markets/build     → unsigned VersionedTransaction
-   *   3. wallet signs, broadcasts to Solana RPC
-   *   4. POST /markets/register  → Panta writes catalog metadata
-   *
-   * Without a connected wallet or on failure, falls back to a draft ring
-   * saved in the local hosted[] list so the UI stays usable.
-   */
-  async function createArena(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    const form = new FormData(event.currentTarget);
-    const title = String(form.get("title") || "Untitled ring").trim() || "Untitled ring";
-    const theme = String(form.get("theme") || "Community forecasts");
-    const durationLabel = String(form.get("duration") || "72 hours");
-    const HOURS: Record<string, number> = { "72 hours": 72, "1 week": 168, "1 month": 720 };
-    const endsAt = new Date(Date.now() + (HOURS[durationLabel] ?? 72) * 3_600_000).toISOString();
-
-    if (!walletAddress) {
-      setHosted((current) => [title, ...current]);
-      setShowHost(false);
-      setToast(`"${title}" forged as a draft realm — connect a wallet to publish to Panta.`);
-      return;
-    }
-
-    setHosting(true);
+  const doHost = useCallback(async () => {
+    setBusy(true);
     try {
-      const q = await marketCreateQuote({ question: title, category: theme, endsAt, wallet: walletAddress });
-      const feeUsdc = (Number(q.creationFeeUsdc) / 1_000_000).toFixed(2);
-      setToast(`Quoted ${feeUsdc} USDC creation fee · signing…`);
+      const v = await newRound({
+        asset: hAsset,
+        format: hFormat,
+        entryUsdc: Number(hEntry) || 1,
+        startingBankroll: Number(hVault) || 5,
+        capacity: hCapacity,
+        roundLimit: hFormat === "royale" ? hRounds : 1,
+        host: wallet ?? ""
+      });
+      if (v.error) { setToast(v.error); await refresh(); }
+      else {
+        setView(v);
+        setShowHost(false);
+        setToast(`Rumble hosted · ${hAsset} · ${hFormat === "single" ? "single round" : `${hRounds} rounds`}`);
+      }
+    } finally { setBusy(false); }
+  }, [hAsset, hFormat, hEntry, hVault, hCapacity, hRounds, wallet, refresh]);
 
-      const b = await marketCreateBuild({ quoteId: q.quoteId, wallet: walletAddress });
-      const s = await signAndBroadcast({ serializedTx: b.serializedTx, wallet: walletAddress });
-      const reg = await marketCreateRegister({ quoteId: q.quoteId, signature: s.signature, wallet: walletAddress });
-
-      const label = s.simulated ? "simulated" : s.confirmed ? "on-chain, confirmed" : "on-chain, broadcasting";
-      setHosted((current) => [`${title} · ${reg.marketId.slice(0, 4)}…${reg.marketId.slice(-4)}`, ...current]);
-      setShowHost(false);
-      setToast(`"${title}" registered · market ${shortenPk(reg.marketId)} (${label}).`);
-    } catch (err) {
-      setHosted((current) => [title, ...current]);
-      setShowHost(false);
-      setToast(`Panta registration failed — kept as draft. ${err instanceof Error ? err.message : ""}`);
-    } finally {
-      setHosting(false);
-    }
-  }
-
-  // ---- render --------------------------------------------------------
+  const hostSeat = (Number(hEntry) || 0) + (Number(hVault) || 0);
 
   const sourceBadge = dataSource === "panta"
-    ? { text: "LIVE · PANTA", cls: "src live" }
-    : dataSource === "mock"
-      ? { text: "DEMO · MOCK", cls: "src demo" }
-      : { text: "CONNECTING…", cls: "src pending" };
+    ? { text: `LIVE · ${CLUSTER}`, cls: "src live" }
+    : dataSource === "mock" ? { text: "DEMO", cls: "src demo" } : { text: "…", cls: "src pending" };
 
-  const legInSlip = slipLegs.find((l) => l.marketId === activeMarket.id);
-  const initials = walletAddress ? walletAddress.slice(0, 2).toUpperCase() : "?";
-  const lvl = Math.min(99, 1 + positions.length * 3 + parlays.length * 5);
+  const myMark = me ? (me.side === "YES" ? yesPrice : me.side === "NO" ? 100 - yesPrice : 0) : 0;
+  const myPnl = me ? me.bankroll - (round?.config.startingBankroll ?? 0) : 0;
+  const openParlays = (me?.parlays ?? []).filter((p) => p.status === "open");
+  const openParlayPotential = openParlays.reduce((s, t) => s + t.potentialPayout, 0);
 
   return (
     <main>
-      {/* -------- HUD BAR -------- */}
+      {/* ── HUD ─────────────────────────────────────────────── */}
       <nav className="hud-bar">
-        <a className="brand" href="#top">
-          <span className="sigil"><span>◈</span></span>
-          ORACLE <b>RUMBLE</b>
+        <a href="#top" className="brand" aria-label="Oracle Rumble">
+          <svg className="mark" viewBox="0 0 64 64" width="24" height="24" aria-hidden="true">
+            <path d="M26 16 C27 7 37 7 38 16 Z" fill="#4ade80" />
+            <path d="M17 51 C13 22 22 15 32 15 C42 15 51 22 47 51 C47 55 43 56 39 54 L39 37 L25 37 L25 54 C21 56 17 55 17 51 Z" fill="#7aa2ff" />
+            <rect x="21" y="32" width="22" height="5" rx="1.5" fill="#0e1017" />
+            <rect x="29.5" y="32" width="5" height="16" rx="1.5" fill="#0e1017" />
+          </svg>
+          Oracle Rumble
         </a>
         <div className="hud-nav">
-          <a href="#realms" className="on">RINGS</a>
-          <a href="#arena">BATTLE</a>
-          <a href="#warband">WARBAND</a>
-          <a href="#hall">HALL</a>
-          <a href="#codex">CODEX</a>
+          <a href="#arena">Arena</a>
+          <a href="#how">How it works</a>
         </div>
         <div className="hud-right">
-          <span
-            className={sourceBadge.cls}
-            title={dataSource === "panta" ? "Talking to live-api.panta.market" : "Set PANTA_API_KEY in .env.local to go live"}
-          >
-            {sourceBadge.text}
-          </span>
-          <button
-            className={connected ? "wallet connected" : "wallet"}
-            onClick={connect}
-            title={connected ? "Click to disconnect" : "Connect Phantom or spin up a demo wallet"}
-          >
-            <span className="avatar">{connected ? initials : "◈"}</span>
-            <div>
-              <div>{connected ? shortenPk(walletAddress!) : "ENTER THE WORLD"}</div>
-              {connected && <div className="lvl">LVL {lvl} · {walletKind === "phantom" ? "PHANTOM" : "DEMO"}</div>}
-            </div>
+          <span className={sourceBadge.cls}>{sourceBadge.text}</span>
+          <button className="btn host-btn" onClick={() => setShowHost(true)}>+ Host a rumble</button>
+          <button className={wallet ? "wallet connected" : "wallet"} onClick={connect}>
+            <span className="avatar">{wallet ? wallet.slice(0, 2).toUpperCase() : "?"}</span>
+            {wallet ? shortPk(wallet) : "Connect"}
           </button>
         </div>
       </nav>
 
-      {/* -------- LIVE TICKER -------- */}
-      <div className="ticker">
-        <div className="ticker-track">
-          <span><b>SEASON 01</b> · GENESIS RUN</span>
-          <span><em>+$412.20</em> mira.vale on <b>SOL &gt; $200</b></span>
-          <span><i>−$88.10</i> dune on <b>KO finish</b></span>
-          <span>3-LEG PARLAY hit · <em>4.82×</em> · witness</span>
-          <span><b>1,248</b> RUMBLERS ONLINE</span>
-          <span><em>+$1,020.00</em> onchain.aya · OpenAI ships</span>
-          <span>NEW RING · <b>SHIPMAS</b> opens in 4H</span>
-          <span><b>SEASON 01</b> · GENESIS RUN</span>
-          <span><em>+$412.20</em> mira.vale on <b>SOL &gt; $200</b></span>
-          <span><i>−$88.10</i> dune on <b>KO finish</b></span>
-          <span>3-LEG PARLAY hit · <em>4.82×</em> · witness</span>
-          <span><b>1,248</b> RUMBLERS ONLINE</span>
-          <span><em>+$1,020.00</em> onchain.aya · OpenAI ships</span>
-          <span>NEW RING · <b>SHIPMAS</b> opens in 4H</span>
-        </div>
+      {/* ── ROUND BAR ───────────────────────────────────────── */}
+      <div className="roundbar" id="top">
+        {round ? (
+          <>
+            <div className="rb-cell">
+              <span className="rb-k">Round</span>
+              <span className="rb-v">{round.roundNumber} <em>/ {round.config.roundLimit}</em></span>
+            </div>
+            <div className="rb-cell">
+              <span className="rb-k">Status</span>
+              <span className={`rb-v status ${round.status}`}>{STATUS_LABEL[round.status]}</span>
+            </div>
+            <div className="rb-cell">
+              <span className="rb-k">{round.status === "enrolling" ? "Locks in" : round.status === "live" ? "Settles in" : "Window"}</span>
+              <span className="rb-v mono">{deadline ? fmtClock(timeLeft) : "—"}</span>
+            </div>
+            <div className="rb-cell">
+              <span className="rb-k">Prize pool</span>
+              <span className="rb-v accent">{usd.format(round.prizePoolUsdc)}</span>
+            </div>
+            <div className="rb-cell">
+              <span className="rb-k">Alive</span>
+              <span className="rb-v">{aliveCount} <em>/ {standings.length}</em></span>
+            </div>
+            <div className="rb-cell grow">
+              <span className="rb-k">Market · {round.config.asset}</span>
+              <span className="rb-v market">{round.config.marketQuestion}</span>
+            </div>
+            <div className="rb-cell">
+              <span className="rb-k">YES</span>
+              <span className="rb-v accent">{yesPrice}¢</span>
+            </div>
+          </>
+        ) : (
+          <div className="rb-cell grow"><span className="rb-v">Opening the arena…</span></div>
+        )}
       </div>
 
-      {/* -------- PORTAL HERO -------- */}
-      <section className="portal" id="top">
-        <div className="portal-inner">
-          <p className="eyebrow">SEASON 01 · GENESIS RUN · SOLANA MAINNET</p>
-          <h1>CALL IT.<br/><em>PROVE IT.</em><br/>CLIMB.</h1>
-          <p className="portal-copy">
-            Oracle Rumble is a game lobby for prediction markets. Pick a ring, stake your conviction on live
-            Panta markets, stack legs into a parlay, and carve your name into the hall of champions.
-          </p>
-          <div className="portal-actions">
-            <a href="#realms" className="gbtn primary">ENTER THE LOBBY <span className="arr">▸</span></a>
-            <button className="gbtn secondary" onClick={() => setShowHost(true)}>FORGE A RING <span className="arr">+</span></button>
-          </div>
-
-          <div className="hud-stats">
-            <div className="stat"><b>1,248</b><span>◈ RUMBLERS</span></div>
-            <div className="stat"><b>{arenas.length + hosted.length}</b><span>⚔ ACTIVE RINGS</span></div>
-            <div className="stat"><b>$284K</b><span>⛨ VOLUME TRACKED</span></div>
-            <div className="stat"><b>{PARLAY_MIN_LEGS}–{PARLAY_MAX_LEGS}</b><span>❖ PARLAY LEGS</span></div>
-          </div>
-        </div>
-      </section>
-
-      {/* -------- REALM SELECT -------- */}
-      <section className="realm-shell" id="realms">
-        <div className="section-head">
-          <div>
-            <p className="eyebrow">CHOOSE YOUR REALM</p>
-            <h2>THE RINGS</h2>
-          </div>
-          <span className="flair"><i />LIVE · {arenas.length} RINGS RUNNING</span>
-        </div>
-
-        <div className="realm-grid">
-          {arenas.map((a) => {
-            const ms = hydrated ? Math.max(0, (deadlinesRef.current[a.id] ?? 0) - now) : a.endsInMs;
-            return (
-              <button
-                key={a.id}
-                className={a.id === activeArenaId ? "realm on" : "realm"}
-                onClick={() => { setActiveArenaId(a.id); document.getElementById("arena")?.scrollIntoView({ behavior: "smooth" }); }}
-              >
-                <span className="cnr bl" /><span className="cnr br" />
-                <span className="rank-tag">{realmSigil(a.id)} {realmClass(a.id)}</span>
-                <h3>{a.name}</h3>
-                <p>{a.tagline}</p>
-                <div className="realm-meta">
-                  <span>{a.markets.length} MKTS · {formatCountdown(ms)}</span>
-                  <span className="enter">{a.id === activeArenaId ? "ACTIVE ▸" : "ENTER ▸"}</span>
-                </div>
-              </button>
-            );
-          })}
-          {hosted.map((h, i) => (
-            <div key={`draft-${i}`} className="realm draft">
-              <span className="rank-tag">❖ DRAFT · UNSEALED</span>
-              <h3>{h}</h3>
-              <p>A ring waiting to be sealed on Panta. Complete the ritual to open it to rumblers.</p>
-              <div className="realm-meta">
-                <span>DRAFT</span>
-                <span className="enter">PENDING…</span>
-              </div>
-            </div>
-          ))}
-        </div>
-      </section>
-
-      {/* -------- BATTLE ARENA -------- */}
+      {/* ── ARENA ───────────────────────────────────────────── */}
       <section className="arena-shell" id="arena">
-        <div className="arena-crown">
-          <span className="cnr bl" /><span className="cnr br" />
-          <div>
-            <p className="eyebrow">◈ ACTIVE RING</p>
-            <h2>{activeArena.name}</h2>
-            <p>{activeArena.tagline}</p>
-          </div>
-          <div className="timer">
-            ⌛ RING CLOSES IN
-            <b>{countdownLabel}</b>
-          </div>
-        </div>
-
-        <div className="arena-body">
-          <div className="arena-panel">
-            <span className="cnr bl" /><span className="cnr br" />
-            <div className="panel-head">
-              <span>◈ MARKET BOARD</span>
-              <small>Panta id · {shortenPk(activeMarket.id)}</small>
-            </div>
-            <div className="chips">
-              {categories.map((c) => (
-                <button
-                  key={c}
-                  className={c === categoryFilter ? "chip on" : "chip"}
-                  onClick={() => setCategoryFilter(c)}
-                >
-                  {c}
-                </button>
-              ))}
-            </div>
-            <div className="battle-list">
-              {filteredMarkets.map((market) => {
-                const legHere = slipLegs.find((l) => l.marketId === market.id);
-                return (
-                  <div key={market.id} className={activeMarket.id === market.id ? "battle active" : "battle"}>
-                    <button
-                      className="battle-body"
-                      onClick={() => { setActiveMarketId(market.id); setSide("YES"); }}
-                    >
-                      <div>
-                        <span className="cat">{market.category}</span>
-                        <h3>{market.question}</h3>
-                        <p className="sub">{market.volume} vol · {market.closes}</p>
+        {round?.status === "complete" ? (
+          <div className="champion">
+            {(() => {
+              const champ = standings.find((e) => e.id === round.championId) ?? standings[0] ?? null;
+              const paid = [...standings].filter((e) => e.prizeUsdc > 0).sort((a, b) => b.prizeUsdc - a.prizeUsdc);
+              return (
+                <>
+                  <p className="eyebrow">{round.config.format === "single" ? "Single round" : `Round ${round.roundNumber}`} · final</p>
+                  <h1>{champ ? `${champ.nickname} wins ${usd2.format(champ.prizeUsdc)}` : "Rumble complete"}</h1>
+                  <p className="lead">
+                    {paid.length > 1
+                      ? `${usd.format(round.prizePoolUsdc)} pool split across the top ${paid.length}.`
+                      : `${usd.format(round.prizePoolUsdc)} pool to the winner.`}
+                    {" "}Everyone withdraws their remaining vault; winners also take the pool share.
+                  </p>
+                  <button className="btn primary" onClick={() => setShowHost(true)} disabled={busy}>Host the next rumble →</button>
+                  <div className="final-board">
+                    {standings.map((e, i) => (
+                      <div key={e.id} className={`fb-row ${e.wallet === wallet ? "me" : ""}`}>
+                        <span className="fb-rank">{i + 1}</span>
+                        <span className="fb-name">{e.nickname}{e.isBot ? " ·bot" : ""}</span>
+                        <span className="fb-bank">{usd2.format(e.bankroll)}</span>
+                        <span className="fb-prize">{e.prizeUsdc > 0 ? `+${usd2.format(e.prizeUsdc)}` : ""}</span>
                       </div>
-                      <div className="odds">
-                        <b>{market.yesPrice}¢</b>
-                        <span className={market.change >= 0 ? "up" : "down"}>
-                          {market.change >= 0 ? "▲" : "▼"} {Math.abs(market.change)}¢
-                        </span>
-                      </div>
-                    </button>
-                    <div className="pick-col">
-                      <button
-                        className={legHere?.side === "YES" ? "pick yes on" : "pick yes"}
-                        onClick={() => addLegToSlip(market, "YES")}
-                        title="Stack YES leg on the parlay scroll"
-                      >
-                        ▲ YES
-                      </button>
-                      <button
-                        className={legHere?.side === "NO" ? "pick no on" : "pick no"}
-                        onClick={() => addLegToSlip(market, "NO")}
-                        title="Stack NO leg on the parlay scroll"
-                      >
-                        ▼ NO
-                      </button>
-                    </div>
-                  </div>
-                );
-              })}
-              {filteredMarkets.length === 0 && (
-                <div className="empty">No markets match that filter.</div>
-              )}
-            </div>
-          </div>
-
-          <aside className="arena-panel combat">
-            <span className="cnr bl" /><span className="cnr br" />
-            <div className="panel-head">
-              <span>⚔ WAGER PANEL</span>
-              <small>{walletKind === "phantom" ? "PHANTOM SIGNER" : walletKind === "demo" ? "DEMO SIGNER" : "WALLET-CONTROLLED"}</small>
-            </div>
-            <div className="inner">
-              <div>
-                <span className="cat" style={{ marginBottom: 8, display: "inline-block" }}>{activeMarket.category}</span>
-                <h3 className="marketq">{activeMarket.question}</h3>
-              </div>
-
-              <div className="side-switch">
-                <button className={side === "YES" ? "side yes on" : "side yes"} onClick={() => setSide("YES")}>
-                  ▲ YES <span className="odds">{activeMarket.yesPrice}¢</span>
-                </button>
-                <button className={side === "NO" ? "side no on" : "side no"} onClick={() => setSide("NO")}>
-                  ▼ NO <span className="odds">{100 - activeMarket.yesPrice}¢</span>
-                </button>
-              </div>
-
-              <div className="field">
-                <label>Wager (USDC)</label>
-                <div className="amount-row">
-                  <span className="curr">$</span>
-                  <input
-                    value={amount}
-                    onChange={(e) => setAmount(e.target.value.replace(/[^0-9.]/g, ""))}
-                    inputMode="decimal"
-                    aria-label="Wager amount in USDC"
-                  />
-                  <button type="button" className="max" onClick={() => setAmount("100")}>MAX</button>
-                </div>
-              </div>
-
-              <div className="summary">
-                <span>Avg. price</span><b>{price}¢</b>
-                <span>Est. shares</span><b>{quantity.toFixed(1)}</b>
-                <span>Potential payout</span><b className="gold">{usd.format(quantity)}</b>
-                <span>Route</span><b>{dataSource === "panta" ? "Panta primary_order" : "Panta (mocked)"}</b>
-              </div>
-
-              {marketTrades.length > 0 && (
-                <div className="tape" aria-label="Recent trades on this market">
-                  <div className="tape-title">◆ RECENT FLOW · panta /markets/{shortenPk(activeMarket.id)}/trades</div>
-                  <ul>
-                    {marketTrades.slice(0, 3).map((t) => (
-                      <li key={t.signature}>
-                        <span className={t.side === "YES" ? "chip yes" : "chip no"}>{t.side}</span>
-                        <span className="who">{shortenPk(t.wallet)}</span>
-                        <span className="amt">${t.usdcAmount}</span>
-                        <span className="px">@ {t.priceCents}¢</span>
-                        <span className="sig">sig {shortenPk(t.signature)}</span>
-                      </li>
                     ))}
-                  </ul>
+                  </div>
+                </>
+              );
+            })()}
+          </div>
+        ) : (
+          <div className="cockpit">
+            {/* trading */}
+            <div className="trade-col">
+              <div className="tc-head">
+                <div>
+                  <span className="cat">{round?.config.category ?? "—"}</span>
+                  <h2>{round?.config.marketQuestion ?? "Loading market…"}</h2>
                 </div>
-              )}
+                <div className="tc-price">
+                  <div><b className="up">{yesPrice}¢</b><span>YES</span></div>
+                  <div><b className="down">{100 - yesPrice}¢</b><span>NO</span></div>
+                </div>
+              </div>
 
-              <button className="gbtn primary full" onClick={trade} disabled={trading}>
-                {trading ? "ROUTING…" : connected ? `STRIKE ${side}` : "CONNECT TO STRIKE"} <span className="arr">▸</span>
-              </button>
-              <button
-                className="gbtn secondary full"
-                onClick={() => addLegToSlip(activeMarket, side)}
-                disabled={trading}
-              >
-                {legInSlip ? "UPDATE SCROLL" : "ADD TO SCROLL"} <span className="arr">+</span>
-              </button>
-
-              <p className="fine">
-                Quote → build → sign → submit → attribute. Your wallet signs the Panta VersionedTransaction;
-                Oracle Rumble never holds funds. Fees follow Panta&apos;s bonding-curve pricing.
-              </p>
-            </div>
-          </aside>
-        </div>
-      </section>
-
-      {/* -------- WARBAND (positions) -------- */}
-      <section className="warband" id="warband">
-        <div className="section-head">
-          <div>
-            <p className="eyebrow">◈ YOUR WARBAND</p>
-            <h2>OPEN POSITIONS</h2>
-          </div>
-          <span className="flair">
-            <i />
-            {arenaPositions.length} POS · {parlays.filter((p) => p.arenaId === activeArena.id).length} PARLAYS · {activeArena.name.toUpperCase()}
-          </span>
-        </div>
-
-        <div className="warband-frame">
-          <span className="cnr bl" /><span className="cnr br" />
-          <div className="warband-totals">
-            <div>
-              <span>◈ OPEN POSITIONS</span>
-              <b>{arenaPositions.length}</b>
-            </div>
-            <div>
-              <span>❖ PARLAYS THIS RING</span>
-              <b>{parlays.filter((p) => p.arenaId === activeArena.id).length}</b>
-            </div>
-            <div>
-              <span>⛨ COST BASIS</span>
-              <b>{usd2.format(arenaPositions.reduce((s, p) => s + p.cost, 0))}</b>
-            </div>
-            <div className={openPnL >= 0 ? "pnl up" : "pnl down"}>
-              <span>⚔ OPEN P&amp;L</span>
-              <b>{openPnL >= 0 ? "+" : ""}{usd2.format(openPnL)}</b>
-            </div>
-            <div title="Positions read from Panta's /positions endpoint using the connected wallet address.">
-              <span>◊ PANTA ON-CHAIN</span>
-              <b>{connected ? remotePositions.length : "—"}</b>
-            </div>
-          </div>
-
-          {arenaPositions.length === 0 && parlays.filter((p) => p.arenaId === activeArena.id).length === 0 ? (
-            <div className="empty tall">
-              YOUR BLADE IS SHEATHED. PICK A MARKET ABOVE OR STACK A PARLAY SCROLL TO ENTER THE FRAY.
-            </div>
-          ) : (
-            <>
-              <ul className="pos-list">
-                {arenaPositions.map((p) => {
-                  const m = activeArena.markets.find((x) => x.id === p.marketId);
-                  const mark = m ? (p.side === "YES" ? m.yesPrice : 100 - m.yesPrice) : p.entryPrice;
-                  const pnl = (mark - p.entryPrice) * p.shares / 100;
-                  const claimable = m?.phase === "resolved" && m?.outcome === p.side;
-                  return (
-                    <li key={p.id} className="pos">
-                      <div className="pos-main">
-                        <span className={p.side === "YES" ? "badge yes" : "badge no"}>{p.side}</span>
-                        <div>
-                          <h4>{p.question}</h4>
-                          <p className="pos-sub">
-                            {p.shares.toFixed(1)} SHARES · ENTRY {p.entryPrice}¢ · MARK {mark}¢
-                            {p.signature ? ` · SIG ${shortenPk(p.signature)}` : ""}
-                          </p>
-                        </div>
+              {!enrolled ? (
+                <div className="enroll-cta">
+                  {round?.status === "enrolling" ? (
+                    <>
+                      <p>
+                        Your seat is <b>{usd.format(round.config.entryUsdc + round.config.startingBankroll)}</b>: <b>{usd.format(round.config.entryUsdc)}</b> entry into the shared pool plus a <b>{usd.format(round.config.startingBankroll)}</b> trading vault that&apos;s yours to cash out. Everyone starts equal — trade the market, outlast the cut, win the pool.
+                      </p>
+                      <div className="cta-row">
+                        <button className="btn primary" onClick={() => (wallet ? setShowEnroll(true) : connect())} disabled={busy}>
+                          {wallet ? "Enter the arena" : "Connect to enter"}
+                        </button>
+                        <button className="btn secondary" onClick={() => setShowHost(true)} disabled={busy}>Host your own</button>
                       </div>
-                      <div className="pos-right">
-                        <strong className={pnl >= 0 ? "up" : "down"}>
-                          {pnl >= 0 ? "+" : ""}{usd2.format(pnl)}
-                        </strong>
-                        {claimable && (
-                          <button className="gbtn small primary" onClick={() => claimPosition(p)}>CLAIM</button>
-                        )}
-                        <button className="gbtn small secondary" onClick={() => closePosition(p.id)}>RETIRE</button>
+                    </>
+                  ) : (
+                    <p>This round is <b>{STATUS_LABEL[round?.status ?? ""]?.toLowerCase()}</b>. Enrollment is closed — the next arena opens when this one settles.</p>
+                  )}
+                </div>
+              ) : (
+                <>
+                  <div className="vault">
+                    <div><span>Vault</span><b>{usd2.format(me!.bankroll)}</b></div>
+                    <div><span>Cash</span><b>{usd2.format(me!.cash)}</b></div>
+                    <div><span>Position</span><b>{me!.side ? `${me!.shares.toFixed(1)} ${me!.side} @ ${me!.avgPrice.toFixed(0)}¢` : "—"}</b></div>
+                    <div><span>Parlays</span><b>{openParlays.length ? `${openParlays.length} · pays ${usd.format(openParlayPotential)}` : "—"}</b></div>
+                    <div className={myPnl >= 0 ? "up" : "down"}><span>Vault P&amp;L</span><b>{myPnl >= 0 ? "+" : ""}{usd2.format(myPnl)}</b></div>
+                  </div>
+
+                  {round?.status === "live" ? (
+                    <>
+                      <div className="bet-mode">
+                        <button className={betMode === "single" ? "bm on" : "bm"} onClick={() => setBetMode("single")}>Single trade</button>
+                        <button className={betMode === "parlay" ? "bm on" : "bm"} onClick={() => setBetMode("parlay")}>Parlay</button>
+                      </div>
+
+                      {betMode === "single" ? (
+                        <>
+                          <div className="sides">
+                            <button className={side === "YES" ? "side yes on" : "side yes"} onClick={() => setSide("YES")}>YES <b>{yesPrice}¢</b></button>
+                            <button className={side === "NO" ? "side no on" : "side no"} onClick={() => setSide("NO")}>NO <b>{100 - yesPrice}¢</b></button>
+                          </div>
+                          <label className="field">
+                            Stake from your vault (USDC)
+                            <div className="field-input">
+                              <span className="curr">$</span>
+                              <input value={amount} onChange={(e) => setAmount(e.target.value.replace(/[^0-9.]/g, ""))} inputMode="decimal" />
+                              <button type="button" className="max" onClick={() => setAmount(String(Math.floor(me!.cash)))}>MAX</button>
+                            </div>
+                          </label>
+                          <div className="summary">
+                            <span>Entry price</span><b>{side === "YES" ? yesPrice : 100 - yesPrice}¢</b>
+                            <span>Shares</span><b>{(Number(amount || 0) / ((side === "YES" ? yesPrice : 100 - yesPrice) / 100)).toFixed(1)}</b>
+                            <span>Payout if side wins</span><b className="accent">{usd.format(Number(amount || 0) / ((side === "YES" ? yesPrice : 100 - yesPrice) / 100))}</b>
+                          </div>
+                          <div className="trade-actions">
+                            <button className="btn primary full" onClick={doBuy} disabled={busy}>Buy {side}</button>
+                            <button className="btn secondary" onClick={doSell} disabled={busy || !me!.side}>Liquidate</button>
+                          </div>
+                        </>
+                      ) : (
+                        <div className="parlay-build">
+                          <p className="pb-hint">Stack BTC/ETH/SOL up-or-down calls into one bet. Every leg must land — longer odds, bigger payout. One horizon per asset.</p>
+                          <div className="pb-board">
+                            {boardMarkets.map((m) => {
+                              const sel = parlayLegs.find((l) => l.marketId === m.id);
+                              return (
+                                <div className="pb-mkt" key={m.id}>
+                                  <div className="pb-mkt-q"><b>{m.asset}</b> up in {m.horizon === "HOUR" ? "1h" : "1d"}?</div>
+                                  <div className="pb-mkt-sides">
+                                    <button className={sel?.side === "YES" ? "pb-side up on" : "pb-side up"} onClick={() => toggleLeg(m.id, "YES")}>UP {m.yesPrice}¢</button>
+                                    <button className={sel?.side === "NO" ? "pb-side down on" : "pb-side down"} onClick={() => toggleLeg(m.id, "NO")}>DN {100 - m.yesPrice}¢</button>
+                                  </div>
+                                </div>
+                              );
+                            })}
+                          </div>
+                          <label className="field">
+                            Stake from your vault (USDC)
+                            <div className="field-input">
+                              <span className="curr">$</span>
+                              <input value={parlayStake} onChange={(e) => setParlayStake(e.target.value.replace(/[^0-9.]/g, ""))} inputMode="decimal" />
+                              <button type="button" className="max" onClick={() => setParlayStake(String(Math.floor(me!.cash)))}>MAX</button>
+                            </div>
+                          </label>
+                          <div className="summary">
+                            <span>Legs</span><b>{parlayLegs.length}</b>
+                            <span>Combined odds</span><b>{parlayLegs.length >= 2 ? `${parlayQuote.impliedOdds.toFixed(2)}×` : "—"}</b>
+                            <span>Variance fee</span><b>{parlayLegs.length >= 2 ? usd2.format(parlayQuote.feeUsdc) : "—"}</b>
+                            <span>Pays if all land</span><b className="accent">{parlayLegs.length >= 2 ? usd.format(parlayQuote.potentialPayoutUsdc) : "—"}</b>
+                            <span>If one leg voids</span><b>{parlayLegs.length >= 2 ? usd.format(parlayQuote.halfPayoutIfOneVoidUsdc) : "—"}</b>
+                          </div>
+                          <button className="btn primary full" onClick={doPlaceParlay} disabled={busy || parlayLegs.length < 2}>
+                            {parlayLegs.length < 2 ? "Pick at least 2 legs" : `Place ${parlayLegs.length}-leg parlay`}
+                          </button>
+                        </div>
+                      )}
+                    </>
+                  ) : (
+                    <div className="enroll-cta"><p>You&apos;re in. Waiting for the round to go live — bots and rivals are locking in.</p></div>
+                  )}
+                </>
+              )}
+            </div>
+
+            {/* roster */}
+            <aside className="roster">
+              <div className="roster-head">
+                <span>Standings</span>
+                <span className="cut">cut ↓ bottom {standings.filter(e => e.eliminatedRound === null).length - cut}</span>
+              </div>
+              <ul>
+                {standings.map((e, i) => {
+                  const isCutLine = round?.status === "live" && i === cut && e.eliminatedRound === null;
+                  const pnl = e.bankroll - (round?.config.startingBankroll ?? 0);
+                  return (
+                    <li key={e.id}>
+                      {isCutLine && <div className="cutline"><span>elimination line</span></div>}
+                      <div className={`r-row ${e.wallet === wallet ? "me" : ""} ${e.eliminatedRound !== null ? "dead" : ""}`}>
+                        <span className="r-rank">{e.eliminatedRound !== null ? "✕" : i + 1}</span>
+                        <span className="r-name">{e.nickname}{e.isBot ? <em> bot</em> : ""}{e.wallet === wallet ? <em> you</em> : ""}</span>
+                        <span className="r-bank">{usd2.format(e.bankroll)}</span>
+                        <span className={`r-pnl ${pnl >= 0 ? "up" : "down"}`}>{pnl >= 0 ? "+" : ""}{pnl.toFixed(0)}</span>
                       </div>
                     </li>
                   );
                 })}
+                {standings.length === 0 && <li className="empty">Waiting for entrants…</li>}
               </ul>
-              {parlays.filter((p) => p.arenaId === activeArena.id).length > 0 && (
-                <div>
-                  <div className="parlay-title">❖ PARLAY SCROLLS</div>
-                  {parlays.filter((p) => p.arenaId === activeArena.id).map((p) => (
-                    <div className="parlay-card" key={p.id}>
-                      <div>
-                        <div className="parlay-head">
-                          <span className="pill gold">{p.legs.length}-LEG</span>
-                          <span className="pill arcane">{p.combinedPrice.toFixed(1)}¢ COMBINED</span>
-                          {p.signature && <span className="pill soft">SIG {shortenPk(p.signature)}</span>}
-                        </div>
-                        <ul className="parlay-legs">
-                          {p.legs.map((l) => (
-                            <li key={l.marketId}>
-                              <span className={l.side === "YES" ? "badge yes" : "badge no"} style={{ padding: "3px 7px", minWidth: 40, fontSize: 10 }}>{l.side}</span>
-                              <span>{l.question}</span>
-                              <b>{l.price}¢</b>
-                            </li>
-                          ))}
-                        </ul>
-                      </div>
-                      <div className="parlay-num">
-                        <div><span>STAKE</span><b>{usd2.format(p.stake)}</b></div>
-                        <div><span>PAYOUT IF HIT</span><b className="up">{usd2.format(p.potentialPayout)}</b></div>
-                      </div>
-                    </div>
+            </aside>
+          </div>
+        )}
+
+        {/* event log */}
+        {round && round.history.length > 0 && (
+          <div className="log">
+            {[...round.history].slice(-4).reverse().map((h, i) => <span key={i}>{h}</span>)}
+          </div>
+        )}
+      </section>
+
+      {/* ── HOW IT WORKS ────────────────────────────────────── */}
+      <section className="how-shell" id="how">
+        <h2>How the arena works</h2>
+        <div className="how-grid">
+          <div><b>1 · Host chooses the game</b><p>The host picks BTC, ETH or SOL, the player limit, the entry, the starting vault, and one to four rounds.</p></div>
+          <div><b>2 · Everyone funds the same seat</b><p>Same entry, same starting vault. Nobody can begin with more trading money than you.</p></div>
+          <div><b>3 · Entry and vault separate</b><p>Your entry joins the shared prize pool. Your starting vault stays in your own game account to trade.</p></div>
+          <div><b>4 · Trade the same market</b><p>Everyone trades UP and DOWN on the same live market. Buy, sell, or hold cash until it closes.</p></div>
+          <div><b>5 · The oracle ranks every vault</b><p>Winning shares become USDC and players are ranked by vault value. In a royale the bottom half is cut and survivors keep the bankroll they earned.</p></div>
+          <div><b>6 · Winners claim &amp; progress</b><p>Everyone withdraws their remaining vault. Top finishers share the pool — 62.5% / 23.4% / 14.1%, or the whole pool in a duel.</p></div>
+        </div>
+        <p className="disclaimer">
+          Rounds, vaults, elimination and the prize pool are real server-side game state on Postgres, priced by
+          live Panta markets on Solana {CLUSTER}. Bots fill empty seats. Player funds are held in a non-custodial
+          escrow program on Solana {CLUSTER} — testnet USDC has no monetary value. If a game can&apos;t finish,
+          recovery lets players reclaim their entry and remaining vault.
+        </p>
+      </section>
+
+      {toast && <div className="toast" role="status"><span>{toast}</span><button onClick={() => setToast("")} aria-label="Dismiss">×</button></div>}
+
+      {showEnroll && round && (
+        <div className="modal-backdrop" onClick={() => setShowEnroll(false)}>
+          <div className="modal" onClick={(e) => e.stopPropagation()}>
+            <button className="close" onClick={() => setShowEnroll(false)} aria-label="Close">×</button>
+            <h2>Take your seat</h2>
+            <p className="sub">
+              {usd.format(round.config.entryUsdc)} entry → pool &nbsp;+&nbsp; {usd.format(round.config.startingBankroll)} vault → yours to trade &nbsp;=&nbsp; <b>{usd.format(round.config.entryUsdc + round.config.startingBankroll)} total</b>
+            </p>
+            <label>
+              Callsign
+              <input value={nickname} onChange={(e) => setNickname(e.target.value)} placeholder={shortPk(wallet ?? "")} maxLength={16} />
+            </label>
+            <button className="btn primary full" onClick={doEnroll} disabled={busy} style={{ marginTop: 8 }}>
+              {busy ? "Entering…" : `Lock in ${usd.format(round.config.entryUsdc + round.config.startingBankroll)}`}
+            </button>
+            <p className="disclaimer" style={{ marginTop: 12 }}>Entry funds the pool; the vault stays yours to trade and withdraw. Funds are held in a non-custodial escrow program on {CLUSTER}.</p>
+          </div>
+        </div>
+      )}
+
+      {showHost && (
+        <div className="modal-backdrop" onClick={() => setShowHost(false)}>
+          <div className="modal host-modal" onClick={(e) => e.stopPropagation()}>
+            <button className="close" onClick={() => setShowHost(false)} aria-label="Close">×</button>
+            <h2>Host a rumble</h2>
+            <p className="sub">You set the terms. Every player funds the same seat — you can&apos;t hand anyone a bigger vault.</p>
+
+            <div className="host-field">
+              <span className="host-label">Asset</span>
+              <div className="seg">
+                {(["BTC", "ETH", "SOL"] as const).map((a) => (
+                  <button key={a} className={hAsset === a ? "seg-opt on" : "seg-opt"} onClick={() => setHAsset(a)}>{a}</button>
+                ))}
+              </div>
+            </div>
+
+            <div className="host-field">
+              <span className="host-label">Format</span>
+              <div className="seg">
+                <button className={hFormat === "single" ? "seg-opt on" : "seg-opt"} onClick={() => setHFormat("single")}>Single round</button>
+                <button className={hFormat === "royale" ? "seg-opt on" : "seg-opt"} onClick={() => setHFormat("royale")}>Royale</button>
+              </div>
+            </div>
+
+            {hFormat === "royale" && (
+              <div className="host-field">
+                <span className="host-label">Rounds</span>
+                <div className="seg">
+                  {[2, 3, 4].map((n) => (
+                    <button key={n} className={hRounds === n ? "seg-opt on" : "seg-opt"} onClick={() => setHRounds(n)}>{n}</button>
                   ))}
                 </div>
-              )}
-            </>
-          )}
-        </div>
-      </section>
+              </div>
+            )}
 
-      {/* -------- HALL OF CHAMPIONS -------- */}
-      <section className="hall-shell" id="hall">
-        <div className="section-head">
-          <div>
-            <p className="eyebrow">◈ HALL OF CHAMPIONS</p>
-            <h2>THE BOARD</h2>
-          </div>
-          <span className="flair"><i />SEASON 01 STANDINGS · LIVE</span>
-        </div>
-
-        <div className="hall">
-          <span className="cnr bl" /><span className="cnr br" />
-          {players.map((player) => (
-            <div className="player" key={player.rank}>
-              <span className={`rank rank-${player.rank}`}>
-                {player.rank === 1 && <span className="crown">♛</span>}
-                {String(player.rank).padStart(2, "0")}
-              </span>
-              <span className={`avatar-lg ${player.color}`}>{player.initials}</span>
-              <b>{player.name}</b>
-              <span className="player-meta">{player.markets} MARKETS · {player.accuracy}% ACCURACY</span>
-              <strong>+{player.returnPct}%</strong>
-            </div>
-          ))}
-        </div>
-      </section>
-
-      {/* -------- CODEX -------- */}
-      <section className="codex-shell" id="codex">
-        <div className="section-head">
-          <div>
-            <p className="eyebrow">◈ THE CODEX · POWERED BY PANTA</p>
-            <h2>THE LIFECYCLE</h2>
-          </div>
-        </div>
-        <p className="codex-lead">
-          Every strike, claim, and attribution runs the real Panta lifecycle on Solana. Parlays are a
-          client-space bundle of N linked orders, priced live from Panta&apos;s single-market book — the same
-          quote-based liquidity idea parlayit uses. ~400ms slot times. USDC 1:1.
-        </p>
-
-        <div className="steps">
-          <article><span>I.</span><h3>DISCOVER</h3><p><code>GET /markets</code> — the board is a Panta catalog view, filtered by category.</p></article>
-          <article><span>II.</span><h3>QUOTE</h3><p><code>POST /orders/quote</code> — simulate the fill on the bonding curve; short-lived quote session.</p></article>
-          <article><span>III.</span><h3>BUILD & SIGN</h3><p><code>POST /orders/build</code> — Panta returns a VersionedTransaction your wallet signs.</p></article>
-          <article><span>IV.</span><h3>SUBMIT</h3><p><code>POST /orders/submit</code> — the signed tx broadcasts to RPC, and Panta registers it.</p></article>
-          <article><span>V.</span><h3>ATTRIBUTE</h3><p><code>POST /trades/report</code> then <code>POST /claims/build</code> — trades count on the board; winnings claimable.</p></article>
-        </div>
-
-        <h3 className="parlay-mech-title">❖ PARLAY MECHANICS</h3>
-        <div className="parlay-mech">
-          <article>
-            <h4>QUOTE-BASED LIQUIDITY</h4>
-            <p><code>POST /api/parlay/quote</code> refreshes every leg&apos;s price from Panta and prices the parlay dynamically.</p>
-          </article>
-          <article>
-            <h4>2–5 LEG BOUNDS</h4>
-            <p><code>PARLAY_MIN_LEGS</code> = 2, <code>PARLAY_MAX_LEGS</code> = 5. Enforced on client and server.</p>
-          </article>
-          <article>
-            <h4>CORRELATION BLOCKS</h4>
-            <p>Legs sharing a <code>correlationGroup</code> (KO vs Decision) are mutually exclusive.</p>
-          </article>
-          <article>
-            <h4>VARIANCE-BASED FEE</h4>
-            <p>Per-leg fee is <code>stake × 5% × 4p(1-p)</code>. Peaks at coinflip legs; capped at 5% of stake overall.</p>
-          </article>
-          <article>
-            <h4>50/50 FALLBACK</h4>
-            <p>If a leg voids at resolution it pays 0.5×, so payout halves once per voided leg.</p>
-          </article>
-          <article>
-            <h4>PLACEMENT</h4>
-            <p>A parlay is placed as N linked <code>primary_order_usdc</code> orders sharing a client <code>parlayId</code>.</p>
-          </article>
-        </div>
-      </section>
-
-      <footer>
-        <span className="brand-mini">◈ ORACLE RUMBLE</span>
-        <span>Prediction-market rings on <a className="ilink" href="https://www.panta.market/" target="_blank" rel="noreferrer">Panta</a> · settled on <a className="ilink" href="https://solana.com/docs" target="_blank" rel="noreferrer">Solana</a></span>
-        <a className="ilink" href="https://docs.panta.market/" target="_blank" rel="noreferrer">PANTA API DOCS ▸</a>
-      </footer>
-
-      {/* -------- PARLAY SCROLL (fab + drawer) -------- */}
-      <button
-        className={slipLegs.length > 0 ? "slip-fab on" : "slip-fab"}
-        onClick={() => setSlipOpen((v) => !v)}
-        aria-label="Toggle parlay scroll"
-      >
-        ❖ SCROLL <b>{slipLegs.length}</b>
-      </button>
-      {slipOpen && (
-        <div className="slip">
-          <div className="slip-head">
-            <div>
-              <b>◈ PARLAY SCROLL</b>
-              <p>{slipLegs.length} LEG{slipLegs.length === 1 ? "" : "S"} · COMBINED {parlayQuote.combinedPrice.toFixed(1)}¢ · {parlayQuote.impliedOdds.toFixed(2)}×</p>
-            </div>
-            <div className="slip-actions">
-              <button onClick={clearSlip} disabled={slipLegs.length === 0}>CLEAR</button>
-              <button onClick={() => setSlipOpen(false)} aria-label="Close">×</button>
-            </div>
-          </div>
-
-          {slipLegs.length === 0 ? (
-            <div className="slip-empty">
-              STACK LEGS BY TAPPING ▲ YES OR ▼ NO ON ANY MARKET.<br/>
-              A PARLAY LANDS ONLY IF EVERY LEG HITS.
-            </div>
-          ) : (
-            <>
-              <ul className="slip-legs">
-                {slipLegs.map((l) => (
-                  <li key={l.marketId}>
-                    <span className={l.side === "YES" ? "badge yes" : "badge no"} style={{ padding: "4px 8px", minWidth: 42, fontSize: 10 }}>{l.side}</span>
-                    <div className="slip-leg-body">
-                      <b>{l.question}</b>
-                      <span>{l.price}¢ · {shortenPk(l.marketId)}</span>
-                    </div>
-                    <button className="rm" onClick={() => removeLeg(l.marketId)} aria-label="Remove leg">×</button>
-                  </li>
+            <div className="host-field">
+              <span className="host-label">Player limit</span>
+              <div className="seg">
+                {[2, 4, 8, 12, 16].map((n) => (
+                  <button key={n} className={hCapacity === n ? "seg-opt on" : "seg-opt"} onClick={() => setHCapacity(n)}>{n}</button>
                 ))}
-              </ul>
-              <label className="slip-stake">STAKE</label>
-              <div className="amount-row">
-                <span className="curr">$</span>
-                <input
-                  value={slipStake}
-                  onChange={(e) => setSlipStake(e.target.value.replace(/[^0-9.]/g, ""))}
-                  inputMode="decimal"
-                />
               </div>
-              <div className="slip-summary" style={{ marginTop: 14 }}>
-                <span>Combined price</span><b>{parlayQuote.combinedPrice.toFixed(2)}¢</b>
-                <span>Implied odds</span><b>{parlayQuote.impliedOdds.toFixed(2)}×</b>
-                <span title="Per-leg fee is stake × 5% × 4p(1-p) — peaks at coinflip legs. Capped at 5% overall.">Variance fee</span>
-                <b>{usd2.format(parlayQuote.feeUsdc)}</b>
-                <span>Net stake</span><b>{usd2.format(parlayQuote.netStakeUsdc)}</b>
-                <span>Payout if every leg hits</span><b className="up">{usd2.format(parlayQuote.potentialPayoutUsdc)}</b>
-                <span title="If any leg voids to 50/50 at resolution, that leg pays 0.5×.">Payout if one voids</span>
-                <b>{usd2.format(parlayQuote.halfPayoutIfOneVoidUsdc)}</b>
-              </div>
-              <div className="slip-legfees">
-                {slipLegs.map((l, i) => (
-                  <span key={l.marketId}>
-                    <em>{l.question.slice(0, 30)}{l.question.length > 30 ? "…" : ""}</em>
-                    <b>{usd2.format(parlayQuote.legFees[i] ?? 0)}</b>
-                  </span>
-                ))}
-                <small>{quoting ? "RE-QUOTING FROM PANTA…" : "PRICED FROM LIVE PANTA · 15S TTL"}</small>
-              </div>
-              <button
-                className="gbtn primary full"
-                onClick={placeParlay}
-                disabled={placingParlay || slipLegs.length < 2}
-              >
-                {placingParlay ? "SEALING PARLAY…" : slipLegs.length < 2 ? "ADD ANOTHER LEG" : `SEAL ${slipLegs.length}-LEG PARLAY`} <span className="arr">▸</span>
-              </button>
-            </>
-          )}
-        </div>
-      )}
+            </div>
 
-      {/* -------- TOAST -------- */}
-      {toast && (
-        <div className="toast" role="status">
-          {toast}
-          <button onClick={() => setToast("")} aria-label="Dismiss">×</button>
-        </div>
-      )}
+            <div className="host-2col">
+              <label className="host-num">
+                Entry (USDC)
+                <input value={hEntry} onChange={(e) => setHEntry(e.target.value.replace(/[^0-9.]/g, ""))} inputMode="decimal" />
+                <em>→ shared pool</em>
+              </label>
+              <label className="host-num">
+                Starting vault (USDC)
+                <input value={hVault} onChange={(e) => setHVault(e.target.value.replace(/[^0-9.]/g, ""))} inputMode="decimal" />
+                <em>→ each player trades</em>
+              </label>
+            </div>
 
-      {/* -------- HOST MODAL -------- */}
-      {showHost && (
-        <div className="modal-backdrop" role="presentation" onClick={() => setShowHost(false)}>
-          <form className="modal" onSubmit={createArena} onClick={(e) => e.stopPropagation()}>
-            <span className="cnr bl" /><span className="cnr br" />
-            <button type="button" className="close" onClick={() => setShowHost(false)} aria-label="Close">×</button>
-            <p className="eyebrow">◈ FORGE A RING</p>
-            <h2>OPEN THE GATES.</h2>
-            <label>
-              RING NAME
-              <input name="title" required placeholder="e.g. DeFi Sunday" maxLength={60} />
-            </label>
-            <label>
-              REALM
-              <select name="theme" defaultValue="Crypto & markets">
-                <option>Crypto &amp; markets</option>
-                <option>Sports &amp; events</option>
-                <option>Community forecasts</option>
-                <option>Product launches</option>
-              </select>
-            </label>
-            <label>
-              DURATION
-              <select name="duration" defaultValue="72 hours">
-                <option>72 hours</option>
-                <option>1 week</option>
-                <option>1 month</option>
-              </select>
-            </label>
-            <button className="gbtn primary full" type="submit" disabled={hosting}>
-              {hosting ? "REGISTERING ON PANTA…" : connected ? "PUBLISH TO PANTA" : "FORGE DRAFT"} <span className="arr">▸</span>
+            <div className="host-summary">
+              <div><span>Seat per player</span><b>{usd2.format(hostSeat)}</b></div>
+              <div><span>Pool if full</span><b className="accent">{usd2.format((Number(hEntry) || 0) * hCapacity)}</b></div>
+              <div><span>Format</span><b>{hFormat === "single" ? "1 round" : `${hRounds} rounds · cut`}</b></div>
+            </div>
+
+            <button className="btn primary full" onClick={doHost} disabled={busy} style={{ marginTop: 12 }}>
+              {busy ? "Opening…" : `Host ${hAsset} rumble`}
             </button>
-            <p className="fine">
-              Draft rings live in this browser. In production the host would call
-              <code> POST /markets/quote</code> → <code>/markets/build</code> → <code>/markets/register</code> to seal USDC markets on Panta.
+            <p className="disclaimer" style={{ marginTop: 10 }}>
+              Opens enrollment for a new rumble. If a rumble is already live or players have joined, yours starts when it settles.
             </p>
-          </form>
+          </div>
         </div>
       )}
     </main>

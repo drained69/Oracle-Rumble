@@ -1,6 +1,8 @@
 import { NextResponse } from "next/server";
 import { quoteParlay, validateParlay, type ParlayLeg } from "@/lib/parlay";
 import { findMockMarket } from "@/lib/arena-data";
+import { assetOfMarketId } from "@/lib/assets";
+import { pantaPriceToCents } from "@/lib/round-keeper";
 import { PANTA_LIVE, pantaFetch, type PantaMarket } from "@/lib/panta";
 
 /**
@@ -40,34 +42,40 @@ export async function POST(request: Request) {
   // reflects the live single-market book.
   const refreshed: ParlayLeg[] = [];
   for (const leg of body.legs) {
-    let price = 50;
     let question = leg.question ?? "";
     let correlationGroup = leg.correlationGroup;
+    let yes = 50; // YES price in cents
 
-    let live: PantaMarket | null = null;
-    if (PANTA_LIVE) {
+    const local = findMockMarket(leg.marketId);
+    // Our own BTC/ETH/SOL board markets are synthetic — price from the board,
+    // never the Panta sandbox (which returns a 50¢ fixture for any id).
+    if (local && assetOfMarketId(leg.marketId)) {
+      question ||= local.market.question;
+      correlationGroup ||= local.market.correlationGroup;
+      yes = local.market.yesPrice;
+    } else if (PANTA_LIVE) {
       try {
-        live = await pantaFetch<PantaMarket>(`/markets/${encodeURIComponent(leg.marketId)}`);
+        const live = await pantaFetch<PantaMarket & { yesPrice?: number | string }>(`/markets/${encodeURIComponent(leg.marketId)}`);
+        question ||= live.question;
+        yes = pantaPriceToCents(live.yesPrice);
       } catch {
-        live = null;
+        if (!local) return NextResponse.json({ error: `market not found: ${leg.marketId}` }, { status: 404 });
+        question ||= local.market.question;
+        correlationGroup ||= local.market.correlationGroup;
+        yes = local.market.yesPrice;
       }
-    }
-    if (live) {
-      question ||= live.question;
-      price = leg.side === "YES" ? live.yesPrice : 100 - live.yesPrice;
     } else {
-      const hit = findMockMarket(leg.marketId);
-      if (!hit) return NextResponse.json({ error: `market not found: ${leg.marketId}` }, { status: 404 });
-      question ||= hit.market.question;
-      correlationGroup ||= hit.market.correlationGroup;
-      price = leg.side === "YES" ? hit.market.yesPrice : 100 - hit.market.yesPrice;
+      if (!local) return NextResponse.json({ error: `market not found: ${leg.marketId}` }, { status: 404 });
+      question ||= local.market.question;
+      correlationGroup ||= local.market.correlationGroup;
+      yes = local.market.yesPrice;
     }
 
     refreshed.push({
       marketId: leg.marketId,
       side: leg.side,
       question,
-      price,
+      price: leg.side === "YES" ? yes : 100 - yes,
       correlationGroup
     });
   }

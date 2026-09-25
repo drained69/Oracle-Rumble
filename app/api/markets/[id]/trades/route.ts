@@ -15,10 +15,45 @@ export async function GET(_req: Request, ctx: { params: Promise<{ id: string }> 
 
   if (PANTA_LIVE) {
     try {
-      const data = await pantaFetch<{
-        trades: Array<{ signature: string; side: "YES" | "NO"; shares: number; priceCents: number; usdcAmount: string; wallet: string; ts: string }>;
-      }>(`/markets/${encodeURIComponent(id)}/trades`);
-      return NextResponse.json({ source: "panta", ...data });
+      // Panta returns `{ marketId, items: [...] }`. Each item's field names
+      // vary by phase (primary vs secondary). Handle common shapes.
+      type PantaTradeItem = {
+        signature?: string;
+        txSig?: string;
+        side?: "YES" | "NO" | "yes" | "no";
+        shares?: number | string;
+        sharesFilled?: number | string;
+        priceCents?: number;
+        price?: number | string;
+        usdcAmount?: number | string;
+        amountUsdc?: number | string;
+        wallet?: string;
+        walletAddress?: string;
+        buyerAddress?: string;
+        ts?: string;
+        createdAt?: string;
+      };
+      const data = await pantaFetch<{ items?: PantaTradeItem[]; trades?: PantaTradeItem[] } | PantaTradeItem[]>(
+        `/markets/${encodeURIComponent(id)}/trades`
+      );
+      const raw: PantaTradeItem[] = Array.isArray(data)
+        ? data
+        : (data.items ?? data.trades ?? []);
+      const trades = raw.map((t) => {
+        const side = ((t.side ?? "YES").toString().toUpperCase()) as "YES" | "NO";
+        const price = typeof t.price === "number" ? t.price : parseFloat((t.price ?? "0.5").toString());
+        const priceCents = t.priceCents ?? Math.max(0, Math.min(100, price > 1 ? Math.round(price) : Math.round(price * 100)));
+        return {
+          signature: t.signature ?? t.txSig ?? "",
+          side,
+          shares: Number(t.shares ?? t.sharesFilled ?? 0),
+          priceCents,
+          usdcAmount: String(t.usdcAmount ?? t.amountUsdc ?? "0"),
+          wallet: t.wallet ?? t.walletAddress ?? t.buyerAddress ?? "",
+          ts: t.ts ?? t.createdAt ?? new Date().toISOString()
+        };
+      });
+      return NextResponse.json({ source: "panta", trades });
     } catch (err) {
       console.error("panta /markets/{id}/trades failed, serving mock:", err);
     }
