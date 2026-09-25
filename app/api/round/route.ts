@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { STORE_ENABLED, getActiveRound, getLatestRound, saveRound } from "@/lib/round-store";
+export const dynamic = "force-dynamic";
 import { advanceToNext, bootstrapRound, marketYesPrice, tick } from "@/lib/round-keeper";
 import { cutLine, standings, type Round } from "@/lib/royale";
 
@@ -13,13 +14,16 @@ import { cutLine, standings, type Round } from "@/lib/royale";
  * Response: { round, yesPrice, cutLine, standings, persisted }
  */
 async function currentWithTick(): Promise<Round | null> {
+  const HOLD_MS = 20_000; // keep a finished round on screen this long
   let round = await getActiveRound();
   if (!round) {
-    // No active round. If the latest is complete/cancelled we still show it
-    // for a beat, but bootstrap a fresh enrolling round so the lobby is live.
     const latest = await getLatestRound();
     if (latest && (latest.status === "complete" || latest.status === "cancelled")) {
-      // keep it briefly, but spin up the next lobby
+      // Hold the result on screen briefly so players see the outcome, then
+      // auto-open the next lobby.
+      if (latest.endedAt && Date.now() - latest.endedAt < HOLD_MS) {
+        return latest;
+      }
       const fresh = await bootstrapRound();
       if (fresh) { await saveRound(fresh); round = fresh; }
       else round = latest;
@@ -67,8 +71,17 @@ export async function GET() {
  * Force a fresh round (host action). Optional config overrides.
  */
 export async function POST(request: Request) {
-  const body = (await request.json().catch(() => ({}))) as { action?: string; config?: Record<string, unknown> };
+  const body = (await request.json().catch(() => ({}))) as { action?: string; config?: Record<string, unknown>; force?: boolean };
   if (body.action === "new") {
+    // Guard against griefing: don't blow away an in-progress round. Only
+    // open a fresh one when nothing is active (or when a host explicitly
+    // forces it with the ROUND_HOST_SECRET).
+    const active = await getActiveRound();
+    const forceOk = body.force === true && !!process.env.ROUND_HOST_SECRET
+      && request.headers.get("x-host-secret") === process.env.ROUND_HOST_SECRET;
+    if (active && !forceOk) {
+      return NextResponse.json({ error: "a round is already active", round: active }, { status: 409 });
+    }
     const fresh = await bootstrapRound(body.config as never);
     if (!fresh) return NextResponse.json({ error: "no market available" }, { status: 503 });
     await saveRound(fresh);

@@ -146,9 +146,12 @@ export default function Home() {
 
   const startNew = useCallback(async () => {
     setBusy(true);
-    try { setView(await newRound()); setToast("New round opened."); }
-    finally { setBusy(false); }
-  }, []);
+    try {
+      const v = await newRound();
+      if (v.error) { await refresh(); }   // a round is already active — jump to it
+      else { setView(v); setToast("New round opened."); }
+    } finally { setBusy(false); }
+  }, [refresh]);
 
   const sourceBadge = dataSource === "panta"
     ? { text: `LIVE · ${CLUSTER}`, cls: "src live" }

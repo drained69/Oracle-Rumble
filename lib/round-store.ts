@@ -107,6 +107,56 @@ export async function saveRound(round: Round): Promise<void> {
   );
 }
 
+/**
+ * Atomically mutate the current active round. On Postgres this runs inside
+ * a transaction with `SELECT … FOR UPDATE` so concurrent enroll/trade calls
+ * serialize instead of clobbering each other. The mutator must be
+ * self-contained (no external awaits that need the latest state) — fetch any
+ * external data (e.g. the Panta price) BEFORE calling this and close over it.
+ *
+ * Returns the mutated round, or null if there's no active round. If the
+ * mutator throws, the transaction rolls back.
+ */
+export async function mutateActiveRound(
+  mutator: (round: Round) => void
+): Promise<{ round: Round | null; error?: string }> {
+  if (!STORE_ENABLED) {
+    const r = memActive();
+    if (!r) return { round: null };
+    try { mutator(r); } catch (e) { return { round: r, error: e instanceof Error ? e.message : "mutate error" }; }
+    memSave(r);
+    return { round: r };
+  }
+  await initSchema();
+  const client = await pool().connect();
+  try {
+    await client.query("BEGIN");
+    const { rows } = await client.query(
+      `SELECT data FROM rounds WHERE status = ANY($1) ORDER BY created_at DESC LIMIT 1 FOR UPDATE`,
+      [ACTIVE]
+    );
+    const round = rows[0]?.data as Round | undefined;
+    if (!round) { await client.query("ROLLBACK"); return { round: null }; }
+    try {
+      mutator(round);
+    } catch (e) {
+      await client.query("ROLLBACK");
+      return { round, error: e instanceof Error ? e.message : "mutate error" };
+    }
+    await client.query(
+      `UPDATE rounds SET status = $2, round_no = $3, data = $4, updated_at = now() WHERE id = $1`,
+      [round.id, round.status, round.roundNumber, JSON.stringify(round)]
+    );
+    await client.query("COMMIT");
+    return { round };
+  } catch (e) {
+    await client.query("ROLLBACK").catch(() => {});
+    throw e;
+  } finally {
+    client.release();
+  }
+}
+
 export async function recentRounds(limit = 10): Promise<Round[]> {
   if (!STORE_ENABLED) return [..._mem.values()].sort((a, b) => b.createdAt - a.createdAt).slice(0, limit);
   await initSchema();

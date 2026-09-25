@@ -67,6 +67,7 @@ export type Round = {
   createdAt: number;
   enrollDeadline: number; // ms epoch
   liveDeadline: number;   // ms epoch — 0 until live
+  endedAt: number;        // ms epoch — set when complete/cancelled, else 0
   championId: string | null;
   history: string[];      // human-readable event log
 };
@@ -81,9 +82,9 @@ export const DEFAULT_CONFIG: RoundConfig = {
   entryUsdc: 25,
   startingBankroll: 1000,
   capacity: 8,
-  minEntrants: 4,
-  enrollmentSec: 90,
-  liveSec: 300,
+  minEntrants: 2,
+  enrollmentSec: 30,
+  liveSec: 180,
   roundLimit: 3
 };
 
@@ -109,6 +110,7 @@ export function createRound(config: RoundConfig, roundNumber = 1): Round {
     createdAt: now,
     enrollDeadline: now + config.enrollmentSec * 1000,
     liveDeadline: 0,
+    endedAt: 0,
     championId: null,
     history: [`Round ${roundNumber} opened for enrollment.`]
   };
@@ -136,20 +138,31 @@ export function enroll(round: Round, entrant: Entrant): { ok: boolean; reason?: 
   if (round.entrants.length >= round.config.capacity) return { ok: false, reason: "Round is full." };
   if (round.entrants.some((e) => e.wallet === entrant.wallet)) return { ok: false, reason: "Already enrolled." };
   round.entrants.push(entrant);
-  round.prizePoolUsdc += round.config.entryUsdc;
+  // Only real players fund the pool. Bots are seat-fillers (sponsor-backed
+  // per the Market Royale model) and never inflate the prize.
+  if (!entrant.isBot) round.prizePoolUsdc += round.config.entryUsdc;
   round.history.push(`${entrant.nickname} entered (${round.entrants.length}/${round.config.capacity}).`);
   return { ok: true };
 }
 
-export function fillWithBots(round: Round): void {
-  if (round.status !== "enrolling") return;
+/** Fill the round with bots up to `target` entrants (default: capacity). */
+export function fillWithBots(round: Round, target = round.config.capacity): void {
+  if (round.status !== "enrolling" && round.status !== "live") return;
   const used = new Set(round.entrants.map((e) => e.nickname));
+  const cap = Math.min(target, round.config.capacity);
   let i = 0;
-  while (round.entrants.length < round.config.capacity && i < BOT_NAMES.length) {
+  while (round.entrants.length < cap && i < BOT_NAMES.length) {
     const name = BOT_NAMES[i++];
     if (used.has(name)) continue;
-    enroll(round, makeEntrant(round, `bot:${name.toLowerCase()}`, name, true));
+    const bot = makeEntrant(round, `bot:${name.toLowerCase()}`, name, true);
+    round.entrants.push(bot);           // bots don't fund the pool
+    round.history.push(`${name} entered (${round.entrants.length}/${round.config.capacity}).`);
+    used.add(name);
   }
+}
+
+export function humanCount(round: Round): number {
+  return round.entrants.filter((e) => !e.isBot).length;
 }
 
 // ── bankroll / trading ────────────────────────────────────────────────
@@ -249,6 +262,7 @@ export function settle(round: Round, finalYesPrice: number): void {
 
   if (survivors.length <= 1 || round.roundNumber >= round.config.roundLimit) {
     round.status = "complete";
+    round.endedAt = Date.now();
     round.championId = survivors[0]?.id ?? null;
     const champ = survivors[0];
     round.history.push(champ ? `${champ.nickname} wins the pool of ${round.prizePoolUsdc} USDC.` : `Round complete.`);
@@ -281,6 +295,7 @@ export function advance(round: Round, nextMarket: { marketId: string; marketQues
     createdAt: Date.now(),
     enrollDeadline: Date.now(),
     liveDeadline: Date.now() + round.config.liveSec * 1000,
+    endedAt: 0,
     championId: null,
     history: [`Round ${round.roundNumber + 1} live — ${survivors.length} survivors on ${nextMarket.asset}.`]
   };

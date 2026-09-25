@@ -16,6 +16,7 @@ import {
   createRound,
   DEFAULT_CONFIG,
   fillWithBots,
+  humanCount,
   markToMarket,
   settle,
   type Round,
@@ -84,9 +85,18 @@ export async function tick(round: Round): Promise<Round> {
   const now = Date.now();
 
   if (round.status === "enrolling" && now >= round.enrollDeadline) {
+    // A round needs at least one real player — otherwise cancel rather than
+    // run a bots-only match.
+    if (humanCount(round) === 0) {
+      round.status = "cancelled";
+      round.endedAt = now;
+      round.history.push("Round cancelled — no players entered.");
+      return round;
+    }
     fillWithBots(round);
     if (round.entrants.length < round.config.minEntrants) {
       round.status = "cancelled";
+      round.endedAt = now;
       round.history.push(`Round cancelled — only ${round.entrants.length} entrants. Entry pool refunded.`);
       return round;
     }
