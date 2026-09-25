@@ -9,7 +9,8 @@
  */
 
 import { PANTA_LIVE, pantaFetch, type PantaMarket } from "@/lib/panta";
-import { arenas as mockArenas, findMockMarket } from "@/lib/arena-data";
+import { markets as directionMarkets, findMockMarket } from "@/lib/arena-data";
+import { ASSET_SYMBOLS, assetOfMarketId, getAsset, type AssetSymbol } from "@/lib/assets";
 import {
   advance,
   botTick,
@@ -37,27 +38,56 @@ export async function marketYesPrice(marketId: string): Promise<number> {
   return hit ? hit.market.yesPrice : 50;
 }
 
-/** Pick a market to run a round on — first live/mock market, optionally excluding one. */
-export async function pickMarket(excludeId?: string): Promise<{ marketId: string; marketQuestion: string; category: string; asset: string } | null> {
-  let candidates: Array<{ id: string; question: string; category: string }> = [];
+type MarketPick = { marketId: string; marketQuestion: string; category: string; asset: string };
+
+/** Which of BTC/ETH/SOL does this market title/id describe, if any? */
+function assetOfCandidate(id: string, question: string): AssetSymbol | null {
+  const byId = assetOfMarketId(id);
+  if (byId) return byId;
+  const hay = `${question}`.toLowerCase();
+  for (const sym of ASSET_SYMBOLS) {
+    const a = getAsset(sym)!;
+    if (hay.includes(sym.toLowerCase()) || hay.includes(a.name.toLowerCase())) return sym;
+  }
+  return null;
+}
+
+/**
+ * Pick a market to run a round on. The universe is deliberately the three
+ * assets only — BTC/ETH/SOL — so every candidate must resolve to one of them.
+ * Live Panta markets are filtered to those three; the mock direction board is
+ * the fallback. Optionally excludes the current market so rounds rotate assets.
+ */
+export async function pickMarket(excludeId?: string): Promise<MarketPick | null> {
+  let candidates: Array<{ id: string; question: string; category: string; asset: AssetSymbol }> = [];
   if (PANTA_LIVE) {
     try {
       const data = await pantaFetch<{ items?: Array<{ marketId?: string; id?: string; title?: string; question?: string; category?: string }> }>("/markets");
       const items = data.items ?? [];
-      candidates = items.map((m) => ({ id: m.marketId ?? m.id ?? "", question: m.title ?? m.question ?? "Market", category: m.category ?? "crypto" }));
+      candidates = items
+        .map((m) => {
+          const id = m.marketId ?? m.id ?? "";
+          const question = m.title ?? m.question ?? "Market";
+          const asset = assetOfCandidate(id, question);
+          return asset ? { id, question, category: m.category ?? "crypto", asset } : null;
+        })
+        .filter((c): c is NonNullable<typeof c> => c !== null);
     } catch { /* fall through */ }
   }
   if (candidates.length === 0) {
-    candidates = mockArenas.flatMap((a) => a.markets.map((m) => ({ id: m.id, question: m.question, category: m.category })));
+    candidates = directionMarkets.map((m) => ({ id: m.id, question: m.question, category: m.category, asset: m.asset }));
   }
-  const pool = excludeId ? candidates.filter((c) => c.id !== excludeId) : candidates;
-  const chosen = (pool.length ? pool : candidates)[0];
+  // Rotate to a different asset than the one just played, not just a
+  // different market on the same asset.
+  const excludeAsset = excludeId ? assetOfCandidate(excludeId, "") : null;
+  const pool = candidates.filter((c) => c.id !== excludeId && (!excludeAsset || c.asset !== excludeAsset));
+  const chosen = (pool.length ? pool : candidates.filter((c) => c.id !== excludeId))[0] ?? candidates[0];
   if (!chosen) return null;
   return {
     marketId: chosen.id,
     marketQuestion: chosen.question,
     category: chosen.category,
-    asset: chosen.category.toUpperCase().slice(0, 8)
+    asset: chosen.asset
   };
 }
 

@@ -1,87 +1,74 @@
 [
   {
-    "question": "Will SOL close above $500 by end of 2027?",
+    "question": "Will Bitcoin close above $150,000 by end of 2026?",
     "category": "crypto",
-    "resolutionRule": "Resolves YES if Solana's SOL/USD closing price on any top-3 exchange by volume (Coinbase, Binance, Kraken) is >= $500 at 23:59 UTC on Dec 31, 2027. Uses the Coinbase daily close as tiebreaker.",
+    "asset": "BTC",
+    "resolutionRule": "Resolves YES if BTC/USD closing price on Coinbase is >= $150,000 at 23:59 UTC on Dec 31, 2026. Coinbase daily close is the source of truth; Binance BTC/USDT is the tiebreaker.",
     "sourcesOfTruth": [
-      "https://www.coinbase.com/price/solana",
-      "https://www.binance.com/en/trade/SOL_USDT"
+      "https://www.coinbase.com/price/bitcoin",
+      "https://www.binance.com/en/trade/BTC_USDT"
     ],
-    "imageUrl": "https://placehold.co/512x512/0b0d14/d4a24c/png?text=SOL",
-    "endTime": "2027-12-31T23:59:00Z"
+    "imageUrl": "https://placehold.co/512x512/0b0d14/f7931a/png?text=BTC",
+    "endTime": "2026-12-31T23:59:00Z"
   },
   {
     "question": "Will Bitcoin set a new all-time high in 2026?",
     "category": "crypto",
-    "resolutionRule": "Resolves YES if BTC/USD trades strictly above its previous ATH (as recorded on TradingView BTCUSD, index INDEX:BTCUSD) at any moment before Dec 31 2026 23:59 UTC.",
+    "asset": "BTC",
+    "resolutionRule": "Resolves YES if BTC/USD trades strictly above its previous all-time high (INDEX:BTCUSD on TradingView) at any moment before Dec 31 2026 23:59 UTC.",
     "sourcesOfTruth": [
       "https://www.tradingview.com/symbols/BTCUSD/",
       "https://www.coinbase.com/price/bitcoin"
     ],
-    "imageUrl": "https://placehold.co/512x512/0b0d14/f0c46a/png?text=BTC",
+    "imageUrl": "https://placehold.co/512x512/0b0d14/f7931a/png?text=BTC",
     "endTime": "2026-12-31T23:59:00Z"
   },
   {
-    "question": "Will Solana DeFi TVL cross $15B this quarter?",
+    "question": "Will Ethereum close above $6,000 by end of 2026?",
     "category": "crypto",
-    "resolutionRule": "Resolves YES if DefiLlama reports Solana chain TVL >= $15,000,000,000 at any point between market open and the end of the current calendar quarter (23:59 UTC on the final day).",
+    "asset": "ETH",
+    "resolutionRule": "Resolves YES if ETH/USD closing price on Coinbase is >= $6,000 at 23:59 UTC on Dec 31, 2026. Coinbase daily close is the source of truth; Binance ETH/USDT is the tiebreaker.",
     "sourcesOfTruth": [
-      "https://defillama.com/chain/Solana"
+      "https://www.coinbase.com/price/ethereum",
+      "https://www.binance.com/en/trade/ETH_USDT"
     ],
-    "imageUrl": "https://placehold.co/512x512/0b0d14/6fe5a1/png?text=TVL",
+    "imageUrl": "https://placehold.co/512x512/0b0d14/627eea/png?text=ETH",
     "endTime": "2026-12-31T23:59:00Z"
   },
   {
-    "question": "Will OpenAI release a new frontier model in Q1 2027?",
-    "category": "science",
-    "resolutionRule": "Resolves YES if OpenAI publicly releases a new model family (a distinctly-branded family beyond GPT-5) between Jan 1 and Mar 31 2027. Announcement must be on openai.com or the official OpenAI blog and the model must be generally available (not solely research preview).",
+    "question": "Will Ethereum outperform Bitcoin in Q4 2026?",
+    "category": "crypto",
+    "asset": "ETH",
+    "resolutionRule": "Resolves YES if ETH/USD percentage return exceeds BTC/USD percentage return over Q4 2026 (Oct 1 00:00 UTC open to Dec 31 23:59 UTC close, Coinbase prices).",
     "sourcesOfTruth": [
-      "https://openai.com/blog",
-      "https://openai.com/models"
+      "https://www.coinbase.com/price/ethereum",
+      "https://www.coinbase.com/price/bitcoin"
     ],
-    "imageUrl": "https://placehold.co/512x512/0b0d14/a78bfa/png?text=OpenAI",
-    "endTime": "2027-03-31T23:59:00Z"
-  },
-  {
-    "question": "Will Anthropic ship a new Claude family in the next 60 days?",
-    "category": "science",
-    "resolutionRule": "Resolves YES if Anthropic publicly releases a new Claude model family (branded distinct from Claude 4 / Claude 5) within 60 days of market open. Announcement must be on anthropic.com or the Anthropic newsroom.",
-    "sourcesOfTruth": [
-      "https://www.anthropic.com/news",
-      "https://docs.anthropic.com/en/docs/about-claude/models"
-    ],
-    "imageUrl": "https://placehold.co/512x512/0b0d14/ff9a3c/png?text=Claude",
-    "endTime": "2026-11-23T23:59:00Z"
-  },
-  {
-    "question": "Will Apple announce a new hardware SKU this month?",
-    "category": "world",
-    "resolutionRule": "Resolves YES if Apple issues an official press release announcing a new hardware product family (not just a spec-bump refresh) in the calendar month of market open.",
-    "sourcesOfTruth": [
-      "https://www.apple.com/newsroom/"
-    ],
-    "imageUrl": "https://placehold.co/512x512/0b0d14/b7b0a0/png?text=Apple",
-    "endTime": "2026-10-31T23:59:00Z"
-  },
-  {
-    "question": "Will Vercel ship a new AI product this quarter?",
-    "category": "world",
-    "resolutionRule": "Resolves YES if Vercel publicly announces a new AI-branded product (v0 sub-product, new SDK line, or partnership offering) during the calendar quarter of market open.",
-    "sourcesOfTruth": [
-      "https://vercel.com/blog"
-    ],
-    "imageUrl": "https://placehold.co/512x512/0b0d14/7ec8ff/png?text=Vercel",
+    "imageUrl": "https://placehold.co/512x512/0b0d14/627eea/png?text=ETH",
     "endTime": "2026-12-31T23:59:00Z"
   },
   {
-    "question": "Will the Lakers reach the 2027 NBA Conference Finals?",
-    "category": "sports",
-    "resolutionRule": "Resolves YES if the Los Angeles Lakers appear in the 2027 NBA Western Conference Finals (regardless of series outcome).",
+    "question": "Will Solana close above $400 by end of 2026?",
+    "category": "crypto",
+    "asset": "SOL",
+    "resolutionRule": "Resolves YES if SOL/USD closing price on Coinbase is >= $400 at 23:59 UTC on Dec 31, 2026. Coinbase daily close is the source of truth; Binance SOL/USDT is the tiebreaker.",
     "sourcesOfTruth": [
-      "https://www.nba.com/playoffs",
-      "https://www.espn.com/nba/playoffs"
+      "https://www.coinbase.com/price/solana",
+      "https://www.binance.com/en/trade/SOL_USDT"
     ],
-    "imageUrl": "https://placehold.co/512x512/0b0d14/ff5b6a/png?text=NBA",
-    "endTime": "2027-06-01T23:59:00Z"
+    "imageUrl": "https://placehold.co/512x512/0b0d14/14f195/png?text=SOL",
+    "endTime": "2026-12-31T23:59:00Z"
+  },
+  {
+    "question": "Will Solana flip Ethereum in daily DEX volume before 2027?",
+    "category": "crypto",
+    "asset": "SOL",
+    "resolutionRule": "Resolves YES if Solana's 24h DEX volume (DefiLlama) exceeds Ethereum's 24h DEX volume on any single UTC day before Jan 1 2027.",
+    "sourcesOfTruth": [
+      "https://defillama.com/dexs/chains/solana",
+      "https://defillama.com/dexs/chains/ethereum"
+    ],
+    "imageUrl": "https://placehold.co/512x512/0b0d14/14f195/png?text=SOL",
+    "endTime": "2026-12-31T23:59:00Z"
   }
 ]
