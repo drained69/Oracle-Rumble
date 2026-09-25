@@ -12,7 +12,9 @@
   },
   "dependencies": {
     "@solana/web3.js": "^1.99.0",
+    "@types/pg": "^8.23.1",
     "next": "15.5.26",
+    "pg": "^8.23.0",
     "react": "19.1.1",
     "react-dom": "19.1.1"
   },
