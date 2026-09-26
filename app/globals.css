@@ -298,6 +298,40 @@ main { min-height: 100vh; }
 .fb-bank { font-family: 'Chakra Petch', sans-serif; font-weight: 700; color: var(--ink); }
 .fb-prize { font-family: 'Chakra Petch', sans-serif; font-weight: 700; color: var(--up); text-align: right; font-size: 14px; }
 
+/* ── arena chip (HUD) + invite share ──────────────────── */
+.arena-chip {
+  display: inline-flex; align-items: center; gap: 6px;
+  font-family: 'Chakra Petch', sans-serif; font-weight: 700; font-size: 11px;
+  letter-spacing: 1px; padding: 6px 12px; border-radius: 999px;
+  border: 1px solid var(--line-2); background: var(--card-2); color: var(--ink-2);
+  cursor: default;
+}
+.arena-chip.public { color: var(--purple); background: rgba(155, 107, 255, 0.1); border-color: rgba(155, 107, 255, 0.35); }
+.arena-chip.private { color: var(--cyan); background: rgba(47, 230, 255, 0.08); border-color: rgba(47, 230, 255, 0.35); cursor: pointer; }
+.arena-chip.private:hover { box-shadow: 0 0 16px rgba(47, 230, 255, 0.25); }
+.arena-chip .copy-hint { font-size: 12px; opacity: .75; }
+
+.invite-box {
+  padding: 18px; margin: 6px 0 4px; border-radius: 14px;
+  background: linear-gradient(160deg, rgba(47, 230, 255, 0.08), rgba(155, 107, 255, 0.08));
+  border: 1px solid rgba(47, 230, 255, 0.3);
+}
+.invite-code {
+  font-family: 'Chakra Petch', sans-serif; font-weight: 700; font-size: 32px; color: var(--cyan);
+  letter-spacing: 4px; text-align: center; margin-bottom: 12px; text-shadow: 0 0 18px rgba(47, 230, 255, 0.5);
+}
+.invite-url {
+  display: flex; gap: 8px; align-items: center; margin-bottom: 12px;
+  background: var(--bg-2); border: 1px solid var(--line-2); border-radius: 10px; padding: 6px 6px 6px 12px;
+}
+.invite-url input {
+  flex: 1; min-width: 0; background: transparent; border: 0; outline: 0;
+  color: var(--ink); font-family: 'Chakra Petch', sans-serif; font-weight: 600; font-size: 13px;
+}
+.invite-share { display: flex; gap: 8px; flex-wrap: wrap; justify-content: center; }
+.link { color: var(--cyan); text-decoration: underline; text-underline-offset: 3px; }
+.link:hover { filter: brightness(1.15); }
+
 /* ── host a rumble ─────────────────────────────────────── */
 .host-btn { background: linear-gradient(120deg, var(--magenta), var(--purple)); color: #fff; padding: 8px 16px; font-size: 13px; box-shadow: var(--glow-magenta); }
 .host-btn:hover { filter: brightness(1.08); }

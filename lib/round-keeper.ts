@@ -108,12 +108,12 @@ export async function pickMarket(excludeId?: string): Promise<MarketPick | null>
 }
 
 /**
- * Bootstrap a fresh enrolling round. A host can pass config overrides (asset,
- * format, entry, vault, capacity, rounds); they're clamped to safe bounds by
- * normalizeConfig. If the host picked an asset, we run on that asset's market;
- * otherwise the keeper picks one.
+ * Bootstrap a fresh enrolling round IN AN ARENA. A host can pass config
+ * overrides (asset, format, entry, vault, capacity, rounds); they're clamped
+ * to safe bounds by normalizeConfig. If the host picked an asset, we run on
+ * that asset's market; otherwise the keeper picks one.
  */
-export async function bootstrapRound(overrides?: Partial<RoundConfig>): Promise<Round | null> {
+export async function bootstrapRound(overrides?: Partial<RoundConfig>, arenaCode?: string): Promise<Round | null> {
   const wantAsset = overrides?.asset ? String(overrides.asset).toUpperCase() : undefined;
   const market = await pickMarketForAsset(wantAsset);
   if (!market) return null;
@@ -128,7 +128,7 @@ export async function bootstrapRound(overrides?: Partial<RoundConfig>): Promise<
   const { marketId: _m, marketQuestion: _q, category: _c, asset: _a, ...rules } = overrides ?? {};
   void _m; void _q; void _c; void _a;
   const config = normalizeConfig(base, rules);
-  return createRound(config, 1);
+  return createRound(config, 1, arenaCode);
 }
 
 /**

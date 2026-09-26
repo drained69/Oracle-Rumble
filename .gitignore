@@ -3,3 +3,13 @@ node_modules
 .env.local
 .env*.local
 *.tsbuildinfo
+
+# Solana program + deployer secret keypairs — never commit
+.keys/
+
+# SBF toolchain files that must NEVER be in the repo
+llvm/
+rust/
+platform-tools*
+tmp-platform-tools*
+version.md
