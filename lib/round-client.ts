@@ -81,7 +81,7 @@ export async function getRound(arena?: string): Promise<RoundView> {
  * server responds with 402 { needsDeposit: true }; the caller must sign a
  * Deposit tx and re-post with the resulting signature.
  */
-export async function enrollRound(wallet: string, nickname: string, arena?: string, escrowSignature?: string): Promise<{ round?: Round; arena?: string; entrantId?: string; error?: string; needsDeposit?: boolean }> {
+export async function enrollRound(wallet: string, nickname: string, arena?: string, escrowSignature?: string): Promise<{ round?: Round; arena?: string; entrantId?: string; error?: string; needsDeposit?: boolean; already?: boolean; escrowDown?: boolean }> {
   const res = await fetch("/api/round/enroll", {
     method: "POST",
     headers: { "content-type": "application/json" },
@@ -95,8 +95,9 @@ export async function enrollRound(wallet: string, nickname: string, arena?: stri
  * the connected wallet, then finalize the enrollment. Falls back cleanly to
  * ledger enroll when the arena is not escrow-backed.
  */
-export async function enrollWithEscrow(wallet: string, nickname: string, arena?: string): Promise<{ round?: Round; entrantId?: string; escrowSignature?: string; error?: string }> {
-  // Attempt 1: plain ledger enroll. If the arena needs a deposit we get 402.
+export async function enrollWithEscrow(wallet: string, nickname: string, arena?: string): Promise<{ round?: Round; entrantId?: string; escrowSignature?: string; already?: boolean; error?: string }> {
+  // Attempt 1: plain ledger enroll. Returns 402 if the arena needs a deposit,
+  // or a fast-path `already: true` if this wallet is already enrolled.
   const first = await enrollRound(wallet, nickname, arena);
   if (!first.needsDeposit) return first;
 
@@ -107,6 +108,14 @@ export async function enrollWithEscrow(wallet: string, nickname: string, arena?:
     body: JSON.stringify({ action: "deposit", wallet, arena })
   }).then((r) => r.json());
   if (txRes.escrow === "inactive") return { error: "escrow is inactive on the server" };
+  // If the server tells us this wallet has already deposited on-chain, retry
+  // the enroll — the ledger probably just doesn't know yet. No signing needed.
+  if (txRes.alreadyDeposited) {
+    // We don't have the sig, but PDA exists — refetch enrollment. If the
+    // server-side replay check bounces us, that's fine (already-enrolled path).
+    const re = await enrollRound(wallet, nickname, arena);
+    return re.round ? re : { error: "already deposited on-chain but ledger enroll blocked — reload the arena" };
+  }
   if (txRes.error) return { error: txRes.error };
 
   // Sign + broadcast via the connected wallet.

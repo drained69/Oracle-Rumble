@@ -31,9 +31,35 @@ export async function POST(request: Request) {
   const peek = await getActiveRound(arena);
   if (!peek) return NextResponse.json({ error: "no active round in this arena", arena }, { status: 404 });
 
+  // BUG D fix — if this wallet is already enrolled, short-circuit with success.
+  // Prevents a page reload from asking the wallet to sign a Deposit that would
+  // then fail on-chain with AlreadyInitialized.
+  const existing = peek.entrants.find((e) => e.wallet === body.wallet);
+  if (existing) {
+    return NextResponse.json({ round: peek, arena, entrantId: existing.id, already: true });
+  }
+
+  // BUG E fix — if the arena is escrow-backed but the server can no longer
+  // reach the escrow (env var removed, host key missing), REFUSE. Never fall
+  // through to ledger-only enrollment for an arena that expects on-chain USDC.
+  if (peek.escrow && !escrowReady()) {
+    return NextResponse.json({
+      error: "escrow service unavailable — try again later",
+      escrowDown: true
+    }, { status: 503 });
+  }
+
   const needsDeposit = escrowReady() && !!peek.escrow;
   let escrowSignature: string | undefined;
   if (needsDeposit) {
+    // Only enrolling rounds accept deposits. Refuse early so the client
+    // doesn't get a wallet prompt for a tx that will fail on-chain.
+    if (peek.status !== "enrolling") {
+      return NextResponse.json({ error: `enrollment closed (round is ${peek.status})` }, { status: 409 });
+    }
+    if (peek.entrants.filter((e) => !e.isBot).length >= peek.config.capacity) {
+      return NextResponse.json({ error: "arena is full" }, { status: 409 });
+    }
     if (!body.escrowSignature) {
       return NextResponse.json({
         error: "deposit required",

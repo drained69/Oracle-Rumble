@@ -506,8 +506,7 @@ main { min-height: 100vh; }
 .arena-shell { max-width: 1200px; margin: 0 auto; padding: 0 clamp(16px, 4vw, 32px); }
 
 .roundbar {
-  display: grid; grid-template-columns: repeat(6, auto) 1fr auto;
-  gap: 0; margin: 20px 0 0;
+  display: flex; flex-wrap: wrap; margin: 20px 0 0;
   background: var(--bg-elev); border: 1px solid var(--border); border-radius: var(--r-lg);
   overflow: hidden;
 }
@@ -765,9 +764,8 @@ main { min-height: 100vh; }
   .featured { grid-template-columns: 1fr; }
   .featured-main { border-right: 0; border-bottom: 1px solid var(--border); }
   .featured-mkt { grid-template-columns: repeat(2, 1fr); }
-  .roundbar { grid-template-columns: repeat(3, 1fr); }
-  .rb-cell { border-right: 0; border-bottom: 1px solid var(--border); }
-  .rb-cell.grow { grid-column: 1 / -1; }
+  .rb-cell { flex-basis: 50%; border-right: 0; border-bottom: 1px solid var(--border); }
+  .rb-cell.grow { flex-basis: 100%; }
   .cockpit { grid-template-columns: 1fr; }
   .roster { position: static; }
   .vault { grid-template-columns: repeat(2, 1fr); }
