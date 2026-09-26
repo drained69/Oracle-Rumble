@@ -48,11 +48,6 @@ export async function POST(request: Request) {
     if (!conf.ok) return NextResponse.json({ error: `deposit not confirmed: ${conf.err ?? "unknown"}` }, { status: 400 });
     const chk = await verifyPlayerDeposited(body.wallet, peek.escrow!.roundVault);
     if (!chk.ok) return NextResponse.json({ error: `on-chain deposit missing: ${chk.err ?? "unknown"}` }, { status: 400 });
-    // Prevent the same signature being replayed to enroll a different nickname
-    // after the wallet was booted out — the PDA check already stops double
-    // deposits, but we also gate the ledger side.
-    const already = peek.escrow!.history.some((h) => h.includes(body.escrowSignature!.slice(0, 12)));
-    if (already) return NextResponse.json({ error: "signature already used" }, { status: 409 });
     escrowSignature = body.escrowSignature;
   }
 
@@ -60,6 +55,20 @@ export async function POST(request: Request) {
   let enrollError: string | undefined;
   const { round, error } = await mutateActiveRound(arena, (r) => {
     if (r.status !== "enrolling") { enrollError = "enrollment closed for this round"; return; }
+    // Replay guard runs INSIDE the advisory lock so two concurrent enrolls
+    // with the same signature can't both make it through.
+    if (escrowSignature && r.escrow) {
+      const sigMark = escrowSignature.slice(0, 12);
+      if (r.escrow.history.some((h) => h.includes(sigMark))) {
+        enrollError = "signature already used"; return;
+      }
+    }
+    // Also gate: this wallet can only enroll once. The on-chain PlayerEntry
+    // PDA already prevents double-deposits, but we mirror it in the ledger
+    // to give a fast, arena-scoped answer without needing another RPC call.
+    if (r.entrants.some((e) => e.wallet === body.wallet)) {
+      enrollError = "wallet already enrolled"; return;
+    }
     const nickname = (body.nickname || body.wallet.slice(0, 4)).slice(0, 16);
     const entrant = makeEntrant(r, body.wallet, nickname, false);
     const res = enroll(r, entrant);

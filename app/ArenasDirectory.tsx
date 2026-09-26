@@ -96,6 +96,7 @@ export default function ArenasDirectory() {
   // locks. Quick match keeps the default fast 30s window.
   const [hStartInMin, setHStartInMin] = useState(15);
   const [inviteInfo, setInviteInfo] = useState<{ code: string; url: string } | null>(null);
+  const [escrow, setEscrow] = useState<{ active: boolean; reason?: string | null } | null>(null);
 
   // ── boot ──────────────────────────────────────────────────────────
   useEffect(() => {
@@ -103,6 +104,7 @@ export default function ArenasDirectory() {
       const w = localStorage.getItem(WALLET_KEY);
       if (w) setWallet(w);
     } catch { /* ignore */ }
+    fetch("/api/escrow/status", { cache: "no-store" }).then((r) => r.json()).then(setEscrow).catch(() => setEscrow({ active: false, reason: "unreachable" }));
   }, []);
 
   const refresh = useCallback(async () => {
@@ -209,11 +211,11 @@ export default function ArenasDirectory() {
       {/* ── HUD ─────────────────────────────────────────────── */}
       <nav className="hud-bar">
         <a href="/" className="brand" aria-label="Oracle Rumble">
-          <svg className="mark" viewBox="0 0 64 64" width="22" height="22" aria-hidden="true">
-            <circle cx="32" cy="32" r="19" stroke="#1a1410" strokeWidth="7" />
-            <path d="M22 36L30 28L35 33L44 22" stroke="#c9752f" strokeWidth="6" strokeLinecap="square" strokeLinejoin="miter" />
+          <svg className="mark" viewBox="0 0 64 64" width="24" height="24" aria-hidden="true">
+            <circle cx="32" cy="32" r="19" stroke="#00ff9d" strokeWidth="6" fill="none" />
+            <path d="M22 36L30 28L35 33L44 22" stroke="#ffb54c" strokeWidth="5" strokeLinecap="square" strokeLinejoin="miter" fill="none" />
           </svg>
-          oracle rumble
+          ORACLE RUMBLE
         </a>
         <div className="hud-nav">
           <a href="#arenas">Arenas</a>
@@ -223,6 +225,17 @@ export default function ArenasDirectory() {
         </div>
         <div className="hud-right">
           <span className="src live">LIVE · {CLUSTER}</span>
+          {escrow && (
+            <span
+              className={`escrow-badge ${escrow.active ? "on" : "off"}`}
+              title={escrow.active
+                ? "Real on-chain USDC — wallet will sign every seat deposit."
+                : `Practice mode: ${escrow.reason ?? "escrow not configured"}. No wallet prompts, no real USDC moves.`}
+            >
+              <span className="dot" />
+              {escrow.active ? "ON-CHAIN" : "PRACTICE"}
+            </span>
+          )}
           <button className={wallet ? "wallet connected" : "wallet"} onClick={connect}>
             <span className="avatar">{wallet ? wallet.slice(0, 2).toUpperCase() : "?"}</span>
             {wallet ? shortPk(wallet) : "Connect"}
@@ -233,7 +246,7 @@ export default function ArenasDirectory() {
       {/* ── EXPLAINER HERO: what is Oracle Rumble? ─────────── */}
       <section className="explainer-shell" id="what">
         <p className="eyebrow">Prediction-market battle royale · Solana {CLUSTER}</p>
-        <h1>Trade the same market. Outlast the pack. Split the pool.</h1>
+        <h1>Trade the same market. <em>Outlast</em> the pack. <em>Split</em> the pool.</h1>
         <p className="sublead">
           Every player deposits a shared entry into an on-chain pool and a matching starting vault.
           Everyone trades UP or DOWN on the same live BTC/ETH/SOL market. When the round settles the
@@ -458,8 +471,13 @@ export default function ArenasDirectory() {
                   <b>{usd2.format(Number(hVault) || 0)}</b> into your isolated vault. Total per player: <b>{usd2.format(hostSeat)}</b>.
                 </p>
 
+                {escrow && !escrow.active && (
+                  <p className="host-seat" style={{ borderLeftColor: "var(--amber)", background: "var(--amber-soft)", color: "var(--amber)" }}>
+                    <b>Practice mode is on</b> — {escrow.reason ?? "escrow not configured"}. Hosting works, but your wallet will not be asked to sign and no USDC will move. Set <code>ESCROW_HOST_SECRET_KEY</code> on the server to go live.
+                  </p>
+                )}
                 <button className="btn primary full big" onClick={doHostAndJoin} disabled={busy}>
-                  {busy ? "Opening arena…" : wallet ? "Host & Join event ⚡" : "Host event ⚡"}
+                  {busy ? "Opening arena…" : escrow?.active ? (wallet ? "Host & Join · Sign deposit ⚡" : "Host arena ⚡") : (wallet ? "Host & Join · practice ⚡" : "Host practice arena ⚡")}
                 </button>
                 {!wallet && (
                   <p className="host-fine" style={{ marginTop: 8, textAlign: "center" }}>
