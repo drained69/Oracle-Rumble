@@ -1,5 +1,4 @@
 import type { Metadata } from "next";
-import PriceTicker from "@/app/PriceTicker";
 import "./globals.css";
 
 export const metadata: Metadata = {
@@ -10,11 +9,7 @@ export const metadata: Metadata = {
 export default function RootLayout({ children }: Readonly<{ children: React.ReactNode }>) {
   return (
     <html lang="en">
-      <body>
-        {/* Live BTC / ETH / SOL ticker — always at the very top. */}
-        <PriceTicker />
-        {children}
-      </body>
+      <body>{children}</body>
     </html>
   );
 }

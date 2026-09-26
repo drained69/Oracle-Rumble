@@ -67,33 +67,7 @@ main { min-height: 100vh; }
 /* Monospace stack for numbers (prices, timers, codes) — tabular figures. */
 .mono, .num, [data-num] { font-family: 'JetBrains Mono', ui-monospace, monospace; font-variant-numeric: tabular-nums; }
 
-/* ── PRICE TICKER (top strip) ─────────────────────────────────────── */
-
-.ticker {
-  position: sticky; top: 0; z-index: 50;
-  height: 34px; overflow: hidden;
-  background: var(--ink);
-  border-bottom: 1px solid var(--ink);
-  color: var(--paper);
-}
-.ticker-track {
-  display: flex; align-items: center; height: 100%; gap: 22px;
-  padding: 0 clamp(16px, 4vw, 36px);
-  white-space: nowrap;
-  font-family: 'JetBrains Mono', ui-monospace, monospace;
-  font-variant-numeric: tabular-nums;
-  font-size: 12px; font-weight: 500; letter-spacing: .3px;
-}
-.t-item { display: inline-flex; align-items: center; gap: 8px; transition: color .2s; }
-.t-item.up { color: #6ee7a3; }
-.t-item.down { color: #ffb3b3; }
-.t-sym { color: var(--sand); font-weight: 700; letter-spacing: .5px; }
-.t-px { color: var(--paper); }
-.t-chg.up { color: #4ade80; }
-.t-chg.down { color: #ff8c94; }
-.t-sep { color: rgba(244, 232, 219, 0.35); font-family: serif; margin: 0 6px; }
-
-/* ── HUD (below ticker) ───────────────────────────────────────────── */
+/* ── HUD ──────────────────────────────────────────────────────────── */
 
 .hud-bar {
   position: sticky; top: 34px; z-index: 40;
@@ -519,7 +493,6 @@ main { min-height: 100vh; }
   .ac-meta { grid-template-columns: repeat(2, 1fr); }
   .mkt-row { grid-template-columns: 2fr 1fr 1fr 1fr; }
   .mkt-row .mkt-chg, .mkt-row .mkt-vol { display: none; }
-  .ticker { font-size: 10px; }
   .explainer-grid { grid-template-columns: 1fr; }
 }
 
