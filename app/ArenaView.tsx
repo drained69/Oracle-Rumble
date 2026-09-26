@@ -306,19 +306,19 @@ export default function ArenaView({ arenaCode }: { arenaCode: string }) {
       {/* ── HUD ─────────────────────────────────────────────── */}
       <nav className="hud-bar">
         <a href="/" className="brand" aria-label="Oracle Rumble">
-          <svg className="mark" viewBox="0 0 64 64" width="24" height="24" aria-hidden="true">
-            <circle cx="32" cy="32" r="19" stroke="#00ff9d" strokeWidth="6" fill="none" />
-            <path d="M22 36L30 28L35 33L44 22" stroke="#ffb54c" strokeWidth="5" strokeLinecap="square" strokeLinejoin="miter" fill="none" />
+          <svg className="mark" viewBox="0 0 24 24" width="20" height="20" aria-hidden="true">
+            <rect x="2" y="2" width="20" height="20" rx="4" fill="none" stroke="var(--up)" strokeWidth="2"/>
+            <path d="M7 14 L10 11 L13 14 L17 8" stroke="var(--text)" strokeWidth="2" fill="none" strokeLinecap="round" strokeLinejoin="round"/>
           </svg>
           ORACLE RUMBLE
         </a>
         <div className="hud-nav">
-          <a href="#arena">Arena</a>
+          <a href="/">Arenas</a>
+          <a href="#arena" className="active">Room</a>
           <a href="#how">How it works</a>
-          {!isPublic && <a href="/">Lobby</a>}
         </div>
         <div className="hud-right">
-          <span className={sourceBadge.cls}>{sourceBadge.text}</span>
+          <span className={sourceBadge.cls}>{CLUSTER}</span>
           {escrow && (
             <span
               className={`escrow-badge ${escrow.active ? "on" : "off"}`}
@@ -327,7 +327,7 @@ export default function ArenaView({ arenaCode }: { arenaCode: string }) {
                 : `Practice mode: ${escrow.reason ?? "escrow not configured"}. No wallet prompts, no real USDC moves.`}
             >
               <span className="dot" />
-              {escrow.active ? "ON-CHAIN" : "PRACTICE"}
+              {escrow.active ? "On-chain" : "Practice"}
             </span>
           )}
           {isPublic ? (
@@ -338,7 +338,6 @@ export default function ArenaView({ arenaCode }: { arenaCode: string }) {
               <span className="copy-hint">⧉</span>
             </button>
           )}
-          <button className="btn secondary sm" onClick={() => { setInviteInfo(null); setShowHost(true); }}>+ Host</button>
           <button className={wallet ? "wallet connected" : "wallet"} onClick={connect}>
             <span className="avatar">{wallet ? wallet.slice(0, 2).toUpperCase() : "?"}</span>
             {wallet ? shortPk(wallet) : "Connect"}
