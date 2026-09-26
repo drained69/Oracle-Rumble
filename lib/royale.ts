@@ -106,7 +106,9 @@ export const HOST_LIMITS = {
   startingBankroll: { min: 5, max: 500 },
   capacity: { min: 2, max: 16 },
   royaleRounds: { min: 2, max: 4 },
-  enrollmentSec: { min: 20, max: 300 },
+  // Scheduled events extend enrollment up to 3 hours so friends have time
+  // to see the invite link before the first lock.
+  enrollmentSec: { min: 20, max: 10_800 },
   liveSec: { min: 60, max: 900 }
 } as const;
 
@@ -170,6 +172,21 @@ export function computePayouts(prizePoolUsdc: number, rankedWinnerIds: string[],
   return out;
 }
 
+/**
+ * On-chain escrow record for an arena. Populated by escrow-server when
+ * `escrowReady()` is true; undefined for ledger-only arenas. Carries across
+ * `advance()` so every round in a rumble points at the same on-chain vault.
+ */
+export type RoundEscrowRecord = {
+  host: string;         // operator pubkey that hosts every arena on chain
+  roundVault: string;   // PDA holding the pool + player vaults
+  seedBase64: string;
+  initSignature: string;
+  mint: string;
+  history: string[];    // "Deposit ✓ <sig12>…" style entries
+  settleSignatures?: string[];  // set after SettlePlayer + CloseSettlement
+};
+
 export type Round = {
   id: string;
   /**
@@ -189,6 +206,8 @@ export type Round = {
   endedAt: number;        // ms epoch — set when complete/cancelled, else 0
   championId: string | null;
   history: string[];      // human-readable event log
+  /** On-chain escrow record; undefined = ledger-only arena. */
+  escrow?: RoundEscrowRecord;
 };
 
 /** The reserved code for the walk-in public arena that always has a live round. */
@@ -544,7 +563,8 @@ export function advance(round: Round, nextMarket: { marketId: string; marketQues
     liveDeadline: Date.now() + round.config.liveSec * 1000,
     endedAt: 0,
     championId: null,
-    history: [`Round ${round.roundNumber + 1} live — ${survivors.length} survivors on ${nextMarket.asset}.`]
+    history: [`Round ${round.roundNumber + 1} live — ${survivors.length} survivors on ${nextMarket.asset}.`],
+    escrow: round.escrow
   };
   return next;
 }

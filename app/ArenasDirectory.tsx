@@ -9,7 +9,7 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { connectSolanaWallet } from "@/lib/panta-client";
-import { enrollRound, newRound } from "@/lib/round-client";
+import { enrollWithEscrow, newRound } from "@/lib/round-client";
 import { PUBLIC_ARENA } from "@/lib/royale";
 
 const usd = new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 0 });
@@ -92,6 +92,9 @@ export default function ArenasDirectory() {
   const [hCapacity, setHCapacity] = useState(8);
   const [hEntry, setHEntry] = useState("2");
   const [hVault, setHVault] = useState("10");
+  // Scheduled events give friends time to see the invite before enrollment
+  // locks. Quick match keeps the default fast 30s window.
+  const [hStartInMin, setHStartInMin] = useState(15);
   const [inviteInfo, setInviteInfo] = useState<{ code: string; url: string } | null>(null);
 
   // ── boot ──────────────────────────────────────────────────────────
@@ -158,6 +161,10 @@ export default function ArenasDirectory() {
   const doHostAndJoin = useCallback(async () => {
     setBusy(true);
     try {
+      // Quick match keeps the default 30s enrollment window. Scheduled mode
+      // widens it (5m / 15m / 30m / 1h / 3h) so invitees have time to see
+      // the link before the arena locks.
+      const enrollmentSec = hMode === "scheduled" ? hStartInMin * 60 : undefined;
       const v = await newRound({
         asset: hAsset,
         format: hFormat,
@@ -165,22 +172,27 @@ export default function ArenasDirectory() {
         startingBankroll: Number(hVault) || 5,
         capacity: hCapacity,
         roundLimit: hFormat === "royale" ? hRounds : 1,
+        enrollmentSec,
         host: wallet ?? ""
       });
       if (v.error || !v.arena) { setToast(v.error ?? "Host failed."); return; }
       const url = `${window.location.origin}/a/${v.arena}`;
 
       // Host & Join: enroll the host wallet right now so the host is seat 1.
+      // Uses enrollWithEscrow — if the arena runs on-chain, the wallet will
+      // pop a signing prompt for the seat deposit before ledger enrollment.
       if (wallet) {
         try {
           const nick = shortPk(wallet).replace("…", "");
-          await enrollRound(wallet, nick, v.arena);
+          setToast("Signing seat deposit…");
+          const r = await enrollWithEscrow(wallet, nick, v.arena);
+          if (r.error) setToast(`Hosted, but seat #1 failed: ${r.error} — join manually from the room.`);
         } catch { /* enroll fails are OK — user can enter from the room */ }
       }
       setInviteInfo({ code: v.arena, url });
       refresh();
     } finally { setBusy(false); }
-  }, [hAsset, hFormat, hEntry, hVault, hCapacity, hRounds, wallet, refresh]);
+  }, [hMode, hStartInMin, hAsset, hFormat, hEntry, hVault, hCapacity, hRounds, wallet, refresh]);
 
   const doCopy = useCallback(async (url: string) => {
     try { await navigator.clipboard.writeText(url); setToast("Invite link copied."); }
@@ -217,6 +229,42 @@ export default function ArenasDirectory() {
           </button>
         </div>
       </nav>
+
+      {/* ── EXPLAINER HERO: what is Oracle Rumble? ─────────── */}
+      <section className="explainer-shell" id="what">
+        <p className="eyebrow">Prediction-market battle royale · Solana {CLUSTER}</p>
+        <h1>Trade the same market. Outlast the pack. Split the pool.</h1>
+        <p className="sublead">
+          Every player deposits a shared entry into an on-chain pool and a matching starting vault.
+          Everyone trades UP or DOWN on the same live BTC/ETH/SOL market. When the round settles the
+          oracle ranks vaults, the bottom half is cut, and the survivors split the pool. Non-custodial —
+          winners claim from escrow, losers can recover if the game ever stalls.
+        </p>
+
+        <div className="explainer-grid">
+          <div className="step">
+            <span className="num">01</span>
+            <b>Host or join an arena</b>
+            <p>Any wallet opens a room and gets a shareable invite link. Everyone joining pays the same seat: entry (to pool) + vault (to trade).</p>
+          </div>
+          <div className="step">
+            <span className="num">02</span>
+            <b>Trade the round</b>
+            <p>One live market per arena. Buy YES, buy NO, hold cash, or stack a parlay across BTC / ETH / SOL. Your vault balance is your score.</p>
+          </div>
+          <div className="step">
+            <span className="num">03</span>
+            <b>Cut & claim</b>
+            <p>The oracle settles. Bottom half is eliminated, survivors advance. When the rumble ends, everyone claims their vault + pool share straight to their wallet.</p>
+          </div>
+        </div>
+
+        <div className="explainer-cta">
+          <a className="btn primary" href="#arenas">See active rumbles →</a>
+          <a className="btn secondary" href="#host">Host your own →</a>
+          <a className="btn secondary" href="/play">Try a bot practice game</a>
+        </div>
+      </section>
 
       {/* ── DIRECTORY HEADER ────────────────────────────────── */}
       <section className="dir-shell" id="arenas">
@@ -322,10 +370,23 @@ export default function ArenasDirectory() {
               </div>
             ) : (
               <>
-                <div className="bet-mode" style={{ marginBottom: 18 }}>
+                <div className="bet-mode" style={{ marginBottom: 12 }}>
                   <button className={hMode === "quick" ? "bm on" : "bm"} onClick={() => setHMode("quick")}>Quick match</button>
                   <button className={hMode === "scheduled" ? "bm on" : "bm"} onClick={() => setHMode("scheduled")}>Scheduled event</button>
                 </div>
+
+                {hMode === "scheduled" && (
+                  <div className="host-cell" style={{ marginBottom: 14 }}>
+                    <span className="host-label">Enrollment window (invites open until lock)</span>
+                    <div className="seg">
+                      {[5, 15, 30, 60, 180].map((m) => (
+                        <button key={m} className={hStartInMin === m ? "seg-opt on" : "seg-opt"} onClick={() => setHStartInMin(m)}>
+                          {m < 60 ? `${m}m` : `${m / 60}h`}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                )}
 
                 <div className="host-grid">
                   <div className="host-cell">

@@ -520,4 +520,27 @@ main { min-height: 100vh; }
   .mkt-row { grid-template-columns: 2fr 1fr 1fr 1fr; }
   .mkt-row .mkt-chg, .mkt-row .mkt-vol { display: none; }
   .ticker { font-size: 10px; }
+  .explainer-grid { grid-template-columns: 1fr; }
 }
+
+/* ── claim / on-chain settlement ────────────────────────────────── */
+.claim-box { margin: 22px auto; max-width: 460px; padding: 18px 20px; background: var(--card); border: 1px solid var(--line-2); border-radius: 14px; box-shadow: var(--shadow-sm); }
+.claim-box p { margin: 0 0 12px; color: var(--ink-2); font-size: 14px; font-weight: 500; }
+.claim-box p b { color: var(--ink); }
+.claim-box .btn { width: 100%; }
+.claim-box .disclaimer { margin-top: 10px; font-size: 12px; color: var(--ink-2); text-align: center; }
+.claim-links { display: flex; gap: 12px; justify-content: center; margin-top: 10px; flex-wrap: wrap; }
+.claim-links .link { font-size: 12px; color: var(--accent); text-decoration: none; }
+.claim-links .link:hover { text-decoration: underline; }
+
+/* ── explainer hero: what is Oracle Rumble ─────────────────────── */
+.explainer-shell { padding: 34px clamp(16px, 5vw, 40px) 20px; max-width: 1180px; margin: 0 auto; }
+.explainer-shell .eyebrow { text-transform: uppercase; letter-spacing: 0.18em; font-size: 11px; color: var(--ink-2); margin: 0 0 8px; }
+.explainer-shell h1 { font-family: 'Instrument Serif', serif; font-weight: 400; font-size: clamp(36px, 5vw, 56px); letter-spacing: -0.02em; color: var(--ink); margin: 0 0 12px; line-height: 1.05; max-width: 780px; }
+.explainer-shell .sublead { color: var(--ink-2); font-size: 17px; font-weight: 500; max-width: 640px; margin: 0 0 28px; line-height: 1.5; }
+.explainer-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; margin-top: 8px; }
+.explainer-grid .step { background: var(--card); border: 1px solid var(--line-2); border-radius: 14px; padding: 18px 18px 16px; box-shadow: var(--shadow-sm); position: relative; }
+.explainer-grid .step .num { font-family: 'Instrument Serif', serif; font-size: 28px; color: var(--accent); line-height: 1; margin-bottom: 6px; display: block; }
+.explainer-grid .step b { color: var(--ink); display: block; margin-bottom: 6px; font-size: 15px; font-weight: 600; }
+.explainer-grid .step p { color: var(--ink-2); font-size: 13px; font-weight: 500; margin: 0; line-height: 1.5; }
+.explainer-cta { display: flex; gap: 12px; margin-top: 22px; flex-wrap: wrap; }
