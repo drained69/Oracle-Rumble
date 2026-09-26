@@ -13,3 +13,7 @@ rust/
 platform-tools*
 tmp-platform-tools*
 version.md
+
+# Rust build artifacts (SBF program)
+program/target/
+target/

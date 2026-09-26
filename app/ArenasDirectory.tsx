@@ -197,13 +197,13 @@ export default function ArenasDirectory() {
       {/* ── HUD ─────────────────────────────────────────────── */}
       <nav className="hud-bar">
         <a href="/" className="brand" aria-label="Oracle Rumble">
-          <svg className="mark" viewBox="0 0 64 64" width="24" height="24" aria-hidden="true">
-            <path d="M26 16 C27 7 37 7 38 16 Z" fill="#ff3ea5" />
-            <path d="M17 51 C13 22 22 15 32 15 C42 15 51 22 47 51 C47 55 43 56 39 54 L39 37 L25 37 L25 54 C21 56 17 55 17 51 Z" fill="#2fe6ff" />
-            <rect x="21" y="32" width="22" height="5" rx="1.5" fill="#06111a" />
-            <rect x="29.5" y="32" width="5" height="16" rx="1.5" fill="#06111a" />
+          <svg className="mark" viewBox="0 0 64 64" width="22" height="22" aria-hidden="true">
+            <path d="M26 16 C27 7 37 7 38 16 Z" fill="#c9752f" />
+            <path d="M17 51 C13 22 22 15 32 15 C42 15 51 22 47 51 C47 55 43 56 39 54 L39 37 L25 37 L25 54 C21 56 17 55 17 51 Z" fill="#5b2e91" />
+            <rect x="21" y="32" width="22" height="5" rx="1.5" fill="#f4e8db" />
+            <rect x="29.5" y="32" width="5" height="16" rx="1.5" fill="#f4e8db" />
           </svg>
-          Oracle Rumble
+          oracle rumble
         </a>
         <div className="hud-nav">
           <a href="#arenas">Arenas</a>
@@ -225,7 +225,7 @@ export default function ArenasDirectory() {
         <div className="dir-head">
           <div>
             <p className="eyebrow">On-chain events</p>
-            <h1 className="dir-title">All active rumbles</h1>
+            <h1 className="dir-title">all active rumbles</h1>
           </div>
           <a className="dir-copy" href="#host">+ Host an event →</a>
         </div>
@@ -281,7 +281,7 @@ export default function ArenasDirectory() {
         <div className="host-card">
           <div className="host-left">
             <p className="eyebrow">Host a rumble</p>
-            <h2>Choose your battleground</h2>
+            <h2>choose your battleground</h2>
             <p className="host-blurb">
               Hosting also enters you as player one. Choose equal entry and starting-vault
               terms for every player before the lobby opens. You&apos;ll get a shareable link.
@@ -416,7 +416,7 @@ export default function ArenasDirectory() {
       {/* ── LIVE MARKETS STRIP ──────────────────────────────── */}
       <section className="markets-shell" id="markets">
         <div className="markets-head">
-          <h2>Live BTC · ETH · SOL markets</h2>
+          <h2>live btc · eth · sol markets</h2>
           <span className="markets-sub">Updated {new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" })}</span>
         </div>
         <div className="markets-table">
