@@ -377,6 +377,20 @@ export default function ArenaView({ arenaCode }: { arenaCode: string }) {
               <span className="rb-k">YES</span>
               <span className="rb-v accent">{yesPrice}¢</span>
             </div>
+            {round.escrow && (
+              <div className="rb-cell">
+                <span className="rb-k">Vault</span>
+                <a
+                  className="rb-v mono"
+                  style={{ color: "var(--up)", textDecoration: "none", fontSize: 11 }}
+                  href={`https://explorer.solana.com/address/${round.escrow.roundVault}${CLUSTER === "mainnet-beta" ? "" : `?cluster=${CLUSTER}`}`}
+                  target="_blank" rel="noopener noreferrer"
+                  title={`On-chain vault: ${round.escrow.roundVault}`}
+                >
+                  {round.escrow.roundVault.slice(0, 4)}…{round.escrow.roundVault.slice(-4)} ↗
+                </a>
+              </div>
+            )}
           </>
         ) : (
           <div className="rb-cell grow">
@@ -411,19 +425,19 @@ export default function ArenaView({ arenaCode }: { arenaCode: string }) {
                     {" "}Everyone withdraws their remaining vault; winners also take the pool share.
                   </p>
 
-                  {/* Claim / settle status for on-chain arenas */}
-                  {round.escrow && (
+                  {/* Claim box — only show to actual participants with a real entitlement. */}
+                  {round.escrow && me && !me.isBot && myEntitlement > 0.001 && (
                     <div className="claim-box">
                       {!escrowSettled ? (
-                        <p>Locking in on-chain settlement…</p>
+                        <p>Locking in on-chain settlement — hold tight, it&apos;s automatic…</p>
                       ) : (
                         <>
                           <p><b>Your withdrawal:</b> {usd2.format(myEntitlement)}</p>
                           <button
-                            className="btn primary"
+                            className="btn primary full"
                             onClick={() => doClaim(false)}
                             disabled={busy || !canClaim}
-                            title={!wallet ? "Connect the wallet you played with" : myEntitlement <= 0 ? "Nothing to claim" : ""}
+                            title={!wallet ? "Connect the wallet you played with" : ""}
                           >
                             {busy ? "Claiming…" : `Claim ${usd2.format(myEntitlement)} to my wallet`}
                           </button>
@@ -437,6 +451,10 @@ export default function ArenaView({ arenaCode }: { arenaCode: string }) {
                         </>
                       )}
                     </div>
+                  )}
+                  {/* Non-participant / bot-viewing note — no confusing empty claim box. */}
+                  {round.escrow && (!me || me.isBot || myEntitlement <= 0) && escrowSettled && (
+                    <p className="disclaimer">Settlement complete on-chain — participants can claim from the wallet they played with.</p>
                   )}
 
                   <button className="btn primary" onClick={() => { setInviteInfo(null); setShowHost(true); }} disabled={busy}>Host the next rumble →</button>
@@ -458,15 +476,18 @@ export default function ArenaView({ arenaCode }: { arenaCode: string }) {
           <div className="champion">
             <p className="eyebrow">Arena {arenaCode} · cancelled</p>
             <h1>Rumble didn&apos;t finish</h1>
-            <p className="lead">This arena was cancelled before it could complete. Anyone who deposited on-chain can recover their entry + starting vault.</p>
-            {round.escrow && wallet && (
+            <p className="lead">This arena was cancelled before it could complete. Depositors can recover their entry + starting vault after the settle deadline.</p>
+            {/* Only participants who actually deposited see the Recover button. */}
+            {round.escrow && wallet && me && !me.isBot ? (
               <div className="claim-box">
-                <button className="btn primary" onClick={() => doClaim(true)} disabled={busy}>
-                  {busy ? "Recovering…" : `Recover ${usd2.format(round.config.entryUsdc + round.config.startingBankroll)}`}
+                <button className="btn primary full" onClick={() => doClaim(true)} disabled={busy}>
+                  {busy ? "Recovering…" : `Recover ${usd2.format(round.config.entryUsdc + round.config.startingBankroll)} to my wallet`}
                 </button>
-                <p className="disclaimer">Recovery is enabled after the settle deadline. If it fails with &quot;too early&quot;, wait a moment and retry.</p>
+                <p className="disclaimer">Recovery unlocks after the settle deadline (~1 hour after enrollment). If it fails with &quot;too early&quot;, wait then retry.</p>
               </div>
-            )}
+            ) : round.escrow && !wallet ? (
+              <p className="disclaimer">Connect the wallet you deposited from to recover.</p>
+            ) : null}
           </div>
         ) : !round ? (
           <div className="enroll-cta" style={{ margin: "20px 0" }}>

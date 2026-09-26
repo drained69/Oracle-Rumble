@@ -33,9 +33,41 @@ export async function POST(request: Request) {
   }
 
   // Build entitlements — remaining vault + prize share for each human.
-  const entries: SettleEntry[] = round.entrants
+  const rawEntries = round.entrants
     .filter((e) => !e.isBot && !e.wallet.startsWith("bot:"))
-    .map((e) => ({ wallet: e.wallet, entitlementUsdc: e.cash + e.prizeUsdc }));
+    .map((e) => ({ wallet: e.wallet, entitlementUsdc: Math.max(0, e.cash + e.prizeUsdc) }));
+
+  // BUG N — CRITICAL conservation gate.
+  //
+  // On-chain the vault holds exactly `humansEnrolled × (entry + vault)`. Ledger
+  // trading against bots (or price-maker slippage on our synthetic market) can
+  // inflate sum(cash + prize) beyond that. If we sent inflated entitlements
+  // to SettlePlayer, later players would hit the on-chain Overpay guard and
+  // be permanently stuck (round moves to SETTLED without their entry.settled
+  // flag flipped — neither Claim nor Recover would work for them).
+  //
+  // Fix: cap sum(entitlements) at total_escrowed by proportional scale-down.
+  // This is fair (everyone loses the same fraction of their surplus) and
+  // guarantees every human can Claim their assigned entitlement.
+  const humansEnrolled = round.entrants.filter((e) => !e.isBot).length;
+  const seatUsdc = round.config.entryUsdc + round.config.startingBankroll;
+  const totalEscrowed = humansEnrolled * seatUsdc;
+  const rawSum = rawEntries.reduce((s, e) => s + e.entitlementUsdc, 0);
+
+  let entries: SettleEntry[] = rawEntries;
+  let capApplied: { rawSum: number; capped: number; ratio: number } | undefined;
+  if (rawSum > totalEscrowed && totalEscrowed > 0) {
+    const ratio = totalEscrowed / rawSum;
+    entries = rawEntries.map((e) => ({
+      wallet: e.wallet,
+      // Floor to 6 decimals (USDC precision) so we never round UP past cap.
+      entitlementUsdc: Math.floor(e.entitlementUsdc * ratio * 1e6) / 1e6
+    }));
+    capApplied = { rawSum, capped: totalEscrowed, ratio };
+    round.history.push(
+      `Entitlements capped for conservation: ${rawSum.toFixed(2)} → ${totalEscrowed.toFixed(2)} USDC (×${ratio.toFixed(4)}).`
+    );
+  }
 
   const res = await settleArenaOnChain(round.escrow.roundVault, entries);
   if (!res.ok) return NextResponse.json({ error: res.error }, { status: 502 });
@@ -47,5 +79,5 @@ export async function POST(request: Request) {
     round.escrow.history.push(...sigs.map((s) => `Settle ✓ ${s.slice(0, 12)}…`));
     await saveRound(round);
   }
-  return NextResponse.json({ ok: true, signatures: sigs });
+  return NextResponse.json({ ok: true, signatures: sigs, capApplied });
 }
