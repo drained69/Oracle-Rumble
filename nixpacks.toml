@@ -6,7 +6,11 @@
 nixPkgs = ["nodejs_20", "npm-9_x"]
 
 [phases.install]
-cmds = ["npm ci"]
+# Use `install` instead of `ci` to avoid the Nixpacks EBUSY issue where
+# `npm ci` tries to wipe node_modules/.cache while Nixpacks holds its own
+# cache mount pointed at /app/.next/cache. `install --prefer-offline` reuses
+# the lockfile without deleting node_modules first.
+cmds = ["npm install --prefer-offline --no-audit --no-fund"]
 
 [phases.build]
 cmds = ["npm run build"]
