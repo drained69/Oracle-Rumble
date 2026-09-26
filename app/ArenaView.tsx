@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { connectSolanaWallet, fetchCategories } from "@/lib/panta-client";
-import { getRound, enrollRound, tradeRound, newRound, placeParlayApi, type RoundView } from "@/lib/round-client";
+import { getRound, enrollWithEscrow, tradeRound, newRound, placeParlayApi, claimFromEscrow, serverSettleArena, type RoundView } from "@/lib/round-client";
 import type { Entrant, Round } from "@/lib/royale";
 import { PUBLIC_ARENA } from "@/lib/royale";
 import { markets as boardMarkets } from "@/lib/arena-data";
@@ -138,11 +138,52 @@ export default function ArenaView({ arenaCode }: { arenaCode: string }) {
     setBusy(true);
     try {
       const nick = (nickname || shortPk(wallet)).slice(0, 16);
-      const r = await enrollRound(wallet, nick, arenaCode);
+      // enrollWithEscrow: if arena is on-chain, wallet signs a Deposit tx
+      // (real USDC on devnet) before the ledger enrolls. Ledger-only arenas
+      // fall through immediately. Signing UI is provided by the wallet.
+      setToast("Signing seat deposit…");
+      const r = await enrollWithEscrow(wallet, nick, arenaCode);
       if (r.error) setToast(r.error);
-      else { setToast(`Entered arena ${arenaCode} as ${nick}.`); setShowEnroll(false); await refresh(); }
+      else {
+        setToast(r.escrowSignature
+          ? `Sat down at ${arenaCode} as ${nick} · deposit ${r.escrowSignature.slice(0, 8)}…`
+          : `Entered arena ${arenaCode} as ${nick}.`);
+        setShowEnroll(false);
+        await refresh();
+      }
     } finally { setBusy(false); }
   }, [wallet, nickname, arenaCode, refresh]);
+
+  // ── settlement + claim ────────────────────────────────────────────
+  // When a hosted arena's round hits `complete` and has an on-chain vault,
+  // any client can nudge the server to sign SettlePlayer + CloseSettlement.
+  // Idempotent server-side — first caller wins, everyone else no-ops.
+  const settleFiredRef = useRef(false);
+  useEffect(() => {
+    if (!round) return;
+    if (round.status !== "complete") return;
+    if (!round.escrow) return;
+    if (round.escrow.settleSignatures && round.escrow.settleSignatures.length > 0) return;
+    if (settleFiredRef.current) return;
+    settleFiredRef.current = true;
+    (async () => {
+      const res = await serverSettleArena(arenaCode);
+      if (res.error) setToast(`Settle: ${res.error}`);
+      else if (res.signatures?.length) setToast(`Arena settled on-chain · ${res.signatures.length} txs`);
+      await refresh();
+    })();
+  }, [round, arenaCode, refresh]);
+
+  const doClaim = useCallback(async (recover = false) => {
+    if (!wallet) return setToast("Connect a wallet first.");
+    setBusy(true);
+    try {
+      const r = await claimFromEscrow(wallet, arenaCode, recover);
+      if (r.error) setToast(`Claim: ${r.error}`);
+      else if (r.signature) setToast(`${recover ? "Recovered" : "Claimed"} · ${r.signature.slice(0, 8)}…`);
+      else setToast("Withdrawal submitted.");
+    } finally { setBusy(false); }
+  }, [wallet, arenaCode]);
 
   const doBuy = useCallback(async () => {
     if (!wallet) return setToast("Connect a wallet first.");
@@ -259,13 +300,11 @@ export default function ArenaView({ arenaCode }: { arenaCode: string }) {
       {/* ── HUD ─────────────────────────────────────────────── */}
       <nav className="hud-bar">
         <a href="/" className="brand" aria-label="Oracle Rumble">
-          <svg className="mark" viewBox="0 0 64 64" width="24" height="24" aria-hidden="true">
-            <path d="M26 16 C27 7 37 7 38 16 Z" fill="#ff3ea5" />
-            <path d="M17 51 C13 22 22 15 32 15 C42 15 51 22 47 51 C47 55 43 56 39 54 L39 37 L25 37 L25 54 C21 56 17 55 17 51 Z" fill="#2fe6ff" />
-            <rect x="21" y="32" width="22" height="5" rx="1.5" fill="#06111a" />
-            <rect x="29.5" y="32" width="5" height="16" rx="1.5" fill="#06111a" />
+          <svg className="mark" viewBox="0 0 64 64" width="22" height="22" aria-hidden="true">
+            <circle cx="32" cy="32" r="19" stroke="#1a1410" strokeWidth="7" />
+            <path d="M22 36L30 28L35 33L44 22" stroke="#c9752f" strokeWidth="6" strokeLinecap="square" strokeLinejoin="miter" />
           </svg>
-          Oracle Rumble
+          oracle rumble
         </a>
         <div className="hud-nav">
           <a href="#arena">Arena</a>
@@ -340,6 +379,11 @@ export default function ArenaView({ arenaCode }: { arenaCode: string }) {
             {(() => {
               const champ = standings.find((e) => e.id === round.championId) ?? standings[0] ?? null;
               const paid = [...standings].filter((e) => e.prizeUsdc > 0).sort((a, b) => b.prizeUsdc - a.prizeUsdc);
+              const myEntitlement = me ? me.cash + me.prizeUsdc : 0;
+              const escrowSettled = !!round.escrow?.settleSignatures?.length;
+              const canClaim = !!wallet && !!round.escrow && escrowSettled && myEntitlement > 0.0001;
+              const explorerBase = `https://explorer.solana.com/tx`;
+              const explorerCluster = CLUSTER === "mainnet-beta" ? "" : `?cluster=${CLUSTER}`;
               return (
                 <>
                   <p className="eyebrow">{round.config.format === "single" ? "Single round" : `Round ${round.roundNumber}`} · final</p>
@@ -350,6 +394,35 @@ export default function ArenaView({ arenaCode }: { arenaCode: string }) {
                       : `${usd.format(round.prizePoolUsdc)} pool to the winner.`}
                     {" "}Everyone withdraws their remaining vault; winners also take the pool share.
                   </p>
+
+                  {/* Claim / settle status for on-chain arenas */}
+                  {round.escrow && (
+                    <div className="claim-box">
+                      {!escrowSettled ? (
+                        <p>Locking in on-chain settlement…</p>
+                      ) : (
+                        <>
+                          <p><b>Your withdrawal:</b> {usd2.format(myEntitlement)}</p>
+                          <button
+                            className="btn primary"
+                            onClick={() => doClaim(false)}
+                            disabled={busy || !canClaim}
+                            title={!wallet ? "Connect the wallet you played with" : myEntitlement <= 0 ? "Nothing to claim" : ""}
+                          >
+                            {busy ? "Claiming…" : `Claim ${usd2.format(myEntitlement)} to my wallet`}
+                          </button>
+                          <div className="claim-links">
+                            {(round.escrow.settleSignatures ?? []).slice(-2).map((s) => (
+                              <a key={s} className="link" target="_blank" rel="noopener noreferrer" href={`${explorerBase}/${s}${explorerCluster}`}>
+                                settle {s.slice(0, 6)}… ↗
+                              </a>
+                            ))}
+                          </div>
+                        </>
+                      )}
+                    </div>
+                  )}
+
                   <button className="btn primary" onClick={() => { setInviteInfo(null); setShowHost(true); }} disabled={busy}>Host the next rumble →</button>
                   <div className="final-board">
                     {standings.map((e, i) => (
@@ -364,6 +437,20 @@ export default function ArenaView({ arenaCode }: { arenaCode: string }) {
                 </>
               );
             })()}
+          </div>
+        ) : round?.status === "cancelled" ? (
+          <div className="champion">
+            <p className="eyebrow">Arena {arenaCode} · cancelled</p>
+            <h1>Rumble didn&apos;t finish</h1>
+            <p className="lead">This arena was cancelled before it could complete. Anyone who deposited on-chain can recover their entry + starting vault.</p>
+            {round.escrow && wallet && (
+              <div className="claim-box">
+                <button className="btn primary" onClick={() => doClaim(true)} disabled={busy}>
+                  {busy ? "Recovering…" : `Recover ${usd2.format(round.config.entryUsdc + round.config.startingBankroll)}`}
+                </button>
+                <p className="disclaimer">Recovery is enabled after the settle deadline. If it fails with &quot;too early&quot;, wait a moment and retry.</p>
+              </div>
+            )}
           </div>
         ) : !round ? (
           <div className="enroll-cta" style={{ margin: "20px 0" }}>

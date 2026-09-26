@@ -1,0 +1,19 @@
+<svg width="64" height="64" viewBox="0 0 64 64" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <title>Crossed swords</title>
+  <rect width="64" height="64" rx="14" fill="#1A1410"/>
+
+  <!-- Two deliberately simple sword silhouettes: blade, guard, grip, and pommel. -->
+  <g transform="rotate(-45 32 32)">
+    <path d="M32 8L36 32H28L32 8Z" fill="#F4E8DB"/>
+    <path d="M21 32H43V37H21V32Z" fill="#C9752F"/>
+    <path d="M29 37H35L36 50L32 55L28 50L29 37Z" fill="#F4E8DB"/>
+    <circle cx="32" cy="52" r="4" fill="#C9752F"/>
+  </g>
+
+  <g transform="rotate(45 32 32)">
+    <path d="M32 8L36 32H28L32 8Z" fill="#F4E8DB"/>
+    <path d="M21 32H43V37H21V32Z" fill="#C9752F"/>
+    <path d="M29 37H35L36 50L32 55L28 50L29 37Z" fill="#F4E8DB"/>
+    <circle cx="32" cy="52" r="4" fill="#C9752F"/>
+  </g>
+</svg>

@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { STORE_ENABLED, withKeeperLock } from "@/lib/round-store";
 import { advanceToNext, bootstrapRound, buildPriceMap, marketYesPrice, pickMarket, tick } from "@/lib/round-keeper";
 import { PUBLIC_ARENA, cutLine, humanCount, newArenaCode, normalizeArenaCode, standings, type Round } from "@/lib/royale";
+import { escrowReady, initArenaOnChain } from "@/lib/escrow-server";
 
 export const dynamic = "force-dynamic";
 
@@ -120,6 +121,27 @@ export async function POST(request: Request) {
 
   const fresh = await bootstrapRound(body.config as never, arena);
   if (!fresh) return NextResponse.json({ error: "no market available" }, { status: 503 });
+
+  // If the on-chain escrow is deployed + configured AND this arena isn't the
+  // walk-in PUBLIC lobby, mint the on-chain vault here so subsequent Deposit
+  // calls have a real vault to land in. PUBLIC stays ledger-only — it's the
+  // free bot practice arena.
+  if (escrowReady() && arena !== PUBLIC_ARENA) {
+    const res = await initArenaOnChain({
+      entryUsdc: fresh.config.entryUsdc,
+      vaultUsdc: fresh.config.startingBankroll,
+      capacity: fresh.config.capacity,
+      enrollmentSec: fresh.config.enrollmentSec
+    });
+    if (res.ok) {
+      fresh.escrow = res.record;
+      fresh.history.push(`On-chain vault ✓ ${res.record.roundVault.slice(0, 8)}…`);
+    } else {
+      // Escrow init failed — refuse to open the arena rather than silently
+      // running it ledger-only under a shareable code. The user can retry.
+      return NextResponse.json({ error: `escrow init failed: ${res.error}` }, { status: 502 });
+    }
+  }
 
   const result = await withKeeperLock(arena, async (ctx) => {
     const active = await ctx.getActive();
