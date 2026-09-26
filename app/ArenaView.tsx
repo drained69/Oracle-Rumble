@@ -7,6 +7,9 @@ import type { Entrant, Round } from "@/lib/royale";
 import { PUBLIC_ARENA } from "@/lib/royale";
 import { markets as boardMarkets } from "@/lib/arena-data";
 import { quoteParlay, PARLAY_MAX_LEGS, type ParlayLeg } from "@/lib/parlay";
+import { avatarDataUrl } from "@/lib/avatars";
+
+type EscrowStatus = { active: boolean; reason?: string | null };
 
 const usd = new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 0 });
 const usd2 = new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 2 });
@@ -63,6 +66,7 @@ export default function ArenaView({ arenaCode }: { arenaCode: string }) {
   // When a host call succeeds we mint a fresh arena code; this state drives
   // the "share your invite link" screen inside the host modal.
   const [inviteInfo, setInviteInfo] = useState<{ code: string; url: string } | null>(null);
+  const [escrow, setEscrow] = useState<EscrowStatus | null>(null);
   const pollRef = useRef<number | null>(null);
 
   // Live invite URL for THIS arena (visible in the HUD when non-public).
@@ -78,6 +82,8 @@ export default function ArenaView({ arenaCode }: { arenaCode: string }) {
       if (w) setWallet(w);
     } catch { /* ignore */ }
     fetchCategories().then((c) => setDataSource(c.source === "panta" ? "panta" : "mock")).catch(() => setDataSource("mock"));
+    // Fetch escrow status ONCE — the server's config doesn't change per request.
+    fetch("/api/escrow/status", { cache: "no-store" }).then((r) => r.json()).then(setEscrow).catch(() => setEscrow({ active: false, reason: "unreachable" }));
   }, []);
 
   // ── round polling (drives the keeper) ─────────────────────────────
@@ -300,28 +306,39 @@ export default function ArenaView({ arenaCode }: { arenaCode: string }) {
       {/* ── HUD ─────────────────────────────────────────────── */}
       <nav className="hud-bar">
         <a href="/" className="brand" aria-label="Oracle Rumble">
-          <svg className="mark" viewBox="0 0 64 64" width="22" height="22" aria-hidden="true">
-            <circle cx="32" cy="32" r="19" stroke="#1a1410" strokeWidth="7" />
-            <path d="M22 36L30 28L35 33L44 22" stroke="#c9752f" strokeWidth="6" strokeLinecap="square" strokeLinejoin="miter" />
+          <svg className="mark" viewBox="0 0 64 64" width="24" height="24" aria-hidden="true">
+            <circle cx="32" cy="32" r="19" stroke="#00ff9d" strokeWidth="6" fill="none" />
+            <path d="M22 36L30 28L35 33L44 22" stroke="#ffb54c" strokeWidth="5" strokeLinecap="square" strokeLinejoin="miter" fill="none" />
           </svg>
-          oracle rumble
+          ORACLE RUMBLE
         </a>
         <div className="hud-nav">
           <a href="#arena">Arena</a>
           <a href="#how">How it works</a>
-          {!isPublic && <a href="/">Public arena</a>}
+          {!isPublic && <a href="/">Lobby</a>}
         </div>
         <div className="hud-right">
           <span className={sourceBadge.cls}>{sourceBadge.text}</span>
+          {escrow && (
+            <span
+              className={`escrow-badge ${escrow.active ? "on" : "off"}`}
+              title={escrow.active
+                ? "Real on-chain USDC — wallet will sign every seat deposit."
+                : `Practice mode: ${escrow.reason ?? "escrow not configured"}. No wallet prompts, no real USDC moves.`}
+            >
+              <span className="dot" />
+              {escrow.active ? "ON-CHAIN" : "PRACTICE"}
+            </span>
+          )}
           {isPublic ? (
-            <span className="arena-chip public" title="Public walk-in arena">PUBLIC ARENA</span>
+            <span className="arena-chip public" title="Public walk-in arena">PUBLIC</span>
           ) : (
             <button className="arena-chip private" onClick={() => doCopyInvite()} title="Copy invite link">
-              ARENA {arenaCode}
+              {arenaCode}
               <span className="copy-hint">⧉</span>
             </button>
           )}
-          <button className="btn host-btn" onClick={() => { setInviteInfo(null); setShowHost(true); }}>+ Host a rumble</button>
+          <button className="btn secondary sm" onClick={() => { setInviteInfo(null); setShowHost(true); }}>+ Host</button>
           <button className={wallet ? "wallet connected" : "wallet"} onClick={connect}>
             <span className="avatar">{wallet ? wallet.slice(0, 2).toUpperCase() : "?"}</span>
             {wallet ? shortPk(wallet) : "Connect"}
@@ -601,7 +618,9 @@ export default function ArenaView({ arenaCode }: { arenaCode: string }) {
                       {isCutLine && <div className="cutline"><span>elimination line</span></div>}
                       <div className={`r-row ${e.wallet === wallet ? "me" : ""} ${e.eliminatedRound !== null ? "dead" : ""}`}>
                         <span className="r-rank">{e.eliminatedRound !== null ? "✕" : i + 1}</span>
-                        <span className="r-name">{e.nickname}{e.isBot ? <em> bot</em> : ""}{e.wallet === wallet ? <em> you</em> : ""}</span>
+                        {/* eslint-disable-next-line @next/next/no-img-element */}
+                        <img className="r-avatar" src={avatarDataUrl(e.wallet, 24)} width={24} height={24} alt="" />
+                        <span className="r-name">{e.nickname}{e.isBot ? <em>bot</em> : ""}{e.wallet === wallet ? <em>you</em> : ""}</span>
                         <span className="r-bank">{usd2.format(e.bankroll)}</span>
                         <span className={`r-pnl ${pnl >= 0 ? "up" : "down"}`}>{pnl >= 0 ? "+" : ""}{pnl.toFixed(0)}</span>
                       </div>
