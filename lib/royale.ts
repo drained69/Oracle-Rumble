@@ -172,6 +172,12 @@ export function computePayouts(prizePoolUsdc: number, rankedWinnerIds: string[],
 
 export type Round = {
   id: string;
+  /**
+   * Arena code — the shareable identity a rumble series lives under. `PUBLIC`
+   * is the walk-in bot lobby; anything else is a user-hosted room whose invite
+   * link is `/a/{arenaCode}`. Carries across `advance()`.
+   */
+  arenaCode: string;
   config: RoundConfig;
   roundNumber: number;    // 1-indexed
   status: RoundStatus;
@@ -184,6 +190,30 @@ export type Round = {
   championId: string | null;
   history: string[];      // human-readable event log
 };
+
+/** The reserved code for the walk-in public arena that always has a live round. */
+export const PUBLIC_ARENA = "PUBLIC";
+
+/**
+ * Generate a short shareable arena code — 6 chars from Crockford's base32
+ * (no I/L/O/U to avoid confusion). Collision odds at 32^6 ≈ 1B are ample for
+ * a game with a few thousand concurrent hosts, and short enough to type or
+ * dictate over voice.
+ */
+export function newArenaCode(): string {
+  const alphabet = "0123456789ABCDEFGHJKMNPQRSTVWXYZ";
+  let s = "";
+  for (let i = 0; i < 6; i++) s += alphabet[Math.floor(Math.random() * alphabet.length)];
+  return s;
+}
+
+export function normalizeArenaCode(raw: string | null | undefined): string {
+  const c = (raw ?? "").toString().trim().toUpperCase();
+  if (!c) return PUBLIC_ARENA;
+  // Preserve PUBLIC verbatim; other codes are constrained to base32 chars.
+  if (c === PUBLIC_ARENA) return PUBLIC_ARENA;
+  return c.replace(/[^0-9A-Z]/g, "").slice(0, 8) || PUBLIC_ARENA;
+}
 
 // ── defaults ──────────────────────────────────────────────────────────
 
@@ -216,10 +246,11 @@ function uid(prefix: string) {
 
 // ── construction ──────────────────────────────────────────────────────
 
-export function createRound(config: RoundConfig, roundNumber = 1): Round {
+export function createRound(config: RoundConfig, roundNumber = 1, arenaCode: string = PUBLIC_ARENA): Round {
   const now = Date.now();
   return {
     id: uid("round"),
+    arenaCode: normalizeArenaCode(arenaCode),
     config,
     roundNumber,
     status: "enrolling",
@@ -492,6 +523,7 @@ export function advance(round: Round, nextMarket: { marketId: string; marketQues
   const survivors = round.entrants.filter((e) => e.eliminatedRound === null);
   const next: Round = {
     id: uid("round"),
+    arenaCode: round.arenaCode,
     config: { ...round.config, ...nextMarket },
     roundNumber: round.roundNumber + 1,
     status: "live",

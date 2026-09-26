@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { getActiveRound, mutateActiveRound } from "@/lib/round-store";
-import { markToMarket, placeParlay, standings, type ParlayLegState, type ParlayTicket } from "@/lib/royale";
+import { markToMarket, normalizeArenaCode, placeParlay, standings, type ParlayLegState, type ParlayTicket } from "@/lib/royale";
 import { buildPriceMap, marketYesPrice, pantaPriceToCents } from "@/lib/round-keeper";
 import { quoteParlay, validateParlay, type ParlayLeg } from "@/lib/parlay";
 import { findMockMarket } from "@/lib/arena-data";
@@ -20,6 +20,7 @@ export async function POST(request: Request) {
     wallet: string;
     legs: Array<{ marketId: string; side: "YES" | "NO" }>;
     stakeUsdc: number | string;
+    arena?: string;
   };
   if (!body?.wallet) return NextResponse.json({ error: "wallet required" }, { status: 400 });
   if (!Array.isArray(body.legs) || body.legs.length < 2) {
@@ -29,6 +30,7 @@ export async function POST(request: Request) {
   if (!Number.isFinite(stake) || stake <= 0) {
     return NextResponse.json({ error: "stakeUsdc > 0 required" }, { status: 400 });
   }
+  const arena = normalizeArenaCode(body.arena);
 
   // Refresh each leg's price + metadata. Our own BTC/ETH/SOL board markets are
   // synthetic — price them from the board, never the Panta sandbox (which
@@ -71,13 +73,13 @@ export async function POST(request: Request) {
 
   const quote = quoteParlay(refreshed, stake);
 
-  const peek = await getActiveRound();
-  if (!peek) return NextResponse.json({ error: "no active round" }, { status: 404 });
+  const peek = await getActiveRound(arena);
+  if (!peek) return NextResponse.json({ error: "no active round in this arena", arena }, { status: 404 });
   const yes = await marketYesPrice(peek.config.marketId);
   const priceMap = buildPriceMap({ marketId: peek.config.marketId, yesPrice: yes });
 
   let placeError: string | undefined;
-  const { round, error } = await mutateActiveRound((r) => {
+  const { round, error } = await mutateActiveRound(arena, (r) => {
     if (r.status !== "live") { placeError = "round is not live"; return; }
     const entrant = r.entrants.find((e) => e.wallet === body.wallet);
     if (!entrant) { placeError = "not enrolled in this round"; return; }
@@ -100,10 +102,10 @@ export async function POST(request: Request) {
     markToMarket(entrant, yes, priceMap);
   });
 
-  if (!round) return NextResponse.json({ error: "no active round" }, { status: 404 });
+  if (!round) return NextResponse.json({ error: "no active round in this arena", arena }, { status: 404 });
   if (placeError) return NextResponse.json({ error: placeError }, { status: 409 });
   if (error) return NextResponse.json({ error }, { status: 500 });
 
   const entrant = round.entrants.find((e) => e.wallet === body.wallet);
-  return NextResponse.json({ round, entrant, quote, yesPrice: yes, standings: standings(round) });
+  return NextResponse.json({ round, arena, entrant, quote, yesPrice: yes, standings: standings(round) });
 }
