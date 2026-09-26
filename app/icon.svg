@@ -1,0 +1,29 @@
+<svg width="64" height="64" viewBox="0 0 64 64" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="blade" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#f7efd8"/>
+      <stop offset="100%" stop-color="#d8cdb2"/>
+    </linearGradient>
+    <linearGradient id="hilt" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#e69354"/>
+      <stop offset="100%" stop-color="#a8642c"/>
+    </linearGradient>
+  </defs>
+  <rect x="0" y="0" width="64" height="64" rx="14" fill="#141008"/>
+  <g transform="translate(32 32)">
+    <g transform="rotate(-24)">
+      <path d="M-2.6 -22 L2.6 -22 L2.6 4 L-2.6 4 Z" fill="url(#blade)"/>
+      <path d="M-2.6 -22 L0 -29 L2.6 -22 Z" fill="url(#blade)"/>
+      <rect x="-6.5" y="4" width="13" height="2.6" rx="0.6" fill="url(#hilt)"/>
+      <rect x="-1.9" y="6.6" width="3.8" height="11.5" fill="url(#hilt)"/>
+      <circle cx="0" cy="21.2" r="3.7" fill="url(#hilt)"/>
+    </g>
+    <g transform="rotate(24)">
+      <path d="M-2.6 -22 L2.6 -22 L2.6 4 L-2.6 4 Z" fill="url(#blade)"/>
+      <path d="M-2.6 -22 L0 -29 L2.6 -22 Z" fill="url(#blade)"/>
+      <rect x="-6.5" y="4" width="13" height="2.6" rx="0.6" fill="url(#hilt)"/>
+      <rect x="-1.9" y="6.6" width="3.8" height="11.5" fill="url(#hilt)"/>
+      <circle cx="0" cy="21.2" r="3.7" fill="url(#hilt)"/>
+    </g>
+  </g>
+</svg>

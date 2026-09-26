@@ -80,6 +80,53 @@ function shortenPk(pk: string) {
   return `${pk.slice(0, 4)}…${pk.slice(-4)}`;
 }
 
+/**
+ * Oracle Rumble mark — two crossed daggers, bone blades on copper hilts,
+ * inside a warm dark rounded square. Vector so it stays sharp at any size
+ * and inherits colors from CSS custom properties.
+ */
+function Sigil({ className, title }: { className?: string; title?: string }) {
+  return (
+    <svg
+      className={className}
+      viewBox="0 0 64 64"
+      xmlns="http://www.w3.org/2000/svg"
+      role={title ? "img" : "presentation"}
+      aria-label={title}
+    >
+      {title && <title>{title}</title>}
+      <defs>
+        <linearGradient id="orBlade" x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0%" stopColor="#f7efd8" />
+          <stop offset="100%" stopColor="#d8cdb2" />
+        </linearGradient>
+        <linearGradient id="orHilt" x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0%" stopColor="#e69354" />
+          <stop offset="100%" stopColor="#a8642c" />
+        </linearGradient>
+      </defs>
+      <g transform="translate(32 32)">
+        {/* Dagger A — tilted CCW (tip upper-left, pommel lower-right). */}
+        <g transform="rotate(-24)">
+          <path d="M-2.6 -22 L2.6 -22 L2.6 4 L-2.6 4 Z" fill="url(#orBlade)" />
+          <path d="M-2.6 -22 L0 -29 L2.6 -22 Z" fill="url(#orBlade)" />
+          <rect x="-6.5" y="4" width="13" height="2.6" rx="0.6" fill="url(#orHilt)" />
+          <rect x="-1.9" y="6.6" width="3.8" height="11.5" fill="url(#orHilt)" />
+          <circle cx="0" cy="21.2" r="3.7" fill="url(#orHilt)" />
+        </g>
+        {/* Dagger B — tilted CW (tip upper-right, pommel lower-left). */}
+        <g transform="rotate(24)">
+          <path d="M-2.6 -22 L2.6 -22 L2.6 4 L-2.6 4 Z" fill="url(#orBlade)" />
+          <path d="M-2.6 -22 L0 -29 L2.6 -22 Z" fill="url(#orBlade)" />
+          <rect x="-6.5" y="4" width="13" height="2.6" rx="0.6" fill="url(#orHilt)" />
+          <rect x="-1.9" y="6.6" width="3.8" height="11.5" fill="url(#orHilt)" />
+          <circle cx="0" cy="21.2" r="3.7" fill="url(#orHilt)" />
+        </g>
+      </g>
+    </svg>
+  );
+}
+
 function realmSigil(id: string) {
   // Deterministic little rune for each realm.
   switch (id) {
@@ -446,7 +493,7 @@ export default function Home() {
       {/* -------- HUD BAR -------- */}
       <nav className="hud-bar">
         <a className="brand" href="#top">
-          <span className="sigil"><span>◈</span></span>
+          <span className="sigil"><Sigil title="Oracle Rumble" /></span>
           ORACLE <b>RUMBLE</b>
         </a>
         <div className="hud-nav">
@@ -468,7 +515,7 @@ export default function Home() {
             onClick={connect}
             title={connected ? "Click to disconnect" : "Connect Phantom or spin up a demo wallet"}
           >
-            <span className="avatar">{connected ? initials : "◈"}</span>
+            <span className="avatar">{connected ? initials : <Sigil />}</span>
             <div>
               <div>{connected ? shortenPk(walletAddress!) : "ENTER THE WORLD"}</div>
               {connected && <div className="lvl">LVL {lvl} · {walletKind === "phantom" ? "PHANTOM" : "DEMO"}</div>}
@@ -889,7 +936,10 @@ export default function Home() {
       </section>
 
       <footer>
-        <span className="brand-mini">◈ ORACLE RUMBLE</span>
+        <span className="brand-mini">
+          <Sigil className="mini-sigil" title="Oracle Rumble" />
+          ORACLE RUMBLE
+        </span>
         <span>Prediction-market rings on <a className="ilink" href="https://www.panta.market/" target="_blank" rel="noreferrer">Panta</a> · settled on <a className="ilink" href="https://solana.com/docs" target="_blank" rel="noreferrer">Solana</a></span>
         <a className="ilink" href="https://docs.panta.market/" target="_blank" rel="noreferrer">PANTA API DOCS ▸</a>
       </footer>

@@ -7,24 +7,33 @@
  * ------------------------------------------------------------------------ */
 
 :root {
-  --bg: #07080c;
-  --bg-2: #0b0d14;
-  --panel: #10131c;
-  --panel-2: #141824;
-  --panel-3: #1a1f2e;
-  --line: #262b3a;
-  --line-2: #33394d;
-  --line-glow: #4a5170;
+  --bg: #08070a;
+  --bg-2: #0b0a10;
+  --panel: #121018;
+  --panel-2: #171420;
+  --panel-3: #1c1826;
+  --line: #2b2635;
+  --line-2: #382f42;
+  --line-glow: #4d4260;
 
   --text: #f2ecdc;
   --text-2: #b7b0a0;
   --soft: #8a8779;
   --muted: #5c5a52;
 
+  /* Brand — sourced from the crossed-daggers sigil. */
+  --copper: #c47a3d;
+  --copper-2: #e69354;
+  --copper-glow: #c47a3d55;
+  --bone: #ede4d0;
+  --bone-2: #f5eeda;
+  --sigil-bg: #141008;
+  --sigil-edge: #3a2a18;
+
   --gold: #d4a24c;
   --gold-2: #f0c46a;
   --gold-glow: #d4a24c66;
-  --amber: #ff9a3c;
+  --amber: #c47a3d;
 
   --jade: #6fe5a1;
   --jade-2: #3fb87c;
@@ -53,10 +62,10 @@ body {
   line-height: 1.5;
   min-height: 100vh;
   background-image:
-    radial-gradient(1200px 700px at 12% -10%, #1a1030 0%, transparent 60%),
-    radial-gradient(900px 600px at 90% 10%, #10262a 0%, transparent 55%),
-    radial-gradient(700px 700px at 50% 110%, #24160a 0%, transparent 55%),
-    linear-gradient(180deg, #060810 0%, #05060b 100%);
+    radial-gradient(1100px 600px at 10% -10%, #241332 0%, transparent 55%),
+    radial-gradient(900px 600px at 92% 8%, #1a2226 0%, transparent 55%),
+    radial-gradient(800px 700px at 50% 110%, #2a180a 0%, transparent 60%),
+    linear-gradient(180deg, #09070c 0%, #06050a 100%);
   background-attachment: fixed;
 }
 
@@ -144,16 +153,16 @@ main { min-height: 100vh; overflow: hidden; }
   font-size: 14px;
 }
 .brand .sigil {
-  width: 30px; height: 30px;
-  border: 1.5px solid var(--gold);
-  color: var(--gold);
+  width: 34px; height: 34px;
+  border-radius: 8px;
+  background: var(--sigil-bg);
+  border: 1px solid var(--sigil-edge);
   display: grid; place-items: center;
-  transform: rotate(45deg);
-  font-size: 14px;
-  box-shadow: inset 0 0 12px var(--gold-glow), 0 0 12px var(--gold-glow);
+  padding: 3px;
+  box-shadow: inset 0 0 12px #00000066, 0 0 12px var(--copper-glow);
 }
-.brand .sigil span { transform: rotate(-45deg); }
-.brand b { color: var(--gold); }
+.brand .sigil svg { width: 100%; height: 100%; display: block; }
+.brand b { color: var(--copper); }
 
 .hud-nav {
   display: flex;
@@ -225,17 +234,27 @@ main { min-height: 100vh; overflow: hidden; }
 }
 .wallet .avatar {
   width: 30px; height: 30px;
-  border-radius: 0;
-  background: linear-gradient(135deg, var(--arcane), var(--sky));
+  border-radius: 6px;
+  background: var(--sigil-bg);
+  border: 1px solid var(--sigil-edge);
   display: grid; place-items: center;
   font-family: 'Cinzel', serif;
   font-weight: 700;
   font-size: 12px;
-  color: #0a0a12;
-  box-shadow: inset 0 0 10px #0006;
+  color: var(--bone);
+  box-shadow: inset 0 0 10px #0008;
+  overflow: hidden;
 }
-.wallet.connected { border-color: var(--gold); box-shadow: 0 0 12px var(--gold-glow); }
-.wallet.connected .avatar { background: linear-gradient(135deg, var(--gold), var(--amber)); }
+.wallet .avatar svg { width: 100%; height: 100%; padding: 2px; }
+.wallet.connected {
+  border-color: var(--copper);
+  box-shadow: 0 0 14px var(--copper-glow);
+}
+.wallet.connected .avatar {
+  background: linear-gradient(135deg, var(--copper), var(--gold));
+  border-color: var(--copper-2);
+  color: var(--sigil-bg);
+}
 .wallet:hover { border-color: var(--gold); }
 .wallet .lvl { color: var(--soft); font-size: 9px; letter-spacing: 1.5px; }
 
@@ -1318,9 +1337,21 @@ footer {
   flex-wrap: wrap;
 }
 footer .brand-mini {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
   font-family: 'Cinzel', serif;
-  color: var(--gold);
+  color: var(--copper);
   letter-spacing: 3px;
+}
+footer .mini-sigil {
+  width: 24px;
+  height: 24px;
+  padding: 2px;
+  background: var(--sigil-bg);
+  border: 1px solid var(--sigil-edge);
+  border-radius: 6px;
+  box-shadow: 0 0 8px var(--copper-glow);
 }
 footer a { color: var(--gold); }
 footer a:hover { color: var(--gold-2); }
