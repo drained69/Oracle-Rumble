@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { PANTA_LIVE, pantaFetch, type ReportRequest, type ReportResponse } from "@/lib/panta";
+import { recordAttribution } from "@/lib/panta-telemetry";
 
 /**
  * POST /api/trades/report
@@ -25,6 +26,7 @@ export async function POST(request: Request) {
         method: "POST",
         body: JSON.stringify(payload)
       });
+      if (data.status === "attributed") recordAttribution(`sig=${payload.signature.slice(0, 8)}…`);
       return NextResponse.json({ ...data, source: "panta" });
     } catch (err) {
       console.error("panta /trades/report failed, serving mock:", err);
@@ -32,5 +34,6 @@ export async function POST(request: Request) {
   }
 
   const resp: ReportResponse = { status: "attributed", source: "mock" };
+  if (!PANTA_LIVE) recordAttribution(`mock sig=${payload.signature.slice(0, 8)}…`);
   return NextResponse.json(resp);
 }

@@ -3,11 +3,21 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { connectSolanaWallet } from "@/lib/panta-client";
 import { getRound, enrollWithEscrow, tradeRound, newRound, placeParlayApi, claimFromEscrow, serverSettleArena, type RoundView } from "@/lib/round-client";
-import type { Entrant, Round } from "@/lib/royale";
+import type { Entrant, Round, ParlayTicket } from "@/lib/royale";
 import { PUBLIC_ARENA } from "@/lib/royale";
 import { markets as boardMarkets } from "@/lib/arena-data";
 import { quoteParlay, PARLAY_MAX_LEGS, type ParlayLeg } from "@/lib/parlay";
 import { avatarDataUrl } from "@/lib/avatars";
+import PantaHUD from "@/app/PantaHUD";
+import PantaTradeTape from "@/app/PantaTradeTape";
+import PantaResolution from "@/app/PantaResolution";
+import PantaGraduationBanner from "@/app/PantaGraduationBanner";
+import PantaOrderStatus from "@/app/PantaOrderStatus";
+import PantaCreateMarketModal from "@/app/PantaCreateMarketModal";
+import PantaPositions from "@/app/PantaPositions";
+import PantaCashOutModal from "@/app/PantaCashOutModal";
+import { executePantaOrder, type LifecycleUpdate } from "@/lib/panta-order";
+import { looksLikePantaMarketId } from "@/lib/tracked-markets";
 
 type EscrowStatus = { active: boolean; reason?: string | null };
 
@@ -67,6 +77,15 @@ export default function ArenaView({ arenaCode }: { arenaCode: string }) {
   // the "share your invite link" screen inside the host modal.
   const [inviteInfo, setInviteInfo] = useState<{ code: string; url: string } | null>(null);
   const [escrow, setEscrow] = useState<EscrowStatus | null>(null);
+  // Real Panta order lifecycle — opt-in, disabled when market is a
+  // synthetic direction-board id or no wallet is connected. When on,
+  // `doBuy` also drives quote → build → sign → submit → verify → report
+  // through Panta's own APIs and streams progress here.
+  const [pantaFillOn, setPantaFillOn] = useState(false);
+  const [pantaOrder, setPantaOrder] = useState<LifecycleUpdate | null>(null);
+  const [showCreateMarket, setShowCreateMarket] = useState(false);
+  const [showPositions, setShowPositions] = useState(false);
+  const [cashoutTicket, setCashoutTicket] = useState<ParlayTicket | null>(null);
   const pollRef = useRef<number | null>(null);
 
   // Live invite URL for THIS arena (visible in the HUD when non-public).
@@ -84,6 +103,24 @@ export default function ArenaView({ arenaCode }: { arenaCode: string }) {
     // Fetch escrow status ONCE — the server's config doesn't change per request.
     fetch("/api/escrow/status", { cache: "no-store" }).then((r) => r.json()).then(setEscrow).catch(() => setEscrow({ active: false, reason: "unreachable" }));
   }, []);
+
+  // Every arena runs on a market. If it's a real Panta base58 id, add it to
+  // the tracked-markets store so PantaGraduationBanner can watch for the
+  // primary→graduated flip. Synthetic dir-<asset>-<horizon> ids are ignored.
+  useEffect(() => {
+    const mid = view?.round?.config.marketId;
+    if (!mid) return;
+    (async () => {
+      try {
+        const [{ trackMarket, looksLikePantaMarketId }] = await Promise.all([
+          import("@/lib/tracked-markets")
+        ]);
+        if (looksLikePantaMarketId(mid)) {
+          trackMarket({ marketId: mid, question: view?.round?.config.marketQuestion, role: "player" });
+        }
+      } catch { /* ignore */ }
+    })();
+  }, [view?.round?.config.marketId, view?.round?.config.marketQuestion]);
 
   // ── round polling (drives the keeper) ─────────────────────────────
   const refresh = useCallback(async () => {
@@ -190,6 +227,9 @@ export default function ArenaView({ arenaCode }: { arenaCode: string }) {
     } finally { setBusy(false); }
   }, [wallet, arenaCode]);
 
+  const marketId = round?.config.marketId;
+  const pantaFillAvailable = !!wallet && !!marketId && looksLikePantaMarketId(marketId);
+
   const doBuy = useCallback(async () => {
     if (!wallet) return setToast("Connect a wallet first.");
     if (!enrolled) return setToast("Enroll in the round first.");
@@ -197,11 +237,32 @@ export default function ArenaView({ arenaCode }: { arenaCode: string }) {
     if (!v || v <= 0) return setToast("Enter an amount.");
     setBusy(true);
     try {
+      // Kick the Panta order lifecycle in parallel when opted in and the
+      // market is a real Panta id. This walks the full quote → build →
+      // sign → submit → verify → report chain against the same size the
+      // player bought at inside the round. Attribution becomes live-honest.
+      let pantaLifecycle: Promise<unknown> | null = null;
+      if (pantaFillOn && pantaFillAvailable && marketId) {
+        setPantaOrder({ step: "quoting", note: "Starting…" });
+        pantaLifecycle = executePantaOrder({
+          marketId, side, usdcAmount: v, wallet,
+          onUpdate: (u) => setPantaOrder(u)
+        }).catch((err) => {
+          setPantaOrder({ step: "error", error: err instanceof Error ? err.message : String(err) });
+        });
+      }
       const r = await tradeRound({ wallet, action: "buy", side, usdc: v, arena: arenaCode });
       if (r.error) setToast(r.error);
-      else { setToast(`Bought ${side} $${v.toFixed(0)}.`); await refresh(); }
+      else {
+        setToast(`Bought ${side} $${v.toFixed(0)}.`);
+        await refresh();
+      }
+      // Don't block the UI on the Panta lifecycle — it streams via
+      // setPantaOrder. We do await it so `busy` clears only after both
+      // paths settle when the toggle was on.
+      if (pantaLifecycle) await pantaLifecycle;
     } finally { setBusy(false); }
-  }, [wallet, enrolled, amount, side, arenaCode, refresh]);
+  }, [wallet, enrolled, amount, side, arenaCode, refresh, pantaFillOn, pantaFillAvailable, marketId]);
 
   const doSell = useCallback(async () => {
     if (!wallet || !enrolled) return;
@@ -249,7 +310,18 @@ export default function ArenaView({ arenaCode }: { arenaCode: string }) {
     try {
       const r = await placeParlayApi(wallet, parlayLegs, v, arenaCode);
       if (r.error) setToast(r.error);
-      else { setToast(`Parlay placed · ${parlayLegs.length} legs.`); setParlayLegs([]); await refresh(); }
+      else {
+        setToast(`Parlay placed · ${parlayLegs.length} legs.`);
+        // Parlays are a client-space bundle over N Panta single-market
+        // orders. Firing the full lifecycle per leg is scoped for a
+        // follow-up; today the parlay stakes are drawn from the round
+        // vault (game state), not from real on-chain USDC, so we don't
+        // synthesize attribution here — a mock signature would be
+        // rejected by Panta in live mode and would only inflate the
+        // demo-mode counter dishonestly.
+        setParlayLegs([]);
+        await refresh();
+      }
     } finally { setBusy(false); }
   }, [wallet, enrolled, parlayLegs, parlayStake, arenaCode, refresh]);
 
@@ -315,9 +387,12 @@ export default function ArenaView({ arenaCode }: { arenaCode: string }) {
         <div className="hud-nav">
           <a href="/">Arenas</a>
           <a href="#arena" className="active">Room</a>
+          <button className="nav-link" onClick={() => setShowCreateMarket(true)}>+ Panta market</button>
+          <button className="nav-link" onClick={() => setShowPositions(true)}>Positions</button>
           <a href="#how">How it works</a>
         </div>
         <div className="hud-right">
+          <PantaHUD />
           <span className={sourceBadge.cls}>{CLUSTER}</span>
           {escrow && (
             <span
@@ -547,6 +622,33 @@ export default function ArenaView({ arenaCode }: { arenaCode: string }) {
                     <div className={myPnl >= 0 ? "up" : "down"}><span>Vault P&amp;L</span><b>{myPnl >= 0 ? "+" : ""}{usd2.format(myPnl)}</b></div>
                   </div>
 
+                  {openParlays.length > 0 && (
+                    <div className="parlay-list">
+                      <div className="parlay-list-head">Open parlays · early cashout</div>
+                      {openParlays.map((t) => (
+                        <div className="parlay-row" key={t.id}>
+                          <div className="pr-lead">
+                            <span className="pr-legs">{t.legs.length}-leg</span>
+                            <span className="pr-mid">
+                              {t.legs.map((l) => `${l.asset} ${l.side}`).join(" · ")}
+                            </span>
+                            <span className="pr-payout">pays {usd.format(t.potentialPayout)}</span>
+                          </div>
+                          <div className="pr-tail">
+                            <span className="pr-stake">stake {usd2.format(t.stake)}</span>
+                            <button
+                              className="btn secondary sm"
+                              disabled={round?.status !== "live"}
+                              onClick={() => setCashoutTicket(t)}
+                            >
+                              Cash out →
+                            </button>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+
                   {round?.status === "live" ? (
                     <>
                       <div className="bet-mode">
@@ -573,10 +675,30 @@ export default function ArenaView({ arenaCode }: { arenaCode: string }) {
                             <span>Shares</span><b>{(Number(amount || 0) / ((side === "YES" ? yesPrice : 100 - yesPrice) / 100)).toFixed(1)}</b>
                             <span>Payout if side wins</span><b className="accent">{usd.format(Number(amount || 0) / ((side === "YES" ? yesPrice : 100 - yesPrice) / 100))}</b>
                           </div>
+                          <div className="panta-fill-toggle">
+                            <label className={pantaFillAvailable ? "" : "disabled"}>
+                              <input
+                                type="checkbox"
+                                checked={pantaFillOn && pantaFillAvailable}
+                                onChange={(e) => setPantaFillOn(e.target.checked)}
+                                disabled={!pantaFillAvailable}
+                              />
+                              <span className="lab">Also fill on Panta</span>
+                              <span className="hint">
+                                {!wallet ? "connect a wallet"
+                                  : !marketId ? "no market"
+                                  : !looksLikePantaMarketId(marketId) ? "synthetic market — Panta orders need a real book"
+                                  : "real /orders/quote → build → sign → submit → verify → report"}
+                              </span>
+                            </label>
+                          </div>
                           <div className="trade-actions">
                             <button className="btn primary full" onClick={doBuy} disabled={busy}>Buy {side}</button>
                             <button className="btn secondary" onClick={doSell} disabled={busy || !me!.side}>Liquidate</button>
                           </div>
+                          {pantaFillOn && pantaFillAvailable && pantaOrder && (
+                            <PantaOrderStatus update={pantaOrder} />
+                          )}
                         </>
                       ) : (
                         <div className="parlay-build">
@@ -661,6 +783,19 @@ export default function ArenaView({ arenaCode }: { arenaCode: string }) {
         )}
       </section>
 
+      {/* Live Panta fills for THIS market — the trade tape */}
+      {round && round.config.marketId && (
+        <PantaTradeTape marketId={round.config.marketId} marketQuestion={round.config.marketQuestion} />
+      )}
+
+      {/* Resolution + dispute window: appears only when Panta says the market is resolved */}
+      {round && round.config.marketId && (
+        <PantaResolution marketId={round.config.marketId} />
+      )}
+
+      {/* Fires once per tracked market when it graduates on Panta's secondary book */}
+      <PantaGraduationBanner />
+
       {/* ── HOW IT WORKS ────────────────────────────────────── */}
       <section className="how-shell" id="how">
         <h2>How the arena works</h2>
@@ -681,6 +816,21 @@ export default function ArenaView({ arenaCode }: { arenaCode: string }) {
       </section>
 
       {toast && <div className="toast" role="status"><span>{toast}</span><button onClick={() => setToast("")} aria-label="Dismiss">×</button></div>}
+
+      {showCreateMarket && <PantaCreateMarketModal initialWallet={wallet} onClose={() => setShowCreateMarket(false)} />}
+      {showPositions && <PantaPositions wallet={wallet} onClose={() => setShowPositions(false)} />}
+      {cashoutTicket && wallet && (
+        <PantaCashOutModal
+          ticket={cashoutTicket}
+          wallet={wallet}
+          arena={arenaCode}
+          onClose={() => setCashoutTicket(null)}
+          onSuccess={async (net) => {
+            setToast(`Cashed out for ${new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" }).format(net)}.`);
+            await refresh();
+          }}
+        />
+      )}
 
       {showEnroll && round && (
         <div className="modal-backdrop" onClick={() => setShowEnroll(false)}>

@@ -68,9 +68,10 @@ export type ParlayTicket = {
   shares: number;             // payout units if all legs win (== max payout)
   combinedEntryPrice: number; // cents, combined price at placement
   potentialPayout: number;    // USDC if every leg lands
-  status: "open" | "won" | "lost" | "void";
-  settledPayout: number;      // USDC credited at settlement
+  status: "open" | "won" | "lost" | "void" | "cashed_out";
+  settledPayout: number;      // USDC credited at settlement (or at cashout)
   placedAt: number;
+  cashedOutAt?: number;       // ms epoch when the ticket was cashed out
 };
 
 /** Live YES price (cents) per market id, for valuing multi-asset parlays. */
