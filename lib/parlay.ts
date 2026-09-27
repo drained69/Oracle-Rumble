@@ -37,6 +37,15 @@ export const PARLAY_FEE_RATE = 0.05;
 /** Aggregate parlay fee is never more than this share of the stake. */
 export const PARLAY_FEE_CAP = 0.05;
 
+/**
+ * Cash-out edge — parlayit charges an early-exit fee on top of the fair
+ * mid-price so a rapid quote → cashout can't be arb'd for a free penny.
+ * Held small so the tool stays useful.
+ */
+export const CASHOUT_FEE_RATE = 0.02;
+/** Cap on the cashout fee in USDC — matters at high stakes. */
+export const CASHOUT_FEE_CAP_USDC = 1.5;
+
 export type ParlayLeg = {
   marketId: string;
   question: string;
@@ -152,6 +161,110 @@ export function quoteParlay(legs: ParlayLeg[], stakeUsdc: number, ttlMs = 15_000
     shares: Math.round(shares * 10) / 10,
     potentialPayoutUsdc: r(potentialPayoutUsdc),
     halfPayoutIfOneVoidUsdc: r(halfPayoutIfOneVoidUsdc),
+    validUntil
+  };
+}
+
+// ─── Cash-out math (parlayit design 7 — early exit / partial cash-out) ────
+
+export type CashOutLegState = {
+  marketId: string;
+  question?: string;
+  side: "YES" | "NO";
+  entryPrice: number;        // cents at placement
+  currentSidePrice: number;  // cents right now (live), on the leg's side
+};
+
+export type CashOutQuote = {
+  legs: CashOutLegState[];
+  shares: number;              // ticket.shares (payout units if all land)
+  liveCombinedPrice: number;   // cents — product of current side probabilities × 100
+  fairValueUsdc: number;       // shares × prob — mid-price
+  cashoutFeeRate: number;
+  cashoutFeeUsdc: number;
+  netCashoutUsdc: number;      // fairValueUsdc - cashoutFeeUsdc
+  originalStakeUsdc: number;
+  pnlUsdc: number;             // netCashoutUsdc - originalStakeUsdc
+  reason?: string;             // populated when cashout is refused
+  eligible: boolean;
+  validUntil: string;
+};
+
+/**
+ * Price the early-exit cashout for an already-placed parlay ticket.
+ *
+ *   fair value = shares × Π(currentSideProb)
+ *   cashout fee = min(fair × rate, cap)
+ *   net = fair − cashout fee
+ *
+ * Same math on client and server. The route re-runs this inside the round
+ * mutation lock using fresh prices, so the client quote is advisory only —
+ * the server value wins.
+ */
+export function quoteCashOut(args: {
+  ticketId: string;
+  shares: number;
+  originalStake: number;
+  legs: Array<{ marketId: string; question?: string; side: "YES" | "NO"; entryPrice: number }>;
+  currentYesPrices: Record<string, number>;  // marketId → yes cents (0..100)
+  ttlMs?: number;
+}): CashOutQuote {
+  const ttlMs = args.ttlMs ?? 15_000;
+  const validUntil = new Date(Date.now() + ttlMs).toISOString();
+  const shares = Math.max(0, Number.isFinite(args.shares) ? args.shares : 0);
+  const originalStake = Math.max(0, Number.isFinite(args.originalStake) ? args.originalStake : 0);
+
+  if (args.legs.length === 0 || shares <= 0) {
+    return {
+      legs: [], shares, liveCombinedPrice: 0, fairValueUsdc: 0,
+      cashoutFeeRate: CASHOUT_FEE_RATE, cashoutFeeUsdc: 0, netCashoutUsdc: 0,
+      originalStakeUsdc: originalStake, pnlUsdc: -originalStake,
+      eligible: false, reason: "no legs or zero shares",
+      validUntil
+    };
+  }
+
+  const legState: CashOutLegState[] = [];
+  let prob = 1;
+  let missing = 0;
+  for (const leg of args.legs) {
+    const yes = args.currentYesPrices[leg.marketId];
+    if (yes === undefined || !Number.isFinite(yes)) {
+      missing += 1;
+      // Fall back to the leg's entry price when the current price is unknown
+      // so the mark stays stable — same convention as parlayMarkValue.
+      const sideNow = leg.side === "YES" ? leg.entryPrice : 100 - leg.entryPrice;
+      const clamped = Math.max(1, Math.min(99, sideNow));
+      prob *= clamped / 100;
+      legState.push({ marketId: leg.marketId, question: leg.question, side: leg.side, entryPrice: leg.entryPrice, currentSidePrice: clamped });
+      continue;
+    }
+    const sideNow = leg.side === "YES" ? yes : 100 - yes;
+    const clamped = Math.max(1, Math.min(99, sideNow));
+    prob *= clamped / 100;
+    legState.push({ marketId: leg.marketId, question: leg.question, side: leg.side, entryPrice: leg.entryPrice, currentSidePrice: clamped });
+  }
+
+  const liveCombinedPrice = Math.max(0.01, prob * 100);
+  const fairValueUsdc = shares * prob;
+  const rawFee = fairValueUsdc * CASHOUT_FEE_RATE;
+  const cashoutFeeUsdc = Math.min(rawFee, CASHOUT_FEE_CAP_USDC);
+  const netCashoutUsdc = Math.max(0, fairValueUsdc - cashoutFeeUsdc);
+  const pnlUsdc = netCashoutUsdc - originalStake;
+
+  const r = (n: number) => Math.round(n * 100) / 100;
+  return {
+    legs: legState,
+    shares,
+    liveCombinedPrice: r(liveCombinedPrice),
+    fairValueUsdc: r(fairValueUsdc),
+    cashoutFeeRate: CASHOUT_FEE_RATE,
+    cashoutFeeUsdc: r(cashoutFeeUsdc),
+    netCashoutUsdc: r(netCashoutUsdc),
+    originalStakeUsdc: r(originalStake),
+    pnlUsdc: r(pnlUsdc),
+    eligible: netCashoutUsdc > 0 && missing < args.legs.length,
+    reason: missing === args.legs.length ? "no live prices available" : undefined,
     validUntil
   };
 }

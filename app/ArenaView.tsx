@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { connectSolanaWallet } from "@/lib/panta-client";
 import { getRound, enrollWithEscrow, tradeRound, newRound, placeParlayApi, claimFromEscrow, serverSettleArena, type RoundView } from "@/lib/round-client";
-import type { Entrant, Round } from "@/lib/royale";
+import type { Entrant, Round, ParlayTicket } from "@/lib/royale";
 import { PUBLIC_ARENA } from "@/lib/royale";
 import { markets as boardMarkets } from "@/lib/arena-data";
 import { quoteParlay, PARLAY_MAX_LEGS, type ParlayLeg } from "@/lib/parlay";
@@ -15,6 +15,7 @@ import PantaGraduationBanner from "@/app/PantaGraduationBanner";
 import PantaOrderStatus from "@/app/PantaOrderStatus";
 import PantaCreateMarketModal from "@/app/PantaCreateMarketModal";
 import PantaPositions from "@/app/PantaPositions";
+import PantaCashOutModal from "@/app/PantaCashOutModal";
 import { executePantaOrder, type LifecycleUpdate } from "@/lib/panta-order";
 import { looksLikePantaMarketId } from "@/lib/tracked-markets";
 
@@ -84,6 +85,7 @@ export default function ArenaView({ arenaCode }: { arenaCode: string }) {
   const [pantaOrder, setPantaOrder] = useState<LifecycleUpdate | null>(null);
   const [showCreateMarket, setShowCreateMarket] = useState(false);
   const [showPositions, setShowPositions] = useState(false);
+  const [cashoutTicket, setCashoutTicket] = useState<ParlayTicket | null>(null);
   const pollRef = useRef<number | null>(null);
 
   // Live invite URL for THIS arena (visible in the HUD when non-public).
@@ -620,6 +622,33 @@ export default function ArenaView({ arenaCode }: { arenaCode: string }) {
                     <div className={myPnl >= 0 ? "up" : "down"}><span>Vault P&amp;L</span><b>{myPnl >= 0 ? "+" : ""}{usd2.format(myPnl)}</b></div>
                   </div>
 
+                  {openParlays.length > 0 && (
+                    <div className="parlay-list">
+                      <div className="parlay-list-head">Open parlays · early cashout</div>
+                      {openParlays.map((t) => (
+                        <div className="parlay-row" key={t.id}>
+                          <div className="pr-lead">
+                            <span className="pr-legs">{t.legs.length}-leg</span>
+                            <span className="pr-mid">
+                              {t.legs.map((l) => `${l.asset} ${l.side}`).join(" · ")}
+                            </span>
+                            <span className="pr-payout">pays {usd.format(t.potentialPayout)}</span>
+                          </div>
+                          <div className="pr-tail">
+                            <span className="pr-stake">stake {usd2.format(t.stake)}</span>
+                            <button
+                              className="btn secondary sm"
+                              disabled={round?.status !== "live"}
+                              onClick={() => setCashoutTicket(t)}
+                            >
+                              Cash out →
+                            </button>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+
                   {round?.status === "live" ? (
                     <>
                       <div className="bet-mode">
@@ -790,6 +819,18 @@ export default function ArenaView({ arenaCode }: { arenaCode: string }) {
 
       {showCreateMarket && <PantaCreateMarketModal initialWallet={wallet} onClose={() => setShowCreateMarket(false)} />}
       {showPositions && <PantaPositions wallet={wallet} onClose={() => setShowPositions(false)} />}
+      {cashoutTicket && wallet && (
+        <PantaCashOutModal
+          ticket={cashoutTicket}
+          wallet={wallet}
+          arena={arenaCode}
+          onClose={() => setCashoutTicket(null)}
+          onSuccess={async (net) => {
+            setToast(`Cashed out for ${new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" }).format(net)}.`);
+            await refresh();
+          }}
+        />
+      )}
 
       {showEnroll && round && (
         <div className="modal-backdrop" onClick={() => setShowEnroll(false)}>

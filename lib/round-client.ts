@@ -178,6 +178,34 @@ export async function placeParlayApi(wallet: string, legs: ParlayLegInput[], sta
 }
 
 /**
+ * Cash out an open parlay ticket. Server re-prices from live YES prices,
+ * applies the cashout edge, marks the ticket cashed_out, and credits the
+ * entrant's cash bankroll. Refuses on non-live rounds or already-settled
+ * tickets.
+ */
+export async function cashOutParlayApi(wallet: string, ticketId: string, arena: string): Promise<{
+  round?: Round;
+  entrant?: Entrant;
+  quote?: {
+    liveCombinedPrice: number;
+    fairValueUsdc: number;
+    cashoutFeeUsdc: number;
+    netCashoutUsdc: number;
+    originalStakeUsdc: number;
+    pnlUsdc: number;
+    legs: Array<{ marketId: string; side: "YES" | "NO"; entryPrice: number; currentSidePrice: number; question?: string }>;
+  };
+  error?: string;
+}> {
+  const res = await fetch("/api/round/parlay/cashout", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ wallet, ticketId, arena })
+  });
+  return res.json();
+}
+
+/**
  * Host a rumble. Every call MINTS A NEW ARENA CODE and returns the shareable
  * `inviteSlug` (e.g. `/a/A7XB2M`) which the client shares with friends.
  */
