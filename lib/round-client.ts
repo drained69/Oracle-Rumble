@@ -57,8 +57,11 @@ async function signAndBroadcastLegacy(base64: string): Promise<string> {
 
 /** Host-tunable fields of a rumble (the rest are fixed by the arena). */
 export type HostConfig = Partial<Pick<RoundConfig,
-  "asset" | "format" | "entryUsdc" | "startingBankroll" | "capacity" | "roundLimit" | "host" | "enrollmentSec"
->>;
+  "asset" | "format" | "entryUsdc" | "startingBankroll" | "capacity" | "roundLimit" | "host" | "enrollmentSec" | "liveSec"
+>> & {
+  /** Which timeframe of the asset to trade — 5m / 15m / 1h / 1d. */
+  horizon?: "MIN5" | "MIN15" | "HOUR" | "DAY";
+};
 
 export type RoundView = {
   round: Round | null;

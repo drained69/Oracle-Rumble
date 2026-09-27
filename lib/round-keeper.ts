@@ -113,20 +113,29 @@ export async function pickMarket(excludeId?: string): Promise<MarketPick | null>
  * to safe bounds by normalizeConfig. If the host picked an asset, we run on
  * that asset's market; otherwise the keeper picks one.
  */
-export async function bootstrapRound(overrides?: Partial<RoundConfig>, arenaCode?: string): Promise<Round | null> {
+export async function bootstrapRound(overrides?: Partial<RoundConfig> & { horizon?: string }, arenaCode?: string): Promise<Round | null> {
   const wantAsset = overrides?.asset ? String(overrides.asset).toUpperCase() : undefined;
-  const market = await pickMarketForAsset(wantAsset);
+  const wantHorizon = overrides?.horizon ? String(overrides.horizon).toUpperCase() : undefined;
+  const market = await pickMarketForAsset(wantAsset, wantHorizon);
   if (!market) return null;
+
+  // Match the trading window to the horizon when the host picked one so the
+  // round closes near the market's resolution. Capped by HOST_LIMITS.liveSec
+  // (60s–900s) — hour/day markets clamp to the 15-minute maximum.
+  const horizonSec: Record<string, number> = { MIN5: 300, MIN15: 900, HOUR: 900, DAY: 900 };
+  const impliedLiveSec = wantHorizon && horizonSec[wantHorizon] ? horizonSec[wantHorizon] : undefined;
+
   const base: RoundConfig = {
     ...DEFAULT_CONFIG,
     marketId: market.marketId,
     marketQuestion: market.marketQuestion,
     category: market.category,
-    asset: market.asset
+    asset: market.asset,
+    ...(impliedLiveSec ? { liveSec: impliedLiveSec } : {})
   };
   // Market fields are authoritative; host overrides shape the rules only.
-  const { marketId: _m, marketQuestion: _q, category: _c, asset: _a, ...rules } = overrides ?? {};
-  void _m; void _q; void _c; void _a;
+  const { marketId: _m, marketQuestion: _q, category: _c, asset: _a, horizon: _h, ...rules } = overrides ?? {};
+  void _m; void _q; void _c; void _a; void _h;
   const config = normalizeConfig(base, rules);
   return createRound(config, 1, arenaCode);
 }
@@ -144,15 +153,23 @@ export function buildPriceMap(liveOverride?: { marketId: string; yesPrice: numbe
   return map;
 }
 
-/** Pick the market for a specific asset if asked, else any of the three. */
-async function pickMarketForAsset(asset?: string): Promise<MarketPick | null> {
+/**
+ * Pick the market for a specific asset/horizon if asked, else the shortest
+ * horizon for that asset, else any of the three.
+ */
+async function pickMarketForAsset(asset?: string, horizon?: string): Promise<MarketPick | null> {
   if (!asset) return pickMarket();
-  const want = asset.toUpperCase();
-  // Prefer a live/mock market on the requested asset.
-  const direct = directionMarkets.find((m) => m.asset === want);
-  if (direct) {
-    return { marketId: direct.id, marketQuestion: direct.question, category: direct.category, asset: direct.asset };
+  const wantAsset = asset.toUpperCase();
+  const wantHorizon = horizon?.toUpperCase();
+  // Exact asset+horizon match first.
+  if (wantHorizon) {
+    const exact = directionMarkets.find((m) => m.asset === wantAsset && m.horizon === wantHorizon);
+    if (exact) return { marketId: exact.id, marketQuestion: exact.question, category: exact.category, asset: exact.asset };
   }
+  // Fall back to any market on the requested asset (shortest horizon first
+  // since HORIZONS is ordered MIN5, MIN15, HOUR, DAY).
+  const direct = directionMarkets.find((m) => m.asset === wantAsset);
+  if (direct) return { marketId: direct.id, marketQuestion: direct.question, category: direct.category, asset: direct.asset };
   return pickMarket();
 }
 

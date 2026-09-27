@@ -83,20 +83,21 @@ const HOUR = 3_600_000;
 
 // Deterministic starter prices so the board is stable across a fresh boot in
 // mock mode. Real prices come from Panta / the price oracle when live.
+// Shorter horizons stay closer to 50/50 because they're noisier.
 const SEED_YES: Record<string, number> = {
-  "dir-btc-hour": 55, "dir-btc-day": 58,
-  "dir-eth-hour": 52, "dir-eth-day": 54,
-  "dir-sol-hour": 60, "dir-sol-day": 57
+  "dir-btc-min5": 52, "dir-btc-min15": 53, "dir-btc-hour": 55, "dir-btc-day": 58,
+  "dir-eth-min5": 51, "dir-eth-min15": 51, "dir-eth-hour": 52, "dir-eth-day": 54,
+  "dir-sol-min5": 54, "dir-sol-min15": 56, "dir-sol-hour": 60, "dir-sol-day": 57
 };
 const SEED_CHANGE: Record<string, number> = {
-  "dir-btc-hour": 3, "dir-btc-day": 5,
-  "dir-eth-hour": -1, "dir-eth-day": 2,
-  "dir-sol-hour": 6, "dir-sol-day": 4
+  "dir-btc-min5": 1, "dir-btc-min15": 2, "dir-btc-hour": 3, "dir-btc-day": 5,
+  "dir-eth-min5": 0, "dir-eth-min15": -1, "dir-eth-hour": -1, "dir-eth-day": 2,
+  "dir-sol-min5": 2, "dir-sol-min15": 3, "dir-sol-hour": 6, "dir-sol-day": 4
 };
 const SEED_VOL: Record<string, string> = {
-  "dir-btc-hour": "$182.4k", "dir-btc-day": "$310.7k",
-  "dir-eth-hour": "$96.1k", "dir-eth-day": "$141.2k",
-  "dir-sol-hour": "$74.8k", "dir-sol-day": "$118.9k"
+  "dir-btc-min5": "$41.2k", "dir-btc-min15": "$88.6k", "dir-btc-hour": "$182.4k", "dir-btc-day": "$310.7k",
+  "dir-eth-min5": "$22.8k", "dir-eth-min15": "$47.5k", "dir-eth-hour": "$96.1k", "dir-eth-day": "$141.2k",
+  "dir-sol-min5": "$18.4k", "dir-sol-min15": "$36.9k", "dir-sol-hour": "$74.8k", "dir-sol-day": "$118.9k"
 };
 
 function buildDirectionMarket(symbol: AssetSymbol, horizon: Horizon): Market {
