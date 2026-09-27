@@ -1,6 +1,23 @@
-<svg width="64" height="64" viewBox="0 0 64 64" fill="none" xmlns="http://www.w3.org/2000/svg">
-  <!-- The ring is the arena and the O in Oracle; the rising stroke is a call. -->
-  <rect width="64" height="64" rx="14" fill="#1A1410"/>
-  <circle cx="32" cy="32" r="19" stroke="#F4E8DB" stroke-width="7"/>
-  <path d="M22 36L30 28L35 33L44 22" stroke="#C9752F" stroke-width="6" stroke-linecap="square" stroke-linejoin="miter"/>
+<svg width="64" height="64" viewBox="0 0 64 64" xmlns="http://www.w3.org/2000/svg">
+  <title>Oracle Rumble</title>
+  <rect width="64" height="64" rx="12" fill="#0a0d13"/>
+  <!-- Broken ring in 4 arcs (gaps at N, S, E, W) -->
+  <g fill="none" stroke="#edf0f6" stroke-width="3.2" stroke-linecap="round">
+    <path d="M 12 24 A 22 22 0 0 1 24 12"/>
+    <path d="M 40 12 A 22 22 0 0 1 52 24"/>
+    <path d="M 52 40 A 22 22 0 0 1 40 52"/>
+    <path d="M 24 52 A 22 22 0 0 1 12 40"/>
+  </g>
+  <!-- E/W crosshair ticks -->
+  <path d="M 4 32 L 11 32 M 53 32 L 60 32" stroke="#edf0f6" stroke-width="3" stroke-linecap="round"/>
+  <!-- N compass diamond -->
+  <path d="M 32 2 L 36 18 L 32 23 L 28 18 Z" fill="#edf0f6"/>
+  <!-- S compass diamond -->
+  <path d="M 32 62 L 36 46 L 32 41 L 28 46 Z" fill="#edf0f6"/>
+  <!-- Eye almond -->
+  <path d="M 10 32 C 18 20, 26 18, 32 18 C 38 18, 46 20, 54 32 C 46 44, 38 46, 32 46 C 26 46, 18 44, 10 32 Z" fill="#edf0f6"/>
+  <!-- Iris (cutout) -->
+  <circle cx="32" cy="32" r="7" fill="#0a0d13"/>
+  <!-- Pupil -->
+  <circle cx="32" cy="32" r="3.3" fill="#edf0f6"/>
 </svg>

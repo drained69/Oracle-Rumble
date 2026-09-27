@@ -2133,28 +2133,142 @@ main.game-main { position: relative; z-index: 2; }
 .gm-ticker-row .chg.up { color: var(--plasma); }
 .gm-ticker-row .chg.down { color: var(--danger); }
 
-/* ── HUD BAR OVERRIDES (make it feel arcade) ────────────────────────── */
+/* ── FLOATING TAB BAR — playmog / arcade cabinet ─────────────────────── */
+/* Overrides the base .hud-bar into a chunky floating pill anchored at
+ * the top of the viewport. Reset sticky + grid so we can rebuild. */
 .hud-bar.game-hud {
-  background: linear-gradient(180deg, rgba(15, 19, 27, 0.95) 0%, rgba(10, 13, 19, 0.85) 100%);
-  backdrop-filter: blur(14px) saturate(160%);
-  border-bottom: 1px solid rgba(167, 139, 250, 0.2);
-  box-shadow: 0 4px 24px rgba(0, 0, 0, 0.5);
+  position: sticky; top: 16px; z-index: 40;
+  height: auto; padding: 0;
+  max-width: 1240px; margin: 16px auto 0;
+  background: transparent; border: 0; backdrop-filter: none;
+  display: block;
 }
+.hud-bar.game-hud .tabbar-inner {
+  display: grid; grid-template-columns: auto 1fr auto; align-items: center;
+  gap: 20px; padding: 12px 18px;
+  background: linear-gradient(180deg, #10131c 0%, #0a0d13 100%);
+  border: 1px solid #1a1f2c;
+  border-radius: 18px;
+  box-shadow:
+    0 12px 40px rgba(0, 0, 0, 0.55),
+    inset 0 1px 0 rgba(255, 255, 255, 0.04),
+    inset 0 -2px 0 rgba(0, 0, 0, 0.4);
+  position: relative;
+}
+.hud-bar.game-hud .tabbar-inner::before {
+  content: ""; position: absolute; inset: 0; border-radius: 18px; pointer-events: none;
+  background: radial-gradient(600px 100px at 50% 0%, rgba(167, 139, 250, 0.08), transparent 70%);
+}
+
+/* Pixel brand block */
 .hud-bar.game-hud .brand {
-  font-family: 'Orbitron', sans-serif; font-size: 14px; font-weight: 900;
-  letter-spacing: 3px;
-  background: linear-gradient(90deg, #fff 0%, var(--neon) 100%);
+  display: inline-flex; align-items: center; gap: 12px;
+  padding: 6px 4px 6px 6px;
+  position: relative; z-index: 1;
+  font-family: 'Orbitron', sans-serif; font-size: 17px; font-weight: 900;
+  letter-spacing: 3.8px;
+  color: transparent;
+  background: linear-gradient(180deg, #fff 0%, var(--neon) 60%, #6d28d9 100%);
   -webkit-background-clip: text; background-clip: text; -webkit-text-fill-color: transparent;
+  text-shadow: none;
+  filter: drop-shadow(0 2px 0 rgba(0, 0, 0, 0.6));
 }
-.hud-bar.game-hud .brand .mark { filter: drop-shadow(0 0 8px rgba(167, 139, 250, 0.5)); }
+.hud-bar.game-hud .brand .mark {
+  width: 34px; height: 34px; flex-shrink: 0;
+  border-radius: 8px;
+  background: #0a0d13;
+  padding: 3px;
+  filter: drop-shadow(0 0 10px rgba(167, 139, 250, 0.4));
+}
+
+/* Nav strip — uppercase letter-spaced links, minimal chrome */
+.hud-bar.game-hud .hud-nav {
+  display: flex; align-items: center; gap: 4px; justify-self: center;
+  position: relative; z-index: 1;
+}
 .hud-bar.game-hud .hud-nav a,
 .hud-bar.game-hud .hud-nav .nav-link {
-  font-family: 'Space Grotesk', sans-serif; letter-spacing: 0.8px;
-  font-weight: 700; font-size: 12.5px;
+  font-family: 'Orbitron', 'Space Grotesk', sans-serif;
+  font-size: 11.5px; font-weight: 800;
+  letter-spacing: 1.6px; text-transform: uppercase;
+  color: #e8ecf5;
+  padding: 10px 10px;
+  border-radius: 8px;
+  background: transparent; border: 0;
+  transition: color .12s, background .12s, text-shadow .12s;
+  cursor: pointer;
+  white-space: nowrap;
 }
-.hud-bar.game-hud .hud-nav a.active,
 .hud-bar.game-hud .hud-nav a:hover,
-.hud-bar.game-hud .hud-nav .nav-link:hover { color: var(--neon); background: rgba(167, 139, 250, 0.06); }
+.hud-bar.game-hud .hud-nav .nav-link:hover {
+  color: #fff;
+  background: rgba(167, 139, 250, 0.08);
+  text-shadow: 0 0 10px rgba(167, 139, 250, 0.5);
+}
+.hud-bar.game-hud .hud-nav a.active { color: var(--neon); background: rgba(167, 139, 250, 0.08); }
+
+/* Right slot — social icons + wallet */
+.hud-bar.game-hud .hud-right {
+  display: flex; align-items: center; gap: 10px; justify-self: end;
+  position: relative; z-index: 1;
+}
+.hud-bar.game-hud .icon-btn {
+  width: 34px; height: 34px; display: grid; place-items: center;
+  color: #e8ecf5; background: transparent; border: 0; border-radius: 8px;
+  transition: color .12s, background .12s;
+  cursor: pointer;
+}
+.hud-bar.game-hud .icon-btn:hover { color: var(--neon); background: rgba(167, 139, 250, 0.08); }
+.hud-bar.game-hud .icon-btn svg { width: 18px; height: 18px; }
+
+/* Vertical separator between nav clusters */
+.hud-bar.game-hud .tab-sep {
+  width: 1px; height: 22px; background: #1e2432; margin: 0 6px;
+}
+
+/* Compact env / escrow chips inside the bar */
+.hud-bar.game-hud .src,
+.hud-bar.game-hud .escrow-badge {
+  height: 28px; padding: 0 10px; border-radius: 7px;
+  font-size: 10px; letter-spacing: 1.1px;
+}
+
+/* Wallet button — floating pill inside cabinet */
+.hud-bar.game-hud .wallet.game {
+  height: 38px; padding: 0 14px 0 5px;
+  border-radius: 12px;
+  border: 1px solid #26304a;
+  background: linear-gradient(180deg, #171d2c 0%, #0f131b 100%);
+  font-family: 'Orbitron', sans-serif; font-size: 11.5px; font-weight: 800;
+  letter-spacing: 1.4px; text-transform: uppercase;
+  color: #e8ecf5;
+  box-shadow: inset 0 -2px 0 rgba(0, 0, 0, 0.4);
+}
+.hud-bar.game-hud .wallet.game .avatar {
+  width: 28px; height: 28px; border-radius: 7px;
+  background: linear-gradient(180deg, var(--neon), #6d28d9);
+  color: #f5f3ff; box-shadow: 0 0 10px rgba(167, 139, 250, 0.5);
+  font-family: 'Orbitron', sans-serif;
+}
+.hud-bar.game-hud .wallet.game.connected {
+  border-color: rgba(74, 222, 128, 0.4);
+  background: linear-gradient(180deg, rgba(74, 222, 128, 0.08) 0%, #0f131b 100%);
+}
+.hud-bar.game-hud .wallet.game.connected .avatar {
+  background: linear-gradient(180deg, var(--plasma), #16a34a); color: #051510;
+  box-shadow: 0 0 10px rgba(74, 222, 128, 0.5);
+}
+.hud-bar.game-hud .wallet.game.connected::before { display: none; }
+
+@media (max-width: 900px) {
+  .hud-bar.game-hud { top: 8px; margin: 8px auto 0; }
+  .hud-bar.game-hud .tabbar-inner { padding: 10px 12px; border-radius: 14px; gap: 12px; }
+  .hud-bar.game-hud .brand { font-size: 13px; letter-spacing: 2.4px; gap: 8px; }
+  .hud-bar.game-hud .brand .mark { width: 28px; height: 28px; }
+  .hud-bar.game-hud .hud-nav { display: none; }
+  .hud-bar.game-hud .tab-sep { display: none; }
+  .hud-bar.game-hud .src, .hud-bar.game-hud .escrow-badge { display: none; }
+}
 
 /* Wallet button — game version */
 .wallet.game {

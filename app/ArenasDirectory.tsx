@@ -82,7 +82,8 @@ export default function ArenasDirectory() {
   const [wallet, setWallet] = useState<string | null>(null);
   const [arenas, setArenas] = useState<ArenaItem[]>([]);
   const [markets, setMarkets] = useState<MarketRow[]>([]);
-  const [now, setNow] = useState(() => Date.now());
+  // now starts at 0 so SSR + first client render match; useEffect fills it in.
+  const [now, setNow] = useState(0);
   const [busy, setBusy] = useState(false);
   const [toast, setToast] = useState("");
   const [escrow, setEscrow] = useState<{ active: boolean; reason?: string | null } | null>(null);
@@ -129,6 +130,7 @@ export default function ArenasDirectory() {
   }, [refresh]);
 
   useEffect(() => {
+    setNow(Date.now());
     const id = window.setInterval(() => setNow(Date.now()), 500);
     return () => window.clearInterval(id);
   }, []);
@@ -219,38 +221,61 @@ export default function ArenasDirectory() {
       <div className="game-grid-bg" aria-hidden="true" />
       <div className="game-scanlines" aria-hidden="true" />
 
-      {/* ═════════ HEADER ═════════ */}
+      {/* ═════════ HEADER — floating pixel tabbar ═════════ */}
       <nav className="hud-bar game-hud">
-        <a href="/" className="brand" aria-label="Oracle Rumble">
-          <svg className="mark" viewBox="0 0 24 24" width="20" height="20" aria-hidden="true">
-            <rect x="2" y="2" width="20" height="20" rx="4" fill="none" stroke="var(--neon)" strokeWidth="2" />
-            <path d="M7 14 L10 11 L13 14 L17 8" stroke="var(--plasma)" strokeWidth="2" fill="none" strokeLinecap="round" strokeLinejoin="round" />
-          </svg>
-          ORACLE RUMBLE
-        </a>
-        <div className="hud-nav">
-          <a href="#arenas" onClick={(e) => { e.preventDefault(); scrollToId("arenas"); }}>Arenas</a>
-          <a href="#host" onClick={(e) => { e.preventDefault(); scrollToId("host"); }}>Host</a>
-          <a href="#markets" onClick={(e) => { e.preventDefault(); scrollToId("markets"); }}>Markets</a>
-          <button className="nav-link" onClick={() => setShowCreateMarket(true)}>+ Panta market</button>
-          <button className="nav-link" onClick={() => setShowPositions(true)}>Positions</button>
-        </div>
-        <div className="hud-right">
-          <PantaHUD />
-          <span className="src live">{CLUSTER}</span>
-          {escrow && (
-            <span
-              className={`escrow-badge ${escrow.active ? "on" : "off"}`}
-              title={escrow.active ? "Real on-chain USDC" : `Practice mode: ${escrow.reason ?? "escrow off"}`}
-            >
-              <span className="dot" />
-              {escrow.active ? "On-chain" : "Practice"}
-            </span>
-          )}
-          <button className={wallet ? "wallet game connected" : "wallet game"} onClick={connect}>
-            <span className="avatar">{wallet ? wallet.slice(0, 2).toUpperCase() : "?"}</span>
-            {wallet ? shortPk(wallet) : "Connect"}
-          </button>
+        <div className="tabbar-inner">
+          <a href="/" className="brand" aria-label="Oracle Rumble">
+            <svg className="mark" viewBox="0 0 64 64" aria-hidden="true">
+              <g fill="none" stroke="#edf0f6" strokeWidth="3.2" strokeLinecap="round">
+                <path d="M 12 24 A 22 22 0 0 1 24 12" />
+                <path d="M 40 12 A 22 22 0 0 1 52 24" />
+                <path d="M 52 40 A 22 22 0 0 1 40 52" />
+                <path d="M 24 52 A 22 22 0 0 1 12 40" />
+              </g>
+              <path d="M 4 32 L 11 32 M 53 32 L 60 32" stroke="#edf0f6" strokeWidth="3" strokeLinecap="round" />
+              <path d="M 32 2 L 36 18 L 32 23 L 28 18 Z" fill="#edf0f6" />
+              <path d="M 32 62 L 36 46 L 32 41 L 28 46 Z" fill="#edf0f6" />
+              <path d="M 10 32 C 18 20, 26 18, 32 18 C 38 18, 46 20, 54 32 C 46 44, 38 46, 32 46 C 26 46, 18 44, 10 32 Z" fill="#edf0f6" />
+              <circle cx="32" cy="32" r="7" fill="#0a0d13" />
+              <circle cx="32" cy="32" r="3.3" fill="#edf0f6" />
+            </svg>
+            ORACLE RUMBLE
+          </a>
+          <div className="hud-nav">
+            <a href="#arenas" onClick={(e) => { e.preventDefault(); scrollToId("arenas"); }}>Arenas</a>
+            <a href="#host" onClick={(e) => { e.preventDefault(); scrollToId("host"); }}>Host</a>
+            <a href="#markets" onClick={(e) => { e.preventDefault(); scrollToId("markets"); }}>Markets</a>
+            <button className="nav-link" onClick={() => setShowCreateMarket(true)}>+ Market</button>
+            <button className="nav-link" onClick={() => setShowPositions(true)}>Positions</button>
+          </div>
+          <div className="hud-right">
+            <PantaHUD />
+            <span className="src live" title="Solana cluster">{CLUSTER}</span>
+            {escrow && (
+              <span
+                className={`escrow-badge ${escrow.active ? "on" : "off"}`}
+                title={escrow.active ? "Real on-chain USDC" : `Practice mode: ${escrow.reason ?? "escrow off"}`}
+              >
+                <span className="dot" />
+                {escrow.active ? "On-chain" : "Practice"}
+              </span>
+            )}
+            <span className="tab-sep" aria-hidden="true" />
+            <a className="icon-btn" href="https://discord.gg/panta" target="_blank" rel="noopener noreferrer" aria-label="Discord" title="Discord">
+              <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+                <path d="M20.317 4.492a19.79 19.79 0 0 0-4.885-1.515.074.074 0 0 0-.079.037c-.21.372-.444.858-.608 1.239a18.27 18.27 0 0 0-5.487 0 12.64 12.64 0 0 0-.617-1.239.077.077 0 0 0-.079-.037A19.736 19.736 0 0 0 3.677 4.492a.07.07 0 0 0-.032.027C.533 9.093-.32 13.555.099 17.961a.083.083 0 0 0 .031.056 19.9 19.9 0 0 0 5.993 3.03.078.078 0 0 0 .084-.028c.462-.63.874-1.295 1.226-1.994a.076.076 0 0 0-.041-.106 13.107 13.107 0 0 1-1.872-.892.077.077 0 0 1-.008-.128c.126-.094.252-.192.372-.292a.074.074 0 0 1 .077-.01c3.928 1.793 8.18 1.793 12.062 0a.074.074 0 0 1 .078.009c.12.099.246.198.372.292a.077.077 0 0 1-.006.128 12.299 12.299 0 0 1-1.873.891.077.077 0 0 0-.041.107c.36.698.772 1.362 1.225 1.993a.076.076 0 0 0 .084.028 19.84 19.84 0 0 0 6.002-3.03.077.077 0 0 0 .032-.055c.5-5.094-.838-9.52-3.549-13.442a.06.06 0 0 0-.031-.028zM8.02 15.278c-1.182 0-2.157-1.085-2.157-2.419 0-1.333.956-2.419 2.157-2.419 1.21 0 2.176 1.096 2.157 2.42 0 1.333-.956 2.418-2.157 2.418zm7.975 0c-1.183 0-2.157-1.085-2.157-2.419 0-1.333.955-2.419 2.157-2.419 1.21 0 2.176 1.096 2.157 2.42 0 1.333-.946 2.418-2.157 2.418z" />
+              </svg>
+            </a>
+            <a className="icon-btn" href="https://x.com/pantamarket" target="_blank" rel="noopener noreferrer" aria-label="X" title="X">
+              <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+                <path d="M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-5.214-6.817L4.99 21.75H1.68l7.73-8.835L1.254 2.25H8.08l4.713 6.231zm-1.161 17.52h1.833L7.084 4.126H5.117z" />
+              </svg>
+            </a>
+            <button className={wallet ? "wallet game connected" : "wallet game"} onClick={connect}>
+              <span className="avatar">{wallet ? wallet.slice(0, 2).toUpperCase() : "?"}</span>
+              {wallet ? shortPk(wallet) : "Connect"}
+            </button>
+          </div>
         </div>
       </nav>
 
@@ -558,7 +583,7 @@ export default function ArenasDirectory() {
         <div className="gm-section-head">
           <span className="title">Live Markets <span style={{ color: "var(--text-3)", fontWeight: 500 }}>· {markets.length} open</span></span>
           <span style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 11, color: "var(--text-3)", letterSpacing: 1.2 }}>
-            {new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" })}
+            {now ? new Date(now).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" }) : "--:--:--"}
           </span>
         </div>
         <div className="gm-ticker">
