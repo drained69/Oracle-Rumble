@@ -114,10 +114,17 @@ export function marketCreateBuild(args: { createId: string; wallet: string }) {
     "/api/markets/build", args
   );
 }
-export function marketCreateRegister(args: { createId: string; signature: string }) {
-  return jpost<{ source: "panta" | "mock"; marketId: string; status: "registered" | "pending"; title?: string; category?: string }>(
+export async function marketCreateRegister(args: { createId: string; signature: string }) {
+  const res = await jpost<{ source: "panta" | "mock"; marketId: string; status: "registered" | "pending"; title?: string; category?: string }>(
     "/api/markets/register", args
   );
+  // Any market we register goes into the tracked-markets store so the
+  // graduation banner can watch it flip from "primary" → "graduated".
+  try {
+    const { trackMarket } = await import("@/lib/tracked-markets");
+    if (res.marketId) trackMarket({ marketId: res.marketId, question: res.title, role: "creator" });
+  } catch { /* client-only helper — noop on server */ }
+  return res;
 }
 
 // ---- Wallet detection -------------------------------------------------

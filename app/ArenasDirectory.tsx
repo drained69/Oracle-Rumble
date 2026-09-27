@@ -16,6 +16,8 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { connectSolanaWallet } from "@/lib/panta-client";
 import { enrollWithEscrow, newRound } from "@/lib/round-client";
+import PantaHUD from "@/app/PantaHUD";
+import PantaGraduationBanner from "@/app/PantaGraduationBanner";
 
 const usd = new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 0 });
 const usd2 = new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 2 });
@@ -202,6 +204,7 @@ export default function ArenasDirectory() {
           <a href="#markets">Markets</a>
         </div>
         <div className="hud-right">
+          <PantaHUD />
           <span className="src live">{CLUSTER}</span>
           {escrow && (
             <span
@@ -492,6 +495,8 @@ export default function ArenasDirectory() {
       </footer>
 
       {toast && <div className="toast" role="status"><span>{toast}</span><button onClick={() => setToast("")} aria-label="Dismiss">×</button></div>}
+
+      <PantaGraduationBanner />
     </main>
   );
 }

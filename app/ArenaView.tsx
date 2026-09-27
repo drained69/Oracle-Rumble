@@ -1,13 +1,17 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { connectSolanaWallet } from "@/lib/panta-client";
+import { connectSolanaWallet, reportTrade } from "@/lib/panta-client";
 import { getRound, enrollWithEscrow, tradeRound, newRound, placeParlayApi, claimFromEscrow, serverSettleArena, type RoundView } from "@/lib/round-client";
 import type { Entrant, Round } from "@/lib/royale";
 import { PUBLIC_ARENA } from "@/lib/royale";
 import { markets as boardMarkets } from "@/lib/arena-data";
 import { quoteParlay, PARLAY_MAX_LEGS, type ParlayLeg } from "@/lib/parlay";
 import { avatarDataUrl } from "@/lib/avatars";
+import PantaHUD from "@/app/PantaHUD";
+import PantaTradeTape from "@/app/PantaTradeTape";
+import PantaResolution from "@/app/PantaResolution";
+import PantaGraduationBanner from "@/app/PantaGraduationBanner";
 
 type EscrowStatus = { active: boolean; reason?: string | null };
 
@@ -84,6 +88,24 @@ export default function ArenaView({ arenaCode }: { arenaCode: string }) {
     // Fetch escrow status ONCE — the server's config doesn't change per request.
     fetch("/api/escrow/status", { cache: "no-store" }).then((r) => r.json()).then(setEscrow).catch(() => setEscrow({ active: false, reason: "unreachable" }));
   }, []);
+
+  // Every arena runs on a market. If it's a real Panta base58 id, add it to
+  // the tracked-markets store so PantaGraduationBanner can watch for the
+  // primary→graduated flip. Synthetic dir-<asset>-<horizon> ids are ignored.
+  useEffect(() => {
+    const mid = view?.round?.config.marketId;
+    if (!mid) return;
+    (async () => {
+      try {
+        const [{ trackMarket, looksLikePantaMarketId }] = await Promise.all([
+          import("@/lib/tracked-markets")
+        ]);
+        if (looksLikePantaMarketId(mid)) {
+          trackMarket({ marketId: mid, question: view?.round?.config.marketQuestion, role: "player" });
+        }
+      } catch { /* ignore */ }
+    })();
+  }, [view?.round?.config.marketId, view?.round?.config.marketQuestion]);
 
   // ── round polling (drives the keeper) ─────────────────────────────
   const refresh = useCallback(async () => {
@@ -199,9 +221,21 @@ export default function ArenaView({ arenaCode }: { arenaCode: string }) {
     try {
       const r = await tradeRound({ wallet, action: "buy", side, usdc: v, arena: arenaCode });
       if (r.error) setToast(r.error);
-      else { setToast(`Bought ${side} $${v.toFixed(0)}.`); await refresh(); }
+      else {
+        setToast(`Bought ${side} $${v.toFixed(0)}.`);
+        // Fire-and-forget attribution to Panta. In demo mode this always
+        // returns "attributed" and the HUD attribution counter ticks. In
+        // live mode Panta verifies the signature on-chain; a game-scoped
+        // trade without a real Panta order sig will 400 quietly.
+        const mid = round?.config.marketId;
+        if (mid) {
+          const gameSig = `game-${arenaCode}-${Date.now().toString(36)}`;
+          reportTrade({ signature: gameSig, wallet, marketId: mid }).catch(() => { /* ignore */ });
+        }
+        await refresh();
+      }
     } finally { setBusy(false); }
-  }, [wallet, enrolled, amount, side, arenaCode, refresh]);
+  }, [wallet, enrolled, amount, side, arenaCode, round, refresh]);
 
   const doSell = useCallback(async () => {
     if (!wallet || !enrolled) return;
@@ -249,7 +283,18 @@ export default function ArenaView({ arenaCode }: { arenaCode: string }) {
     try {
       const r = await placeParlayApi(wallet, parlayLegs, v, arenaCode);
       if (r.error) setToast(r.error);
-      else { setToast(`Parlay placed · ${parlayLegs.length} legs.`); setParlayLegs([]); await refresh(); }
+      else {
+        setToast(`Parlay placed · ${parlayLegs.length} legs.`);
+        // Attribution: one report per leg so the HUD counter reflects the
+        // real fill count. Fire-and-forget; the report route runs the
+        // attributionKey through /trades/report on the server.
+        for (const leg of parlayLegs) {
+          const gameSig = `parlay-${arenaCode}-${leg.marketId.slice(0, 6)}-${Date.now().toString(36)}`;
+          reportTrade({ signature: gameSig, wallet, marketId: leg.marketId }).catch(() => { /* ignore */ });
+        }
+        setParlayLegs([]);
+        await refresh();
+      }
     } finally { setBusy(false); }
   }, [wallet, enrolled, parlayLegs, parlayStake, arenaCode, refresh]);
 
@@ -318,6 +363,7 @@ export default function ArenaView({ arenaCode }: { arenaCode: string }) {
           <a href="#how">How it works</a>
         </div>
         <div className="hud-right">
+          <PantaHUD />
           <span className={sourceBadge.cls}>{CLUSTER}</span>
           {escrow && (
             <span
@@ -660,6 +706,19 @@ export default function ArenaView({ arenaCode }: { arenaCode: string }) {
           </div>
         )}
       </section>
+
+      {/* Live Panta fills for THIS market — the trade tape */}
+      {round && round.config.marketId && (
+        <PantaTradeTape marketId={round.config.marketId} marketQuestion={round.config.marketQuestion} />
+      )}
+
+      {/* Resolution + dispute window: appears only when Panta says the market is resolved */}
+      {round && round.config.marketId && (
+        <PantaResolution marketId={round.config.marketId} />
+      )}
+
+      {/* Fires once per tracked market when it graduates on Panta's secondary book */}
+      <PantaGraduationBanner />
 
       {/* ── HOW IT WORKS ────────────────────────────────────── */}
       <section className="how-shell" id="how">

@@ -28,11 +28,12 @@
  *   POST /trades/report               attribute an on-chain trade
  */
 
-const DEFAULT_BASE = "https://live-api.panta.market/api/v1";
-
-export const PANTA_BASE = process.env.PANTA_API_BASE ?? DEFAULT_BASE;
-export const PANTA_KEY = process.env.PANTA_API_KEY ?? "";
-export const PANTA_LIVE = PANTA_KEY.length > 0;
+// Env is defined in lib/panta-env.ts and re-exported so existing callers
+// can keep importing from "@/lib/panta". The split exists so the telemetry
+// module can read env without a circular import back through this file.
+export { PANTA_BASE, PANTA_KEY, PANTA_LIVE } from "@/lib/panta-env";
+import { PANTA_BASE, PANTA_KEY, PANTA_LIVE } from "@/lib/panta-env";
+import { recordPantaCall } from "@/lib/panta-telemetry";
 
 // ------------------------------------------------------------------
 // Types (best-effort — Panta's OpenAPI is authoritative, we shape our
@@ -52,6 +53,10 @@ export type PantaMarket = {
   closes: string;             // human-readable countdown
   phase: MarketPhase;
   outcome?: "YES" | "NO" | null;
+  /** ISO 8601 timestamp Panta resolved the market at (present when phase==="resolved"). */
+  resolvedAt?: string | null;
+  /** ISO 8601 timestamp trading closes (Panta's resolutionTime for the AI Resolver). */
+  resolutionTime?: string | null;
 };
 
 export type PantaCategory = { id: string; label: string };
@@ -131,21 +136,62 @@ export class PantaError extends Error {
 }
 
 export async function pantaFetch<T>(path: string, init: RequestInit = {}): Promise<T> {
-  if (!PANTA_LIVE) throw new Error("PANTA_MOCK");
+  const method = (init.method ?? "GET").toUpperCase();
   // Panta requires trailing slashes on all endpoints.
   const p = path.endsWith("/") || path.includes("?") ? path : path + "/";
-  const res = await fetch(`${PANTA_BASE}${p}`, {
-    ...init,
-    headers: {
-      "X-Api-Key": PANTA_KEY,
-      "content-type": "application/json",
-      accept: "application/json",
-      ...(init.headers ?? {})
-    },
-    cache: "no-store"
-  });
-  if (!res.ok) throw new PantaError(res.status, await res.text());
-  return res.json() as Promise<T>;
+
+  if (!PANTA_LIVE) {
+    // Demo mode: record the fact that a mock was served so the console
+    // still shows the endpoint the code TRIED to call. status=0 signals
+    // "no HTTP round trip".
+    recordPantaCall({
+      method, endpoint: p, status: 0, latencyMs: 0,
+      source: "mock", outcome: "ok", note: "PANTA_LIVE=false"
+    });
+    throw new Error("PANTA_MOCK");
+  }
+
+  const started = Date.now();
+  let status = 0;
+  try {
+    const res = await fetch(`${PANTA_BASE}${p}`, {
+      ...init,
+      headers: {
+        "X-Api-Key": PANTA_KEY,
+        "content-type": "application/json",
+        accept: "application/json",
+        ...(init.headers ?? {})
+      },
+      cache: "no-store"
+    });
+    status = res.status;
+    if (!res.ok) {
+      const body = await res.text();
+      recordPantaCall({
+        method, endpoint: p, status, latencyMs: Date.now() - started,
+        source: "mock", outcome: "error", errorClass: `HTTP_${status}`,
+        note: body.slice(0, 140)
+      });
+      throw new PantaError(status, body);
+    }
+    const json = (await res.json()) as T;
+    recordPantaCall({
+      method, endpoint: p, status, latencyMs: Date.now() - started,
+      source: "panta", outcome: "ok"
+    });
+    return json;
+  } catch (err) {
+    // Network / DNS / abort. Only record if we didn't already record above.
+    if (!(err instanceof PantaError)) {
+      recordPantaCall({
+        method, endpoint: p, status, latencyMs: Date.now() - started,
+        source: "mock", outcome: "error",
+        errorClass: err instanceof Error ? err.name : "unknown",
+        note: err instanceof Error ? err.message.slice(0, 140) : String(err).slice(0, 140)
+      });
+    }
+    throw err;
+  }
 }
 
 // ------------------------------------------------------------------
