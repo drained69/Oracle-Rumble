@@ -21,7 +21,7 @@ import {
   submitOrder,
   verifyOrder,
   reportTrade,
-  signAndBroadcast
+  signAndBroadcastFromInstructions
 } from "@/lib/panta-client";
 
 export type LifecycleStep =
@@ -104,15 +104,22 @@ export async function executePantaOrder(args: ExecuteOrderArgs): Promise<Execute
   }
   emit({ step: "built", quoteId: quote.quoteId, source: build.source, note: "Awaiting wallet signature…" });
 
-  // 3. Sign + broadcast. In demo mode Panta returns an unparseable base64;
-  // the wallet will reject deserializing. Handle that as a demo-friendly
-  // no-op so the lifecycle still completes without a real fill.
+  // 3. Sign + broadcast. Panta returns raw instructions + recentBlockhash
+  // (not a pre-serialized tx) — compile a v0 VersionedTransaction locally.
+  // In sandbox / demo mode Panta returns an empty instructions array; we
+  // catch that and synthesize a signature so the lifecycle still exercises
+  // /submit + /verify + /trades/{sig} proxies.
   emit({ step: "signing", quoteId: quote.quoteId, note: "Waiting for wallet…" });
   let signature = "";
   let confirmed = false;
-  if (build.source === "panta") {
+  const canSign = build.source === "panta" && build.instructions && build.instructions.length > 0;
+  if (canSign) {
     try {
-      const res = await signAndBroadcast({ serializedTx: build.serializedTx, wallet: args.wallet });
+      const res = await signAndBroadcastFromInstructions({
+        wallet: args.wallet,
+        instructions: build.instructions,
+        recentBlockhash: build.recentBlockhash
+      });
       signature = res.signature;
       confirmed = res.confirmed;
     } catch (err) {
@@ -121,50 +128,52 @@ export async function executePantaOrder(args: ExecuteOrderArgs): Promise<Execute
       return { ok: false, quoteId: quote.quoteId, error: msg };
     }
   } else {
-    // Demo mode: no real tx to sign. Emit a plausible signature so the
-    // downstream calls still exercise the /submit + /verify + /report
-    // proxies.
     signature = `demo-${Date.now().toString(36)}-${args.marketId.slice(0, 4)}`;
-    emit({ step: "signing", quoteId: quote.quoteId, note: "Demo mode — skipping wallet signature." });
+    emit({ step: "signing", quoteId: quote.quoteId, note: "Sandbox mode — skipping wallet signature." });
   }
   emit({ step: "broadcasting", signature, quoteId: quote.quoteId, note: signature ? `Broadcast · ${signature.slice(0, 8)}…` : "Broadcasting…" });
 
-  // 4. Submit signature to Panta so it can pick up confirmation.
+  // 4. Submit signature to Panta so it can pick up confirmation. Panta
+  // needs the orderId from build, not the quoteId.
   try {
-    const submit = await submitOrder({ quoteId: quote.quoteId, signature, wallet: args.wallet });
+    const submit = await submitOrder({ orderId: build.orderId, signature, wallet: args.wallet });
     emit({ step: "broadcasting", signature, source: submit.source, note: `Panta status: ${submit.status}` });
   } catch (err) {
-    // Non-fatal — Panta will still see the tx on-chain. Log and keep going.
     emit({ step: "broadcasting", signature, note: `submit warning: ${err instanceof Error ? err.message : String(err)}` });
   }
 
-  // 5. Poll verify until confirmed / failed / timeout.
+  // 5. Poll verify until confirmed / failed / expired / timeout.
   emit({ step: "confirming", signature, note: "Confirming on Panta…" });
   const deadline = Date.now() + VERIFY_TIMEOUT_MS;
-  let verifyStatus: "pending" | "confirmed" | "failed" = confirmed ? "confirmed" : "pending";
-  while (Date.now() < deadline && verifyStatus === "pending") {
+  type VerifyStatus = "built" | "submitted" | "pending" | "confirmed" | "failed" | "expired";
+  let verifyStatus: VerifyStatus = confirmed ? "confirmed" : "submitted";
+  const isTerminal = (s: VerifyStatus) => s === "confirmed" || s === "failed" || s === "expired";
+  while (Date.now() < deadline && !isTerminal(verifyStatus)) {
     try {
-      const v = await verifyOrder({ signature });
-      verifyStatus = v.status;
-      if (verifyStatus !== "pending") break;
+      const v = await verifyOrder({ orderId: build.orderId, signature });
+      verifyStatus = v.status as VerifyStatus;
+      if (isTerminal(verifyStatus)) break;
     } catch {
       // transient — keep polling
     }
     await new Promise((r) => setTimeout(r, VERIFY_INTERVAL_MS));
   }
-  if (verifyStatus === "failed") {
-    emit({ step: "error", signature, error: "Panta reported the tx as failed." });
-    return { ok: false, signature, quoteId: quote.quoteId, error: "tx failed" };
+  if (verifyStatus === "failed" || verifyStatus === "expired") {
+    emit({ step: "error", signature, error: `Panta reported the tx as ${verifyStatus}.` });
+    return { ok: false, signature, quoteId: quote.quoteId, error: `tx ${verifyStatus}` };
   }
   emit({ step: "confirmed", signature, note: `Confirmed · ${verifyStatus}` });
 
-  // 6. Report trade for attribution.
-  emit({ step: "reporting", signature, note: "Attributing to Oracle Rumble…" });
+  // 6. Attribution readback. Panta doesn't have a POST /trades/report —
+  // attribution is automatic via the API key + X-User-Id header. This
+  // step probes GET /trades/{signature}/ to see whether the trade has
+  // been picked up and counted for the partner.
+  emit({ step: "reporting", signature, note: "Reading trade attribution…" });
   let attributed = false;
   let source: "panta" | "mock" | undefined = undefined;
   try {
     const report = await reportTrade({ signature, wallet: args.wallet, marketId: args.marketId });
-    attributed = report.status === "attributed";
+    attributed = report.status === "processed" || report.status === "confirmed";
     source = report.source;
   } catch (err) {
     emit({ step: "reporting", signature, note: `attribution warning: ${err instanceof Error ? err.message : String(err)}` });

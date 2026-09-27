@@ -1,39 +1,64 @@
 import { NextResponse } from "next/server";
-import { PANTA_LIVE, pantaFetch, type ReportRequest, type ReportResponse } from "@/lib/panta";
+import { PANTA_LIVE, pantaFetch, type TradeStatusResponse } from "@/lib/panta";
 import { recordAttribution } from "@/lib/panta-telemetry";
 
 /**
- * POST /api/trades/report
- * Maps to Panta's POST /trades/report.
+ * GET /api/trades/report?signature=<sig>
  *
- * This is Oracle Rumble's attribution hook — Panta verifies the signature
- * on-chain and credits the trade to our partner attribution key so the
- * ring's leaderboard only counts qualifying activity.
+ * Panta doesn't expose a POST /trades/report endpoint — attribution is
+ * automatic via the API key (or explicit X-User-Id header) on every
+ * order lifecycle call. This route reads back the current status of a
+ * signature using GET /trades/{signature}/ so the UI can confirm
+ * whether attribution has been picked up.
  *
- * The attribution key is server-only (env var).
+ * Historical note: earlier code hit POST /trades/report which returned
+ * HTTP 405 in production. That call has been removed; the client now
+ * either polls this endpoint or gets its confirmation via /orders/verify.
+ *
+ * A POST-shaped legacy handler is kept for backwards compatibility with
+ * clients still calling POST /api/trades/report; it just proxies the
+ * signature through the GET path.
  */
+
+async function readStatus(signature: string): Promise<TradeStatusResponse> {
+  if (!PANTA_LIVE) {
+    return { signature, status: "processed", source: "mock" };
+  }
+  try {
+    const data = await pantaFetch<{ signature?: string; status?: string; marketId?: string; wallet?: string; side?: "yes" | "no"; kind?: "buy" | "claim" }>(
+      `/trades/${encodeURIComponent(signature)}`
+    );
+    return {
+      signature,
+      status: (data.status as TradeStatusResponse["status"]) ?? "unknown",
+      marketId: data.marketId,
+      wallet: data.wallet,
+      side: data.side,
+      kind: data.kind,
+      source: "panta"
+    };
+  } catch (err) {
+    console.error("panta /trades/{sig} failed:", err);
+    return { signature, status: "unknown", source: "mock" };
+  }
+}
+
+export async function GET(request: Request) {
+  const signature = new URL(request.url).searchParams.get("signature");
+  if (!signature) return NextResponse.json({ error: "signature required" }, { status: 400 });
+  const resp = await readStatus(signature);
+  if (resp.status === "processed" || resp.status === "confirmed") {
+    recordAttribution(`sig=${signature.slice(0, 8)}… kind=${resp.kind ?? "buy"}`);
+  }
+  return NextResponse.json(resp);
+}
+
 export async function POST(request: Request) {
-  const body = (await request.json()) as ReportRequest;
-  if (!body?.signature || !body?.wallet || !body?.marketId) {
-    return NextResponse.json({ error: "signature, wallet, marketId required" }, { status: 400 });
+  const body = (await request.json().catch(() => ({}))) as { signature?: string };
+  if (!body?.signature) return NextResponse.json({ error: "signature required" }, { status: 400 });
+  const resp = await readStatus(body.signature);
+  if (resp.status === "processed" || resp.status === "confirmed") {
+    recordAttribution(`sig=${body.signature.slice(0, 8)}… kind=${resp.kind ?? "buy"}`);
   }
-
-  const payload = { ...body, attributionKey: body.attributionKey ?? process.env.PANTA_ATTRIBUTION_KEY };
-
-  if (PANTA_LIVE) {
-    try {
-      const data = await pantaFetch<ReportResponse>("/trades/report", {
-        method: "POST",
-        body: JSON.stringify(payload)
-      });
-      if (data.status === "attributed") recordAttribution(`sig=${payload.signature.slice(0, 8)}…`);
-      return NextResponse.json({ ...data, source: "panta" });
-    } catch (err) {
-      console.error("panta /trades/report failed, serving mock:", err);
-    }
-  }
-
-  const resp: ReportResponse = { status: "attributed", source: "mock" };
-  if (!PANTA_LIVE) recordAttribution(`mock sig=${payload.signature.slice(0, 8)}…`);
   return NextResponse.json(resp);
 }

@@ -1,30 +1,56 @@
 import { NextResponse } from "next/server";
-import { PANTA_LIVE, pantaFetch } from "@/lib/panta";
+import { PANTA_LIVE, pantaFetch, type VerifyRequest, type VerifyResponse } from "@/lib/panta";
 
 /**
  * POST /api/orders/verify
- * Maps to Panta's POST /orders/verify.
  *
- * After a signature is submitted, the client polls this to learn when
- * Panta has picked up the confirmation. Returns { status: pending |
- * confirmed | failed }.
+ * Proxies Panta's POST /primaryorderverify/. Accepts orderId (from
+ * /orders/build) with an optional signature to associate. Returns the
+ * current lifecycle status. Panta's status enum is a superset of what
+ * Oracle Rumble's UI needs — we surface all values so the request
+ * console shows the exact wire value.
  */
 export async function POST(request: Request) {
-  const body = (await request.json()) as { signature: string };
-  if (!body?.signature) return NextResponse.json({ error: "signature required" }, { status: 400 });
+  const body = (await request.json()) as VerifyRequest & { signature?: string; orderId?: string };
+  if (!body?.orderId && !body?.signature) {
+    return NextResponse.json({ error: "orderId or signature required" }, { status: 400 });
+  }
 
   if (PANTA_LIVE) {
     try {
-      const data = await pantaFetch<{ status: "pending" | "confirmed" | "failed" }>("/orders/verify", {
-        method: "POST",
-        body: JSON.stringify(body)
-      });
-      return NextResponse.json({ source: "panta", ...data });
+      const payload: Record<string, unknown> = {};
+      if (body.orderId) payload.orderId = body.orderId;
+      if (body.signature) payload.signature = body.signature;
+      if (body.wallet) payload.wallet = body.wallet;
+      const data = await pantaFetch<{
+        orderId?: string;
+        status?: string;
+        signature?: string;
+        marketId?: string;
+        side?: "yes" | "no";
+        amountUsdc?: string;
+      }>("/primaryorderverify", { method: "POST", body: JSON.stringify(payload) });
+      const resp: VerifyResponse = {
+        orderId: data.orderId ?? body.orderId ?? "",
+        status: (data.status as VerifyResponse["status"]) ?? "submitted",
+        signature: data.signature ?? body.signature,
+        marketId: data.marketId,
+        side: data.side,
+        amountUsdc: data.amountUsdc,
+        source: "panta"
+      };
+      return NextResponse.json(resp);
     } catch (err) {
-      console.error("panta /orders/verify failed, serving mock:", err);
+      console.error("panta /primaryorderverify failed, serving mock:", err);
     }
   }
 
-  // Mock: always "confirmed" after a brief roll — good enough for demo.
-  return NextResponse.json({ source: "mock", status: "confirmed" as const });
+  // Mock: always resolve to "confirmed" so the demo flow completes.
+  const resp: VerifyResponse = {
+    orderId: body.orderId ?? "ord_mock",
+    status: "confirmed",
+    signature: body.signature,
+    source: "mock"
+  };
+  return NextResponse.json(resp);
 }

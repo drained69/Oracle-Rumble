@@ -1,13 +1,32 @@
 import { NextResponse } from "next/server";
-import { PANTA_LIVE, pantaFetch, mockUnsignedTx, type ClaimBuildRequest, type ClaimBuildResponse } from "@/lib/panta";
+import { PANTA_LIVE, pantaFetch, type ClaimBuildRequest, type ClaimBuildResponse, type PantaInstruction } from "@/lib/panta";
 
 /**
  * POST /api/claims/build
- * Maps to Panta's POST /claims/build (claim_win_usdc).
  *
- * Returns an unsigned claim transaction for the given wallet + resolved
- * market. Front-end signs and broadcasts.
+ * Proxies Panta's POST /claim/build/ (note: singular `claim`, not
+ * `claims`). Returns raw Solana `instructions[]` + `recentBlockhash`,
+ * NOT a pre-serialized VersionedTransaction — the client compiles the
+ * tx locally with the wallet's pubkey as fee payer (see
+ * lib/panta-client.ts compileAndSign).
  */
+type PantaClaimBuild = {
+  wallet: string;
+  marketId: string;
+  outcome?: "YES" | "NO";
+  winningShares?: string;
+  instructions?: PantaInstruction[];
+  recentBlockhash?: string;
+  lastValidBlockHeight?: number;
+};
+
+function sharesToUsdc(shares: string | number | undefined): string {
+  if (shares === undefined) return "0.00";
+  const n = typeof shares === "number" ? shares : Number(shares);
+  if (!Number.isFinite(n)) return "0.00";
+  return n.toFixed(2);
+}
+
 export async function POST(request: Request) {
   const body = (await request.json()) as ClaimBuildRequest;
   if (!body?.wallet || !body?.marketId) {
@@ -16,18 +35,31 @@ export async function POST(request: Request) {
 
   if (PANTA_LIVE) {
     try {
-      const data = await pantaFetch<ClaimBuildResponse>("/claims/build", {
+      const data = await pantaFetch<PantaClaimBuild>("/claim/build", {
         method: "POST",
-        body: JSON.stringify(body)
+        body: JSON.stringify({ wallet: body.wallet, marketId: body.marketId })
       });
-      return NextResponse.json({ ...data, source: "panta" });
+      const resp: ClaimBuildResponse = {
+        instructions: data.instructions ?? [],
+        recentBlockhash: data.recentBlockhash ?? "",
+        lastValidBlockHeight: data.lastValidBlockHeight,
+        outcome: data.outcome,
+        winningShares: data.winningShares,
+        // A winning-share equals 1 USDC on payout, so shares → USDC 1:1.
+        amountUsdc: sharesToUsdc(data.winningShares),
+        source: "panta"
+      };
+      return NextResponse.json(resp);
     } catch (err) {
-      console.error("panta /claims/build failed, serving mock:", err);
+      console.error("panta /claim/build failed, serving mock:", err);
     }
   }
 
   const resp: ClaimBuildResponse = {
-    serializedTx: mockUnsignedTx(),
+    instructions: [],
+    recentBlockhash: "MockBlockhash11111111111111111111111111111111",
+    outcome: "YES",
+    winningShares: (Math.random() * 200 + 10).toFixed(2),
     amountUsdc: (Math.random() * 200 + 10).toFixed(2),
     source: "mock"
   };

@@ -31,8 +31,8 @@
 // Env is defined in lib/panta-env.ts and re-exported so existing callers
 // can keep importing from "@/lib/panta". The split exists so the telemetry
 // module can read env without a circular import back through this file.
-export { PANTA_BASE, PANTA_KEY, PANTA_LIVE } from "@/lib/panta-env";
-import { PANTA_BASE, PANTA_KEY, PANTA_LIVE } from "@/lib/panta-env";
+export { PANTA_BASE, PANTA_KEY, PANTA_LIVE, PANTA_USER_ID } from "@/lib/panta-env";
+import { PANTA_BASE, PANTA_KEY, PANTA_LIVE, PANTA_USER_ID } from "@/lib/panta-env";
 import { recordPantaCall } from "@/lib/panta-telemetry";
 
 // ------------------------------------------------------------------
@@ -64,36 +64,60 @@ export type PantaCategory = { id: string; label: string };
 export type QuoteRequest = {
   marketId: string;
   side: "YES" | "NO";
-  usdcAmount: string;         // human-readable, e.g. "25.00"
+  usdcAmount: string;         // human-readable, e.g. "25.00" — mapped to `amountUsdc` on the wire
   wallet?: string;            // Solana pubkey
-  attributionKey?: string;    // Panta partner attribution key
+  userId?: string;            // Panta attribution identifier (usr_…)
 };
 
 export type QuoteResponse = {
   quoteId: string;
   marketId: string;
   side: "YES" | "NO";
-  price: number;              // cents
+  price: number;              // cents (derived from Panta's avgPrice decimal string)
   shares: number;
-  usdcAmount: string;
+  usdcAmount: string;         // echoed for the UI
   feeUsdc: string;
-  networkFeeUsdc: string;
+  networkFeeUsdc: string;     // client-facing; Panta's real fee is bundled into feeUsdc
   expiresAt: string;          // ISO
   source: "panta" | "mock";
 };
 
+/**
+ * Response from Panta's `/primaryorderbuild/`. Panta does NOT return a
+ * pre-serialized VersionedTransaction — it returns the raw Solana
+ * instructions plus a `recentBlockhash`, and the client compiles the
+ * transaction locally (see lib/panta-client.ts).
+ */
+export type PantaInstructionAccount = { pubkey: string; isSigner: boolean; isWritable: boolean };
+export type PantaInstruction = { programId: string; accounts: PantaInstructionAccount[]; data: string };
+
 export type BuildRequest = { quoteId: string; wallet: string };
 export type BuildResponse = {
-  quoteId: string;
-  serializedTx: string;       // base64 unsigned VersionedTransaction
+  orderId: string;                     // Panta's post-build session identifier
+  quoteId: string;                     // preserved for the caller
+  instructions: PantaInstruction[];    // Solana IX list to compile
+  recentBlockhash: string;
   lastValidBlockHeight?: number;
+  expectedShares?: number;
+  expiresAt?: string;
   source: "panta" | "mock";
 };
 
-export type SubmitRequest = { quoteId: string; signature: string; wallet: string };
+export type SubmitRequest = { orderId: string; signature: string; wallet?: string };
 export type SubmitResponse = {
   signature: string;
-  status: "submitted" | "confirmed" | "failed";
+  status: "submitted" | "confirmed" | "failed";  // Panta returns "submitted"; we surface confirmed/failed via /verify
+  source: "panta" | "mock";
+};
+
+export type VerifyRequest = { orderId: string; signature?: string; wallet?: string };
+export type VerifyResponse = {
+  orderId: string;
+  status: "built" | "submitted" | "confirmed" | "failed" | "expired";
+  signature?: string;
+  marketId?: string;
+  side?: "yes" | "no";
+  amountUsdc?: string;
   source: "panta" | "mock";
 };
 
@@ -112,18 +136,30 @@ export type PantaPosition = {
 
 export type ClaimBuildRequest = { wallet: string; marketId: string };
 export type ClaimBuildResponse = {
-  serializedTx: string;
-  amountUsdc: string;
+  instructions: PantaInstruction[];
+  recentBlockhash: string;
+  lastValidBlockHeight?: number;
+  outcome?: "YES" | "NO";
+  winningShares?: string;
+  amountUsdc: string;         // human-readable for the UI; derived from winningShares when Panta doesn't populate it
   source: "panta" | "mock";
 };
 
-export type ReportRequest = {
+/**
+ * Panta doesn't expose a POST /trades/report endpoint. Attribution is
+ * automatic via the API key (or explicit X-User-Id header) on the order
+ * lifecycle. This type is the shape of GET /trades/{signature}/ which
+ * lets the client verify that a trade got attributed after the fact.
+ */
+export type TradeStatusResponse = {
   signature: string;
-  wallet: string;
-  marketId: string;
-  attributionKey?: string;
+  status: "unknown" | "pending" | "confirmed" | "processed" | "failed";
+  marketId?: string;
+  wallet?: string;
+  side?: "yes" | "no";
+  kind?: "buy" | "claim";
+  source: "panta" | "mock";
 };
-export type ReportResponse = { status: "attributed" | "pending" | "failed"; source: "panta" | "mock" };
 
 // ------------------------------------------------------------------
 // Low-level fetch. Server-side only — never import from the browser.
@@ -158,6 +194,11 @@ export async function pantaFetch<T>(path: string, init: RequestInit = {}): Promi
       ...init,
       headers: {
         "X-Api-Key": PANTA_KEY,
+        // Attribution: Panta credits trades to the account owning the
+        // API key by default. Passing X-User-Id explicitly makes it
+        // deterministic across environments and is the recommended
+        // pattern per docs.panta.market/api-reference/trades/report.
+        ...(PANTA_USER_ID ? { "X-User-Id": PANTA_USER_ID } : {}),
         "content-type": "application/json",
         accept: "application/json",
         ...(init.headers ?? {})

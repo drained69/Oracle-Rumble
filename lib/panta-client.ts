@@ -13,9 +13,11 @@ import type {
   QuoteResponse,
   BuildResponse,
   SubmitResponse,
-  ReportResponse,
+  VerifyResponse,
+  TradeStatusResponse,
   ClaimBuildResponse,
   PantaCategory,
+  PantaInstruction,
   PantaMarket,
   PantaPosition
 } from "@/lib/panta";
@@ -68,17 +70,23 @@ export function quoteOrder(args: { marketId: string; side: "YES" | "NO"; usdcAmo
 export function buildOrder(args: { quoteId: string; wallet: string }) {
   return jpost<BuildResponse>("/api/orders/build", args);
 }
-export function submitOrder(args: { quoteId: string; signature: string; wallet: string }) {
+export function submitOrder(args: { orderId: string; signature: string; wallet?: string }) {
   return jpost<SubmitResponse>("/api/orders/submit", args);
 }
-export function verifyOrder(args: { signature: string }) {
-  return jpost<{ source: "panta" | "mock"; status: "pending" | "confirmed" | "failed" }>("/api/orders/verify", args);
+export function verifyOrder(args: { orderId?: string; signature?: string; wallet?: string }) {
+  return jpost<VerifyResponse>("/api/orders/verify", args);
 }
 export function buildClaim(args: { wallet: string; marketId: string }) {
   return jpost<ClaimBuildResponse>("/api/claims/build", args);
 }
-export function reportTrade(args: { signature: string; wallet: string; marketId: string }) {
-  return jpost<ReportResponse>("/api/trades/report", args);
+/**
+ * Read the on-chain attribution status for a signature after a Panta
+ * trade. Panta doesn't expose a POST /trades/report — this is a GET-style
+ * status probe. Ticks the HUD attribution counter when the response is
+ * `processed` or `confirmed`.
+ */
+export function reportTrade(args: { signature: string; wallet?: string; marketId?: string }) {
+  return jpost<TradeStatusResponse>("/api/trades/report", { signature: args.signature });
 }
 export function quoteParlayLive(args: { legs: Array<Pick<ParlayLeg, "marketId" | "side" | "correlationGroup" | "question">>; stakeUsdc: number }) {
   return jpost<{ source: "panta" | "mock"; quote: ParlayQuote }>("/api/parlay/quote", args);
@@ -177,16 +185,41 @@ const CONFIRM_TIMEOUT_MS = 30_000;
 export class WalletUnavailableError extends Error { constructor() { super("No Solana wallet detected. Install Phantom, Backpack, or Solflare and reload."); } }
 export class WalletSignatureError extends Error { constructor(cause: unknown) { super(cause instanceof Error ? cause.message : String(cause)); } }
 
-export async function signAndBroadcast(args: {
-  serializedTx: string;
-  wallet: string;
-}): Promise<{ signature: string; confirmed: boolean }> {
+async function pickProvider() {
   if (typeof window === "undefined") throw new Error("client only");
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const w = window as any;
   const provider = w.phantom?.solana ?? w.solana ?? w.backpack?.solana ?? w.solflare;
   if (!provider) throw new WalletUnavailableError();
+  return provider;
+}
 
+async function pollConfirmation(connection: import("@solana/web3.js").Connection, signature: string): Promise<boolean> {
+  const deadline = Date.now() + CONFIRM_TIMEOUT_MS;
+  while (Date.now() < deadline) {
+    try {
+      const st = await connection.getSignatureStatus(signature, { searchTransactionHistory: true });
+      const v = st.value?.confirmationStatus;
+      if (v === "confirmed" || v === "finalized") return true;
+      if (st.value?.err) throw new WalletSignatureError(new Error(JSON.stringify(st.value.err)));
+    } catch (err) {
+      if (err instanceof WalletSignatureError) throw err;
+    }
+    await new Promise((r) => setTimeout(r, 1_500));
+  }
+  return false;
+}
+
+/**
+ * Sign a Panta-supplied VersionedTransaction (base64) with the connected
+ * wallet, broadcast to Solana, and poll for confirmation. Used by the
+ * market-creation lifecycle where Panta returns a fully-built tx.
+ */
+export async function signAndBroadcast(args: {
+  serializedTx: string;
+  wallet: string;
+}): Promise<{ signature: string; confirmed: boolean }> {
+  const provider = await pickProvider();
   const bytes = b64ToBytes(args.serializedTx);
   const { Connection, VersionedTransaction } = await import("@solana/web3.js");
   const connection = new Connection(SOLANA_RPC, "confirmed");
@@ -213,23 +246,69 @@ export async function signAndBroadcast(args: {
     throw new WalletSignatureError(err);
   }
   if (!signature) throw new WalletSignatureError(new Error("wallet returned an empty signature"));
+  const confirmed = await pollConfirmation(connection, signature);
+  return { signature, confirmed };
+}
 
-  // Poll for confirmation. We don't block indefinitely — Panta will also
-  // pick up confirmations via the /orders/verify path.
-  let confirmed = false;
-  const deadline = Date.now() + CONFIRM_TIMEOUT_MS;
-  while (Date.now() < deadline) {
-    try {
-      const st = await connection.getSignatureStatus(signature, { searchTransactionHistory: true });
-      const v = st.value?.confirmationStatus;
-      if (v === "confirmed" || v === "finalized") { confirmed = true; break; }
-      if (st.value?.err) throw new WalletSignatureError(new Error(JSON.stringify(st.value.err)));
-    } catch (err) {
-      if (err instanceof WalletSignatureError) throw err;
-      // transient — keep polling
-    }
-    await new Promise((r) => setTimeout(r, 1_500));
+/**
+ * Compile a v0 VersionedTransaction from raw Panta instructions +
+ * recentBlockhash (the shape returned by /primaryorderbuild/ and
+ * /claim/build/), then sign + broadcast + confirm through the connected
+ * wallet.
+ *
+ * If Panta returned an empty instructions array (sandbox mode or a
+ * malformed response), we throw so the caller can fall back to demo
+ * behavior rather than sending an empty tx.
+ */
+export async function signAndBroadcastFromInstructions(args: {
+  wallet: string;
+  instructions: PantaInstruction[];
+  recentBlockhash: string;
+}): Promise<{ signature: string; confirmed: boolean }> {
+  if (!args.instructions || args.instructions.length === 0) {
+    throw new WalletSignatureError(new Error("Panta returned no instructions to sign — sandbox / demo mode."));
+  }
+  if (!args.recentBlockhash) {
+    throw new WalletSignatureError(new Error("Panta returned no recentBlockhash."));
   }
 
+  const provider = await pickProvider();
+  const { Connection, PublicKey, TransactionInstruction, TransactionMessage, VersionedTransaction } = await import("@solana/web3.js");
+  const connection = new Connection(SOLANA_RPC, "confirmed");
+
+  const payer = new PublicKey(args.wallet);
+  const ix = args.instructions.map((raw) => new TransactionInstruction({
+    programId: new PublicKey(raw.programId),
+    keys: raw.accounts.map((a) => ({
+      pubkey: new PublicKey(a.pubkey),
+      isSigner: a.isSigner,
+      isWritable: a.isWritable
+    })),
+    data: Buffer.from(raw.data, "base64")
+  }));
+
+  const message = new TransactionMessage({
+    payerKey: payer,
+    recentBlockhash: args.recentBlockhash,
+    instructions: ix
+  }).compileToV0Message();
+  const tx = new VersionedTransaction(message);
+
+  let signature = "";
+  try {
+    if (typeof provider.signAndSendTransaction === "function") {
+      const res = await provider.signAndSendTransaction(tx);
+      signature = res.signature ?? "";
+    } else if (typeof provider.signTransaction === "function") {
+      const signed = await provider.signTransaction(tx);
+      signature = await connection.sendRawTransaction(signed.serialize(), { skipPreflight: false });
+    } else {
+      throw new WalletUnavailableError();
+    }
+  } catch (err) {
+    throw new WalletSignatureError(err);
+  }
+  if (!signature) throw new WalletSignatureError(new Error("wallet returned an empty signature"));
+  const confirmed = await pollConfirmation(connection, signature);
   return { signature, confirmed };
 }

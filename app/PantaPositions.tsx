@@ -11,7 +11,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import type { PantaPosition } from "@/lib/panta";
-import { buildClaim, signAndBroadcast } from "@/lib/panta-client";
+import { buildClaim, signAndBroadcastFromInstructions } from "@/lib/panta-client";
 
 const POLL_MS = 15_000;
 
@@ -50,8 +50,12 @@ export default function PantaPositions({ wallet, onClose }: { wallet: string | n
     try {
       const build = await buildClaim({ wallet, marketId });
       let signature = "";
-      if (build.serializedTx && build.source === "panta") {
-        const res = await signAndBroadcast({ serializedTx: build.serializedTx, wallet });
+      if (build.source === "panta" && build.instructions && build.instructions.length > 0) {
+        const res = await signAndBroadcastFromInstructions({
+          wallet,
+          instructions: build.instructions,
+          recentBlockhash: build.recentBlockhash
+        });
         signature = res.signature;
       } else {
         signature = `demo-claim-${Date.now().toString(36)}`;

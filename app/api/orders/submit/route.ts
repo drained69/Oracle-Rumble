@@ -3,27 +3,36 @@ import { PANTA_LIVE, pantaFetch, type SubmitRequest, type SubmitResponse } from 
 
 /**
  * POST /api/orders/submit
- * Maps to Panta's POST /orders/submit.
  *
- * After the wallet signs and the client broadcasts to Solana RPC, the
- * signature is reported here so Panta can pick up the confirmation and
- * attribute the fill to the quoteId session.
+ * Proxies Panta's POST /primaryordersubmit/. The client passes the
+ * orderId from /orders/build plus the broadcast tx signature. Panta
+ * records the association without waiting for finalization; poll
+ * /orders/verify to learn when it confirms.
  */
 export async function POST(request: Request) {
   const body = (await request.json()) as SubmitRequest;
-  if (!body?.quoteId || !body?.signature || !body?.wallet) {
-    return NextResponse.json({ error: "quoteId, signature, wallet required" }, { status: 400 });
+  if (!body?.orderId || !body?.signature) {
+    return NextResponse.json({ error: "orderId, signature required" }, { status: 400 });
   }
 
   if (PANTA_LIVE) {
     try {
-      const data = await pantaFetch<SubmitResponse>("/orders/submit", {
+      const data = await pantaFetch<{ status?: string }>("/primaryordersubmit", {
         method: "POST",
-        body: JSON.stringify(body)
+        body: JSON.stringify({
+          orderId: body.orderId,
+          signature: body.signature,
+          ...(body.wallet ? { wallet: body.wallet } : {})
+        })
       });
-      return NextResponse.json({ ...data, source: "panta" });
+      const resp: SubmitResponse = {
+        signature: body.signature,
+        status: (data.status as SubmitResponse["status"]) ?? "submitted",
+        source: "panta"
+      };
+      return NextResponse.json(resp);
     } catch (err) {
-      console.error("panta /orders/submit failed, serving mock:", err);
+      console.error("panta /primaryordersubmit failed, serving mock:", err);
     }
   }
 
