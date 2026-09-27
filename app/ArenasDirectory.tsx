@@ -10,9 +10,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { connectSolanaWallet } from "@/lib/panta-client";
 import { enrollWithEscrow, newRound } from "@/lib/round-client";
-import PantaHUD from "@/app/PantaHUD";
 import PantaGraduationBanner from "@/app/PantaGraduationBanner";
-import PantaCreateMarketModal from "@/app/PantaCreateMarketModal";
 import PantaPositions from "@/app/PantaPositions";
 
 const usd = new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 0 });
@@ -98,7 +96,6 @@ export default function ArenasDirectory() {
   const [hVault, setHVault] = useState("10");
   const [hStartInMin, setHStartInMin] = useState(15);
   const [inviteInfo, setInviteInfo] = useState<{ code: string; url: string } | null>(null);
-  const [showCreateMarket, setShowCreateMarket] = useState(false);
   const [showPositions, setShowPositions] = useState(false);
 
   // Toggle body.game-mode so the background layers render correctly.
@@ -245,27 +242,18 @@ export default function ArenasDirectory() {
             <a href="#arenas" onClick={(e) => { e.preventDefault(); scrollToId("arenas"); }}>Arenas</a>
             <a href="#host" onClick={(e) => { e.preventDefault(); scrollToId("host"); }}>Host</a>
             <a href="#markets" onClick={(e) => { e.preventDefault(); scrollToId("markets"); }}>Markets</a>
-            <button className="nav-link" onClick={() => setShowCreateMarket(true)}>+ Market</button>
+            <a href="/docs">Docs</a>
             <button className="nav-link" onClick={() => setShowPositions(true)}>Positions</button>
           </div>
           <div className="hud-right">
-            <PantaHUD />
-            <span className="src live" title="Solana cluster">{CLUSTER}</span>
-            {escrow && (
-              <span
-                className={`escrow-badge ${escrow.active ? "on" : "off"}`}
-                title={escrow.active ? "Real on-chain USDC" : `Practice mode: ${escrow.reason ?? "escrow off"}`}
-              >
-                <span className="dot" />
-                {escrow.active ? "On-chain" : "Practice"}
-              </span>
-            )}
+            <span
+              className={`system-chip ${escrow?.active ? "on" : "off"}`}
+              title={`Solana ${CLUSTER} · ${escrow?.active ? "on-chain escrow" : `practice mode (${escrow?.reason ?? "escrow off"})`}`}
+            >
+              <span className="dot" />
+              {CLUSTER}
+            </span>
             <span className="tab-sep" aria-hidden="true" />
-            <a className="icon-btn" href="https://discord.gg/panta" target="_blank" rel="noopener noreferrer" aria-label="Discord" title="Discord">
-              <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
-                <path d="M20.317 4.492a19.79 19.79 0 0 0-4.885-1.515.074.074 0 0 0-.079.037c-.21.372-.444.858-.608 1.239a18.27 18.27 0 0 0-5.487 0 12.64 12.64 0 0 0-.617-1.239.077.077 0 0 0-.079-.037A19.736 19.736 0 0 0 3.677 4.492a.07.07 0 0 0-.032.027C.533 9.093-.32 13.555.099 17.961a.083.083 0 0 0 .031.056 19.9 19.9 0 0 0 5.993 3.03.078.078 0 0 0 .084-.028c.462-.63.874-1.295 1.226-1.994a.076.076 0 0 0-.041-.106 13.107 13.107 0 0 1-1.872-.892.077.077 0 0 1-.008-.128c.126-.094.252-.192.372-.292a.074.074 0 0 1 .077-.01c3.928 1.793 8.18 1.793 12.062 0a.074.074 0 0 1 .078.009c.12.099.246.198.372.292a.077.077 0 0 1-.006.128 12.299 12.299 0 0 1-1.873.891.077.077 0 0 0-.041.107c.36.698.772 1.362 1.225 1.993a.076.076 0 0 0 .084.028 19.84 19.84 0 0 0 6.002-3.03.077.077 0 0 0 .032-.055c.5-5.094-.838-9.52-3.549-13.442a.06.06 0 0 0-.031-.028zM8.02 15.278c-1.182 0-2.157-1.085-2.157-2.419 0-1.333.956-2.419 2.157-2.419 1.21 0 2.176 1.096 2.157 2.42 0 1.333-.956 2.418-2.157 2.418zm7.975 0c-1.183 0-2.157-1.085-2.157-2.419 0-1.333.955-2.419 2.157-2.419 1.21 0 2.176 1.096 2.157 2.42 0 1.333-.946 2.418-2.157 2.418z" />
-              </svg>
-            </a>
             <a className="icon-btn" href="https://x.com/pantamarket" target="_blank" rel="noopener noreferrer" aria-label="X" title="X">
               <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
                 <path d="M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-5.214-6.817L4.99 21.75H1.68l7.73-8.835L1.254 2.25H8.08l4.713 6.231zm-1.161 17.52h1.833L7.084 4.126H5.117z" />
@@ -283,12 +271,6 @@ export default function ArenasDirectory() {
       <section className="gm-hero">
         <div className="gm-hero-inner">
           <div>
-            <div className="gm-eyebrow">
-              <span className="live-dot" />
-              <span>Live prediction arenas</span>
-              <span className="sep">·</span>
-              <span>Solana {CLUSTER}</span>
-            </div>
             <h1 className="game-title">
               <span className="lash">Call it.</span><br />
               <span className="kill">Outplay</span> the room.
@@ -307,44 +289,37 @@ export default function ArenasDirectory() {
             </div>
           </div>
 
-          <div className="gm-hero-side">
-            <div className="gm-stat-tiles">
-              <div className="gm-stat">
-                <div className="k">Prize Pool</div>
-                <div className="v plasma">{usd.format(stats.totalPool)}</div>
-                <div className="sub">across {active.length} arenas</div>
+          {active.length > 0 && (
+            <div className="gm-hero-side">
+              <div className="gm-stat-tiles">
+                <div className="gm-stat">
+                  <div className="k">Prize Pool</div>
+                  <div className="v plasma">{usd.format(stats.totalPool)}</div>
+                  <div className="sub">across {active.length} arenas</div>
+                </div>
+                <div className="gm-stat">
+                  <div className="k">Alive</div>
+                  <div className="v neon">{stats.totalAlive}</div>
+                  <div className="sub">fighters live</div>
+                </div>
+                <div className="gm-stat">
+                  <div className="k">Live now</div>
+                  <div className="v gold">{stats.liveCount}</div>
+                  <div className="sub">rounds in play</div>
+                </div>
               </div>
-              <div className="gm-stat">
-                <div className="k">Alive</div>
-                <div className="v neon">{stats.totalAlive}</div>
-                <div className="sub">fighters live</div>
-              </div>
-              <div className="gm-stat">
-                <div className="k">Live now</div>
-                <div className="v gold">{stats.liveCount}</div>
-                <div className="sub">rounds in play</div>
-              </div>
+              {topChampion && topChampion.prizePoolUsdc > 0 && (
+                <div className="gm-champion">
+                  <div className="crown">S</div>
+                  <div className="mid">
+                    <span className="k">Biggest prize live</span>
+                    <span className="who">{topChampion.asset} · {topChampion.marketQuestion}</span>
+                  </div>
+                  <span className="prize">{usd.format(topChampion.prizePoolUsdc)}</span>
+                </div>
+              )}
             </div>
-            {topChampion ? (
-              <div className="gm-champion">
-                <div className="crown">S</div>
-                <div className="mid">
-                  <span className="k">Biggest prize live</span>
-                  <span className="who">{topChampion.asset} · {topChampion.marketQuestion}</span>
-                </div>
-                <span className="prize">{usd.format(topChampion.prizePoolUsdc)}</span>
-              </div>
-            ) : (
-              <div className="gm-champion">
-                <div className="crown" style={{ background: "linear-gradient(180deg, #64748b, #334155)", color: "#f1f5f9", boxShadow: "none" }}>?</div>
-                <div className="mid">
-                  <span className="k">Champion Slot Open</span>
-                  <span className="who">No live arenas — host the first fight</span>
-                </div>
-                <span className="prize" style={{ color: "var(--text-3)" }}>—</span>
-              </div>
-            )}
-          </div>
+          )}
         </div>
       </section>
 
@@ -612,7 +587,6 @@ export default function ArenasDirectory() {
 
       {toast && <div className="toast" role="status"><span>{toast}</span><button onClick={() => setToast("")} aria-label="Dismiss">×</button></div>}
 
-      {showCreateMarket && <PantaCreateMarketModal initialWallet={wallet} onClose={() => setShowCreateMarket(false)} />}
       {showPositions && <PantaPositions wallet={wallet} onClose={() => setShowPositions(false)} />}
 
       <PantaGraduationBanner />
