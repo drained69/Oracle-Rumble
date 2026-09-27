@@ -189,7 +189,13 @@ export function tick(round: Round, yesPrice: number, priceMap?: PriceMap): Round
       round.history.push("Round cancelled — no players entered.");
       return round;
     }
-    fillWithBots(round);
+    // Thin backfill: only add bots to reach the minimum to run a game, and
+    // never pad beyond the number of real players. A 5-human lobby runs
+    // 5-handed; a solo host gets one opponent so the game can start. Real
+    // rooms are never mostly bots.
+    const humans = humanCount(round);
+    const backfillTarget = Math.max(round.config.minEntrants, humans);
+    fillWithBots(round, backfillTarget);
     if (round.entrants.length < round.config.minEntrants) {
       round.status = "cancelled";
       round.endedAt = now;

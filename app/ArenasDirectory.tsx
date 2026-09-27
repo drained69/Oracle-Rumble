@@ -16,7 +16,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { connectSolanaWallet } from "@/lib/panta-client";
 import { enrollWithEscrow, newRound } from "@/lib/round-client";
-import { PUBLIC_ARENA } from "@/lib/royale";
 
 const usd = new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 0 });
 const usd2 = new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 2 });
@@ -176,11 +175,12 @@ export default function ArenasDirectory() {
 
   const goTo = useCallback((slug: string) => { window.location.href = slug; }, []);
 
-  const active = arenas.filter((a) => ["enrolling", "live", "settling", "advancing"].includes(a.status));
+  // Only real hosted rooms are shown — the PUBLIC walk-in practice arena is
+  // retired, so filter it out defensively in case a stale one lingers in the DB.
+  const active = arenas.filter((a) => !a.isPublic && ["enrolling", "live", "settling", "advancing"].includes(a.status));
   const liveOnly = active.filter((a) => a.status === "live" || a.status === "enrolling");
-  // Featured = a live private hosted arena if any, else any enrolling private, else PUBLIC.
-  const featured = liveOnly.find((a) => a.status === "live" && !a.isPublic)
-    ?? liveOnly.find((a) => a.status === "enrolling" && !a.isPublic)
+  const featured = liveOnly.find((a) => a.status === "live")
+    ?? liveOnly.find((a) => a.status === "enrolling")
     ?? liveOnly[0]
     ?? null;
   const supporting = active.filter((a) => a.arenaCode !== featured?.arenaCode).slice(0, 4);
@@ -198,8 +198,8 @@ export default function ArenasDirectory() {
         </a>
         <div className="hud-nav">
           <a href="#arenas">Arenas</a>
+          <a href="#host">Host</a>
           <a href="#markets">Markets</a>
-          <a href="/play">Practice</a>
         </div>
         <div className="hud-right">
           <span className="src live">{CLUSTER}</span>
@@ -313,7 +313,7 @@ export default function ArenasDirectory() {
             <span className="tag">Host</span>
             <h2>Host a rumble</h2>
             <p className="host-blurb">
-              Pick a market, set the seat, choose the format. You get a shareable code — bots fill any empty seats if you fall short at lock.
+              Pick a market, set the seat, choose the format. You get a shareable code — your game starts the moment enrollment locks, however many joined.
             </p>
             <ul className="host-features">
               <li>Non-custodial escrow on Solana {CLUSTER}</li>

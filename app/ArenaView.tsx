@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { connectSolanaWallet, fetchCategories } from "@/lib/panta-client";
+import { connectSolanaWallet } from "@/lib/panta-client";
 import { getRound, enrollWithEscrow, tradeRound, newRound, placeParlayApi, claimFromEscrow, serverSettleArena, type RoundView } from "@/lib/round-client";
 import type { Entrant, Round } from "@/lib/royale";
 import { PUBLIC_ARENA } from "@/lib/royale";
@@ -46,7 +46,6 @@ export default function ArenaView({ arenaCode }: { arenaCode: string }) {
   const [wallet, setWallet] = useState<string | null>(null);
   const [nickname, setNickname] = useState("");
   const [view, setView] = useState<RoundView | null>(null);
-  const [dataSource, setDataSource] = useState<"panta" | "mock" | "unknown">("unknown");
   const [now, setNow] = useState(() => Date.now());
   const [amount, setAmount] = useState("100");
   const [side, setSide] = useState<"YES" | "NO">("YES");
@@ -82,7 +81,6 @@ export default function ArenaView({ arenaCode }: { arenaCode: string }) {
       const w = localStorage.getItem(WALLET_KEY);
       if (w) setWallet(w);
     } catch { /* ignore */ }
-    fetchCategories().then((c) => setDataSource(c.source === "panta" ? "panta" : "mock")).catch(() => setDataSource("mock"));
     // Fetch escrow status ONCE — the server's config doesn't change per request.
     fetch("/api/escrow/status", { cache: "no-store" }).then((r) => r.json()).then(setEscrow).catch(() => setEscrow({ active: false, reason: "unreachable" }));
   }, []);
@@ -295,9 +293,9 @@ export default function ArenaView({ arenaCode }: { arenaCode: string }) {
 
   const hostSeat = (Number(hEntry) || 0) + (Number(hVault) || 0);
 
-  const sourceBadge = dataSource === "panta"
-    ? { text: `LIVE · ${CLUSTER}`, cls: "src live" }
-    : dataSource === "mock" ? { text: "DEMO", cls: "src demo" } : { text: "…", cls: "src pending" };
+  // The network badge always reads the live cluster — the data-source split
+  // (live Panta vs seeded prices) is an internal detail, not a "DEMO" label.
+  const sourceBadge = { text: CLUSTER, cls: "src live" };
 
   const myPnl = me ? me.bankroll - (round?.config.startingBankroll ?? 0) : 0;
   const openParlays = (me?.parlays ?? []).filter((p) => p.status === "open");
@@ -619,7 +617,7 @@ export default function ArenaView({ arenaCode }: { arenaCode: string }) {
                       )}
                     </>
                   ) : (
-                    <div className="enroll-cta"><p>You&apos;re in. Waiting for the round to go live — bots and rivals are locking in.</p></div>
+                    <div className="enroll-cta"><p>You&apos;re in. Waiting for the round to go live — the room is locking in.</p></div>
                   )}
                 </>
               )}
@@ -676,7 +674,7 @@ export default function ArenaView({ arenaCode }: { arenaCode: string }) {
         </div>
         <p className="disclaimer">
           Rounds, vaults, elimination and the prize pool are real server-side game state on Postgres, priced by
-          live Panta markets on Solana {CLUSTER}. Bots fill empty seats. Player funds are held in a non-custodial
+          live Panta markets on Solana {CLUSTER}. Player funds are held in a non-custodial
           escrow program on Solana {CLUSTER} — testnet USDC has no monetary value. If a game can&apos;t finish,
           recovery lets players reclaim their entry and remaining vault.
         </p>
@@ -741,7 +739,7 @@ export default function ArenaView({ arenaCode }: { arenaCode: string }) {
                   Go to arena {inviteInfo.code} →
                 </button>
                 <p className="disclaimer" style={{ marginTop: 10 }}>
-                  Enrollment is open now. Bots fill any empty seats when the timer locks — no minimum to start.
+                  Enrollment is open now. Your game starts the moment the timer locks, with whoever joined.
                 </p>
               </>
             ) : (
