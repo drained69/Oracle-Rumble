@@ -11,7 +11,6 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { connectSolanaWallet } from "@/lib/panta-client";
 import { enrollWithEscrow, newRound } from "@/lib/round-client";
 import PantaGraduationBanner from "@/app/PantaGraduationBanner";
-import PantaPositions from "@/app/PantaPositions";
 
 const usd = new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 0 });
 const usd2 = new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 2 });
@@ -41,18 +40,6 @@ type ArenaItem = {
   liveDeadline: number;
 };
 
-type MarketRow = {
-  id: string;
-  asset: string;
-  horizon: "MIN5" | "MIN15" | "HOUR" | "DAY";
-  question: string;
-  up: number;
-  down: number;
-  change: number;
-  volume: string;
-  closes: string;
-};
-
 function shortPk(pk: string) {
   if (!pk) return "";
   if (pk.length <= 10) return pk;
@@ -79,7 +66,6 @@ const STATUS_LABEL: Record<string, string> = {
 export default function ArenasDirectory() {
   const [wallet, setWallet] = useState<string | null>(null);
   const [arenas, setArenas] = useState<ArenaItem[]>([]);
-  const [markets, setMarkets] = useState<MarketRow[]>([]);
   // now starts at 0 so SSR + first client render match; useEffect fills it in.
   const [now, setNow] = useState(0);
   const [busy, setBusy] = useState(false);
@@ -96,7 +82,6 @@ export default function ArenasDirectory() {
   const [hVault, setHVault] = useState("10");
   const [hStartInMin, setHStartInMin] = useState(15);
   const [inviteInfo, setInviteInfo] = useState<{ code: string; url: string } | null>(null);
-  const [showPositions, setShowPositions] = useState(false);
 
   // Toggle body.game-mode so the background layers render correctly.
   useEffect(() => {
@@ -111,12 +96,8 @@ export default function ArenasDirectory() {
 
   const refresh = useCallback(async () => {
     try {
-      const [aRes, mRes] = await Promise.all([
-        fetch("/api/arenas", { cache: "no-store" }).then((r) => r.json()),
-        fetch("/api/markets/live", { cache: "no-store" }).then((r) => r.json())
-      ]);
+      const aRes = await fetch("/api/arenas", { cache: "no-store" }).then((r) => r.json());
       setArenas(aRes.items ?? []);
-      setMarkets(mRes.items ?? []);
     } catch { /* transient */ }
   }, []);
 
@@ -241,9 +222,8 @@ export default function ArenasDirectory() {
           <div className="hud-nav">
             <a href="#arenas" onClick={(e) => { e.preventDefault(); scrollToId("arenas"); }}>Arenas</a>
             <a href="#host" onClick={(e) => { e.preventDefault(); scrollToId("host"); }}>Host</a>
-            <a href="#markets" onClick={(e) => { e.preventDefault(); scrollToId("markets"); }}>Markets</a>
+            <a href="/positions">Positions</a>
             <a href="/docs">Docs</a>
-            <button className="nav-link" onClick={() => setShowPositions(true)}>Positions</button>
           </div>
           <div className="hud-right">
             <span
@@ -253,12 +233,6 @@ export default function ArenasDirectory() {
               <span className="dot" />
               {CLUSTER}
             </span>
-            <span className="tab-sep" aria-hidden="true" />
-            <a className="icon-btn" href="https://x.com/pantamarket" target="_blank" rel="noopener noreferrer" aria-label="X" title="X">
-              <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
-                <path d="M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-5.214-6.817L4.99 21.75H1.68l7.73-8.835L1.254 2.25H8.08l4.713 6.231zm-1.161 17.52h1.833L7.084 4.126H5.117z" />
-              </svg>
-            </a>
             <button className={wallet ? "wallet game connected" : "wallet game"} onClick={connect}>
               <span className="avatar">{wallet ? wallet.slice(0, 2).toUpperCase() : "?"}</span>
               {wallet ? shortPk(wallet) : "Connect"}
@@ -553,41 +527,14 @@ export default function ArenasDirectory() {
         </div>
       </section>
 
-      {/* ═════════ MARKETS TICKER ═════════ */}
-      <section className="gm-ticker-shell" id="markets">
-        <div className="gm-section-head">
-          <span className="title">Live Markets <span style={{ color: "var(--text-3)", fontWeight: 500 }}>· {markets.length} open</span></span>
-          <span style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 11, color: "var(--text-3)", letterSpacing: 1.2 }}>
-            {now ? new Date(now).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" }) : "--:--:--"}
-          </span>
-        </div>
-        <div className="gm-ticker">
-          {markets.length === 0 ? (
-            <div style={{ padding: 30, textAlign: "center", color: "var(--text-3)", fontFamily: "'JetBrains Mono', monospace", fontSize: 12 }}>
-              Markets loading…
-            </div>
-          ) : markets.map((m) => (
-            <div key={m.id} className="gm-ticker-row">
-              <span className="asym">{m.asset}</span>
-              <span className="q">{m.question}</span>
-              <span className="horizon">{HORIZON_LABEL[m.horizon] ?? m.horizon}</span>
-              <span className="up">{m.up}¢</span>
-              <span className="down">{m.down}¢</span>
-              <span className={`chg ${m.change >= 0 ? "up" : "down"}`}>{m.change >= 0 ? "+" : ""}{m.change}¢</span>
-            </div>
-          ))}
-        </div>
-      </section>
-
       {/* Footer */}
       <footer className="footer" style={{ position: "relative", zIndex: 2 }}>
-        <span>Oracle Rumble · Solana {CLUSTER} · Non-custodial escrow</span>
-        <span>Built on Panta prediction markets</span>
+        <span>Oracle Rumble · Solana {CLUSTER}</span>
+        <span><a href="/docs">Docs</a> · Built on Panta</span>
       </footer>
 
       {toast && <div className="toast" role="status"><span>{toast}</span><button onClick={() => setToast("")} aria-label="Dismiss">×</button></div>}
 
-      {showPositions && <PantaPositions wallet={wallet} onClose={() => setShowPositions(false)} />}
 
       <PantaGraduationBanner />
     </main>

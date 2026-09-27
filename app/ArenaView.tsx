@@ -14,7 +14,6 @@ import PantaResolution from "@/app/PantaResolution";
 import PantaGraduationBanner from "@/app/PantaGraduationBanner";
 import PantaOrderStatus from "@/app/PantaOrderStatus";
 import PantaCreateMarketModal from "@/app/PantaCreateMarketModal";
-import PantaPositions from "@/app/PantaPositions";
 import PantaCashOutModal from "@/app/PantaCashOutModal";
 import { executePantaOrder, type LifecycleUpdate } from "@/lib/panta-order";
 import { looksLikePantaMarketId } from "@/lib/tracked-markets";
@@ -84,7 +83,6 @@ export default function ArenaView({ arenaCode }: { arenaCode: string }) {
   const [pantaFillOn, setPantaFillOn] = useState(false);
   const [pantaOrder, setPantaOrder] = useState<LifecycleUpdate | null>(null);
   const [showCreateMarket, setShowCreateMarket] = useState(false);
-  const [showPositions, setShowPositions] = useState(false);
   const [cashoutTicket, setCashoutTicket] = useState<ParlayTicket | null>(null);
   const pollRef = useRef<number | null>(null);
 
@@ -387,9 +385,8 @@ export default function ArenaView({ arenaCode }: { arenaCode: string }) {
         <div className="hud-nav">
           <a href="/">Arenas</a>
           <a href="#arena" className="active">Room</a>
-          <button className="nav-link" onClick={() => setShowCreateMarket(true)}>+ Panta market</button>
-          <button className="nav-link" onClick={() => setShowPositions(true)}>Positions</button>
-          <a href="#how">How it works</a>
+          <a href="/positions">Positions</a>
+          <a href="/docs">Docs</a>
         </div>
         <div className="hud-right">
           <PantaHUD />
@@ -818,7 +815,6 @@ export default function ArenaView({ arenaCode }: { arenaCode: string }) {
       {toast && <div className="toast" role="status"><span>{toast}</span><button onClick={() => setToast("")} aria-label="Dismiss">×</button></div>}
 
       {showCreateMarket && <PantaCreateMarketModal initialWallet={wallet} onClose={() => setShowCreateMarket(false)} />}
-      {showPositions && <PantaPositions wallet={wallet} onClose={() => setShowPositions(false)} />}
       {cashoutTicket && wallet && (
         <PantaCashOutModal
           ticket={cashoutTicket}
