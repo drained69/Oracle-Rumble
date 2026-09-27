@@ -58,6 +58,7 @@ export default function ArenaView({ arenaCode }: { arenaCode: string }) {
   const [showEnroll, setShowEnroll] = useState(false);
   const [showHost, setShowHost] = useState(false);
   const [hAsset, setHAsset] = useState<"BTC" | "ETH" | "SOL">("SOL");
+  const [hHorizon, setHHorizon] = useState<"MIN5" | "MIN15" | "HOUR" | "DAY">("MIN5");
   const [hFormat, setHFormat] = useState<"single" | "royale">("royale");
   const [hRounds, setHRounds] = useState(3);
   const [hCapacity, setHCapacity] = useState(8);
@@ -259,6 +260,7 @@ export default function ArenaView({ arenaCode }: { arenaCode: string }) {
     try {
       const v = await newRound({
         asset: hAsset,
+        horizon: hHorizon,
         format: hFormat,
         entryUsdc: Number(hEntry) || 1,
         startingBankroll: Number(hVault) || 5,
@@ -273,7 +275,7 @@ export default function ArenaView({ arenaCode }: { arenaCode: string }) {
         setToast(`Arena ${v.arena} is open. Share the link.`);
       }
     } finally { setBusy(false); }
-  }, [hAsset, hFormat, hEntry, hVault, hCapacity, hRounds, wallet]);
+  }, [hAsset, hHorizon, hFormat, hEntry, hVault, hCapacity, hRounds, wallet]);
 
   const doCopyInvite = useCallback(async (url?: string) => {
     const link = url ?? currentInviteUrl;
@@ -586,7 +588,7 @@ export default function ArenaView({ arenaCode }: { arenaCode: string }) {
                               const sel = parlayLegs.find((l) => l.marketId === m.id);
                               return (
                                 <div className="pb-mkt" key={m.id}>
-                                  <div className="pb-mkt-q"><b>{m.asset}</b> up in {m.horizon === "HOUR" ? "1h" : "1d"}?</div>
+                                  <div className="pb-mkt-q"><b>{m.asset}</b> up in {m.horizon === "MIN5" ? "5m" : m.horizon === "MIN15" ? "15m" : m.horizon === "HOUR" ? "1h" : "1d"}?</div>
                                   <div className="pb-mkt-sides">
                                     <button className={sel?.side === "YES" ? "pb-side up on" : "pb-side up"} onClick={() => toggleLeg(m.id, "YES")}>UP {m.yesPrice}¢</button>
                                     <button className={sel?.side === "NO" ? "pb-side down on" : "pb-side down"} onClick={() => toggleLeg(m.id, "NO")}>DN {100 - m.yesPrice}¢</button>
@@ -753,6 +755,17 @@ export default function ArenaView({ arenaCode }: { arenaCode: string }) {
                   <div className="seg">
                     {(["BTC", "ETH", "SOL"] as const).map((a) => (
                       <button key={a} className={hAsset === a ? "seg-opt on" : "seg-opt"} onClick={() => setHAsset(a)}>{a}</button>
+                    ))}
+                  </div>
+                </div>
+
+                <div className="host-field">
+                  <span className="host-label">Timeframe</span>
+                  <div className="seg">
+                    {(["MIN5", "MIN15", "HOUR", "DAY"] as const).map((h) => (
+                      <button key={h} className={hHorizon === h ? "seg-opt on" : "seg-opt"} onClick={() => setHHorizon(h)}>
+                        {h === "MIN5" ? "5m" : h === "MIN15" ? "15m" : h === "HOUR" ? "1h" : "1d"}
+                      </button>
                     ))}
                   </div>
                 </div>

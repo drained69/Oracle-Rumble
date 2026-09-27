@@ -38,19 +38,34 @@ export function getAsset(symbol: string): Asset | undefined {
 }
 
 /**
- * Two direction horizons per asset. UP and DOWN are the two sides of one
- * market (YES = up), so they never need a correlation group. But the HOUR and
- * DAY markets on the SAME asset are correlated (a daily-up call largely
- * subsumes an hourly-up call), so they share `dir-<asset>` and a parlay may
- * include at most one horizon per asset — this is where parlayit-style
- * correlation blocking earns its keep on a three-asset board.
+ * Direction horizons per asset. UP and DOWN are the two sides of one market
+ * (YES = up), so they never need a correlation group. But every horizon on
+ * the SAME asset is correlated (a daily-up call largely subsumes an hourly-up
+ * call, an hourly-up call subsumes a 15m-up call, etc.), so they all share
+ * `dir-<asset>` and a parlay may include at most one horizon per asset —
+ * parlayit-style correlation blocking earns its keep on a three-asset board.
+ *
+ * 5m and 15m horizons are the "hot ticks" for fast rumbles — Market Royale
+ * calls them a "flash market". HOUR and DAY remain for slower/scheduled rooms.
  */
-export type Horizon = "HOUR" | "DAY";
+export type Horizon = "MIN5" | "MIN15" | "HOUR" | "DAY";
 
-export const HORIZONS: { id: Horizon; label: string; closes: string }[] = [
-  { id: "HOUR", label: "next hour", closes: "Closes in 1h" },
-  { id: "DAY", label: "on the day", closes: "Closes at 00:00 UTC" }
+export const HORIZONS: { id: Horizon; label: string; closes: string; seconds: number }[] = [
+  { id: "MIN5", label: "in 5 minutes", closes: "Closes in 5m", seconds: 5 * 60 },
+  { id: "MIN15", label: "in 15 minutes", closes: "Closes in 15m", seconds: 15 * 60 },
+  { id: "HOUR", label: "next hour", closes: "Closes in 1h", seconds: 60 * 60 },
+  { id: "DAY", label: "on the day", closes: "Closes at 00:00 UTC", seconds: 24 * 60 * 60 }
 ];
+
+/** Short compact label for the UI (used in tables / arena cards). */
+export function horizonShort(h: Horizon): string {
+  switch (h) {
+    case "MIN5": return "5m";
+    case "MIN15": return "15m";
+    case "HOUR": return "1h";
+    case "DAY": return "1d";
+  }
+}
 
 /** Correlation group for an asset's direction markets. */
 export function directionGroup(symbol: AssetSymbol): string {

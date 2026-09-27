@@ -49,7 +49,7 @@ type ArenaItem = {
 type MarketRow = {
   id: string;
   asset: string;
-  horizon: "HOUR" | "DAY";
+  horizon: "MIN5" | "MIN15" | "HOUR" | "DAY";
   question: string;
   up: number;
   down: number;
@@ -85,6 +85,7 @@ export default function ArenasDirectory() {
 
   const [hMode, setHMode] = useState<"quick" | "scheduled">("quick");
   const [hAsset, setHAsset] = useState<"BTC" | "ETH" | "SOL">("SOL");
+  const [hHorizon, setHHorizon] = useState<"MIN5" | "MIN15" | "HOUR" | "DAY">("MIN5");
   const [hFormat, setHFormat] = useState<"single" | "royale">("single");
   const [hRounds, setHRounds] = useState(2);
   const [hCapacity, setHCapacity] = useState(8);
@@ -148,7 +149,7 @@ export default function ArenasDirectory() {
     try {
       const enrollmentSec = hMode === "scheduled" ? hStartInMin * 60 : undefined;
       const v = await newRound({
-        asset: hAsset, format: hFormat,
+        asset: hAsset, horizon: hHorizon, format: hFormat,
         entryUsdc: Number(hEntry) || 1, startingBankroll: Number(hVault) || 5,
         capacity: hCapacity, roundLimit: hFormat === "royale" ? hRounds : 1,
         enrollmentSec, host: wallet ?? ""
@@ -166,7 +167,7 @@ export default function ArenasDirectory() {
       setInviteInfo({ code: v.arena, url });
       refresh();
     } finally { setBusy(false); }
-  }, [hMode, hStartInMin, hAsset, hFormat, hEntry, hVault, hCapacity, hRounds, wallet, escrow, refresh]);
+  }, [hMode, hStartInMin, hAsset, hHorizon, hFormat, hEntry, hVault, hCapacity, hRounds, wallet, escrow, refresh]);
 
   const doCopy = useCallback(async (url: string) => {
     try { await navigator.clipboard.writeText(url); setToast("Invite link copied."); }
@@ -376,6 +377,16 @@ export default function ArenasDirectory() {
                     </div>
                   </div>
                   <div className="host-cell">
+                    <span className="host-label">Timeframe</span>
+                    <div className="seg">
+                      {(["MIN5", "MIN15", "HOUR", "DAY"] as const).map((h) => (
+                        <button key={h} className={`seg-opt ${hHorizon === h ? "on" : ""}`} onClick={() => setHHorizon(h)}>
+                          {h === "MIN5" ? "5m" : h === "MIN15" ? "15m" : h === "HOUR" ? "1h" : "1d"}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                  <div className="host-cell">
                     <span className="host-label">Format</span>
                     <div className="seg">
                       <button className={`seg-opt ${hFormat === "single" ? "on" : ""}`} onClick={() => setHFormat("single")}>Single</button>
@@ -465,7 +476,7 @@ export default function ArenasDirectory() {
             }}>
               <span style={{ padding: "3px 8px", background: "var(--surface)", border: "1px solid var(--border)", borderRadius: 4, fontSize: 11, fontWeight: 700, letterSpacing: 0.8 }}>{m.asset}</span>
               <span style={{ fontFamily: "'Inter', sans-serif", color: "var(--text)", fontWeight: 500 }}>{m.question}</span>
-              <span style={{ color: "var(--text-3)", fontSize: 10, textTransform: "uppercase", letterSpacing: 0.8 }}>{m.horizon === "HOUR" ? "1h" : "1d"}</span>
+              <span style={{ color: "var(--text-3)", fontSize: 10, textTransform: "uppercase", letterSpacing: 0.8 }}>{m.horizon === "MIN5" ? "5m" : m.horizon === "MIN15" ? "15m" : m.horizon === "HOUR" ? "1h" : "1d"}</span>
               <span style={{ color: "var(--up)", fontWeight: 700 }}>{m.up}¢</span>
               <span style={{ color: "var(--down)", fontWeight: 700 }}>{m.down}¢</span>
               <span style={{ color: m.change >= 0 ? "var(--up)" : "var(--down)", fontWeight: 600, fontSize: 11 }}>{m.change >= 0 ? "+" : ""}{m.change}¢</span>
