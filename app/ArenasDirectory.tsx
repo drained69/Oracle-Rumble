@@ -18,6 +18,8 @@ import { connectSolanaWallet } from "@/lib/panta-client";
 import { enrollWithEscrow, newRound } from "@/lib/round-client";
 import PantaHUD from "@/app/PantaHUD";
 import PantaGraduationBanner from "@/app/PantaGraduationBanner";
+import PantaCreateMarketModal from "@/app/PantaCreateMarketModal";
+import PantaPositions from "@/app/PantaPositions";
 
 const usd = new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 0 });
 const usd2 = new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 2 });
@@ -94,6 +96,8 @@ export default function ArenasDirectory() {
   const [hVault, setHVault] = useState("10");
   const [hStartInMin, setHStartInMin] = useState(15);
   const [inviteInfo, setInviteInfo] = useState<{ code: string; url: string } | null>(null);
+  const [showCreateMarket, setShowCreateMarket] = useState(false);
+  const [showPositions, setShowPositions] = useState(false);
 
   useEffect(() => {
     try { const w = localStorage.getItem(WALLET_KEY); if (w) setWallet(w); } catch { /* ignore */ }
@@ -202,6 +206,8 @@ export default function ArenasDirectory() {
           <a href="#arenas">Arenas</a>
           <a href="#host">Host</a>
           <a href="#markets">Markets</a>
+          <button className="nav-link" onClick={() => setShowCreateMarket(true)}>+ Panta market</button>
+          <button className="nav-link" onClick={() => setShowPositions(true)}>Positions</button>
         </div>
         <div className="hud-right">
           <PantaHUD />
@@ -495,6 +501,9 @@ export default function ArenasDirectory() {
       </footer>
 
       {toast && <div className="toast" role="status"><span>{toast}</span><button onClick={() => setToast("")} aria-label="Dismiss">×</button></div>}
+
+      {showCreateMarket && <PantaCreateMarketModal initialWallet={wallet} onClose={() => setShowCreateMarket(false)} />}
+      {showPositions && <PantaPositions wallet={wallet} onClose={() => setShowPositions(false)} />}
 
       <PantaGraduationBanner />
     </main>
