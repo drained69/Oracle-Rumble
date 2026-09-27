@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { getActiveRound, mutateActiveRound } from "@/lib/round-store";
-import { enroll, fillWithBots, makeEntrant, normalizeArenaCode } from "@/lib/royale";
+import { enroll, makeEntrant, normalizeArenaCode } from "@/lib/royale";
 import { confirmSignature, escrowReady, verifyPlayerDeposited } from "@/lib/escrow-server";
 
 /**
@@ -101,8 +101,9 @@ export async function POST(request: Request) {
     if (!res.ok) { enrollError = res.reason; return; }
     entrantId = entrant.id;
     if (escrowSignature && r.escrow) r.escrow.history.push(`Deposit ${entrant.nickname} ✓ ${escrowSignature.slice(0, 12)}…`);
-    // Seed a few bots so the roster feels alive during enrollment.
-    if (r.entrants.length < 4) fillWithBots(r, 4);
+    // No eager bot seeding — the roster shows the real players who joined.
+    // A thin backfill only happens at lock, and only if we're below the
+    // minimum to run a game (see round-keeper tick).
   });
 
   if (!round) return NextResponse.json({ error: "no active round in this arena", arena }, { status: 404 });
