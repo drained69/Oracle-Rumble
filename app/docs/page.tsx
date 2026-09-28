@@ -8,7 +8,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { useEscrowStatus, useWalletIdentity } from "@/lib/use-wallet";
 import SiteHeader from "@/app/SiteHeader";
-import CallsignModal from "@/app/CallsignModal";
+import UsernameModal from "@/app/UsernameModal";
 import GitHubLink from "@/app/GitHubLink";
 
 const CLUSTER = (process.env.NEXT_PUBLIC_SOLANA_CLUSTER ?? "devnet").toLowerCase();
@@ -23,7 +23,7 @@ const SECTIONS: { id: string; title: string }[] = [
   { id: "trading", title: "Trading in an arena" },
   { id: "parlays", title: "Parlays & cash-out" },
   { id: "panta", title: "Panta integration" },
-  { id: "callsigns", title: "Callsigns" },
+  { id: "usernames", title: "Usernames" },
   { id: "wallet", title: "Wallets & signing" },
   { id: "api", title: "API reference" },
   { id: "trust", title: "Trust model" },
@@ -31,9 +31,9 @@ const SECTIONS: { id: string; title: string }[] = [
 ];
 
 export default function DocsPage() {
-  const { wallet, callsign, toggleConnect, saveCallsign } = useWalletIdentity();
+  const { wallet, username, toggleConnect, saveUsername } = useWalletIdentity();
   const escrow = useEscrowStatus();
-  const [showCallsign, setShowCallsign] = useState(false);
+  const [showUsername, setShowUsername] = useState(false);
   const [toast, setToast] = useState("");
 
   useEffect(() => {
@@ -49,7 +49,7 @@ export default function DocsPage() {
   const connect = useCallback(async () => {
     const r = await toggleConnect();
     setToast(r.message);
-    if (r.needsCallsign) setShowCallsign(true);
+    if (r.needsUsername) setShowUsername(true);
   }, [toggleConnect]);
 
   return (
@@ -60,10 +60,10 @@ export default function DocsPage() {
       <SiteHeader
         active="docs"
         wallet={wallet}
-        callsign={callsign}
+        username={username}
         escrow={escrow}
         onConnect={connect}
-        onEditCallsign={() => setShowCallsign(true)}
+        onEditUsername={() => setShowUsername(true)}
       />
 
       <section className="page-hero">
@@ -119,7 +119,7 @@ export default function DocsPage() {
               ))}
             </div>
             <ul>
-              <li><b>Enrolling</b> — seats are open. <em>Quick</em> arenas lock after 30 seconds; <em>Scheduled</em> arenas stay open for the chosen window (5 minutes to 3 hours). Fewer than 2 players at lock cancels the round.</li>
+              <li><b>Enrolling</b> — seats are open. The clock starts once the host&apos;s own seat is confirmed: <em>Quick</em> arenas stay open for 2 minutes, <em>Scheduled</em> arenas for the chosen window (5 minutes to 3 hours). Enrollment locks early when every seat is filled. A host who ends up alone gets one practice opponent so the round can run.</li>
               <li><b>Live</b> — everyone trades YES/NO on the same market with the same starting vault. The arena shows who is above and below the cut in real time.</li>
               <li><b>Settling</b> — open positions are closed at the market&apos;s YES price when the timer ends (100¢ or 0¢ if the market has a hard outcome). Players are ranked by vault value; ties go to whoever joined first.</li>
               <li><b>Cut</b> — the top <code>ceil(alive / 2)</code> players survive. Everyone else is eliminated for that round.</li>
@@ -170,9 +170,9 @@ withdraw  = remaining vault + prize share`}</pre>
 
           <Section id="recovery" title="Cancellations & recovery">
             <ul>
-              <li><b>Host doesn&apos;t fund seat #1</b> — if the host rejects or fails the deposit, the arena is cancelled before anyone else can join.</li>
-              <li><b>Not enough players</b> — fewer than 2 players when enrollment locks cancels the round.</li>
-              <li><b>Settlement never happens</b> — one hour after enrollment closes, any depositor can call Recover and receive their full seat (entry + vault).</li>
+              <li><b>Host doesn&apos;t fund seat #1</b> — if the host rejects the deposit, or no seat is confirmed within 3 minutes of opening, the arena closes before anyone else can join.</li>
+              <li><b>Full refunds</b> — when an arena closes without starting, every wallet that deposited (including a deposit that confirmed after the close) is refunded its full seat. The refund opens about two minutes after the close; claim it from the arena page.</li>
+              <li><b>Settlement never happens</b> — as a last resort, one hour after enrollment closes any depositor can call Recover directly on the escrow program and receive their full seat.</li>
             </ul>
           </Section>
 
@@ -229,11 +229,16 @@ net  = fair − fee   → credited to your vault`}</pre>
             </table>
           </Section>
 
-          <Section id="callsigns" title="Callsigns">
+          <Section id="usernames" title="Usernames">
             <p>
-              Your callsign is your public name on the arena stage, standings, activity feed and
-              results. It must be 3–16 letters, numbers or underscores, unique within an arena
-              (case-insensitive), and is saved on this device for your wallet.
+              Your username is how other players see you on the arena stage, standings, activity
+              feed and results. You&apos;re asked to set one when you first connect a wallet, and you can
+              also type it straight into the host card or the seat dialog. Change it any time from
+              the account button in the header.
+            </p>
+            <p>
+              It must be 3–16 letters, numbers or underscores and unique within an arena
+              (case-insensitive). It&apos;s saved on this device for your wallet.
             </p>
           </Section>
 
@@ -321,11 +326,11 @@ net  = fair − fee   → credited to your vault`}</pre>
           <button onClick={() => setToast("")} aria-label="Dismiss">×</button>
         </div>
       )}
-      {showCallsign && (
-        <CallsignModal
-          initial={callsign}
-          onSave={(v) => { const r = saveCallsign(v); if (r.ok) setToast(r.message); return r; }}
-          onClose={() => setShowCallsign(false)}
+      {showUsername && (
+        <UsernameModal
+          initial={username}
+          onSave={(v) => { const r = saveUsername(v); if (r.ok) setToast(r.message); return r; }}
+          onClose={() => setShowUsername(false)}
         />
       )}
     </main>

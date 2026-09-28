@@ -3359,12 +3359,12 @@ body.no-scroll { overflow: hidden; }
 
 /* ── Modals ─────────────────────────────────────────────────────── */
 .game-mode .modal form { margin: 0; }
-.callsign-hint {
+.username-hint {
   font-family: 'JetBrains Mono', monospace; font-size: 11px; letter-spacing: 0.3px;
   color: var(--text-3); margin: 8px 0 0; min-height: 16px;
 }
-.callsign-hint.ok { color: var(--plasma); }
-.callsign-hint.bad { color: #fda4af; }
+.username-hint.ok { color: var(--plasma); }
+.username-hint.bad { color: #fda4af; }
 .seat-breakdown {
   margin: 4px 0 16px; padding: 12px 14px; border-radius: 10px;
   background: rgba(15, 19, 27, 0.7); border: 1px solid var(--border);
@@ -3636,4 +3636,69 @@ body.no-scroll { overflow: hidden; }
 @media (max-width: 640px) {
   .arena-main .rb-cell { flex-basis: 33.333%; padding: 9px 12px; }
   .arena-main .rb-cell.grow { flex-basis: 100%; }
+}
+
+/* ── Username: header attention, host identity row, inline field ── */
+.acct-main { position: relative; }
+.acct-main.needs-name { background: rgba(251, 146, 60, 0.07); }
+.acct-alert {
+  position: absolute; top: 6px; right: 6px; width: 7px; height: 7px; border-radius: 50%;
+  background: var(--xp); box-shadow: 0 0 0 3px rgba(251, 146, 60, 0.25);
+  animation: neonPulse 1.6s ease-in-out infinite;
+}
+.host-id {
+  display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+  padding: 10px 12px; margin-bottom: 12px; border-radius: 10px;
+  background: rgba(15, 19, 27, 0.7); border: 1px solid var(--border);
+  font-family: 'Space Grotesk', sans-serif; font-size: 13px; color: var(--text-2);
+}
+.host-id b { color: var(--text); }
+.host-id .link-btn { margin-left: auto; font-size: 12px; }
+.host-id-avatar { width: 26px; height: 26px; border-radius: 7px; border: 1px solid var(--border); }
+.host-id-btn {
+  margin-left: auto; height: 32px; padding: 0 12px; border-radius: 8px; border: 0; cursor: pointer;
+  font-family: 'Orbitron', sans-serif; font-size: 10.5px; font-weight: 800; letter-spacing: 1.2px;
+  text-transform: uppercase; color: #051018; background: linear-gradient(180deg, var(--plasma), #0891b2);
+}
+.host-name { display: flex; flex-direction: column; gap: 6px; margin-bottom: 12px; }
+.host-name input {
+  height: 40px; padding: 0 12px; border-radius: 10px;
+  background: var(--surface); border: 1px solid rgba(251, 146, 60, 0.45); color: var(--text);
+  font-family: 'Space Grotesk', sans-serif; font-size: 14px; font-weight: 600; outline: none;
+}
+.host-name input:focus { border-color: var(--neon); box-shadow: 0 0 0 3px rgba(192, 132, 252, 0.15); }
+.host-name .username-hint { margin: 0; }
+.username-preview {
+  display: flex; align-items: center; justify-content: space-between; margin-top: 10px;
+  padding: 9px 12px; border-radius: 9px; background: rgba(15, 19, 27, 0.7); border: 1px solid var(--border);
+}
+.username-preview span { font-family: 'JetBrains Mono', monospace; font-size: 10px; letter-spacing: 1.2px; text-transform: uppercase; color: var(--text-3); }
+.username-preview b { font-family: 'Space Grotesk', sans-serif; font-size: 14px; color: var(--text); }
+
+/* ── Cancelled arena + refund card ─────────────────────────────── */
+.arena-main .champion.closed h1 {
+  background: none; -webkit-text-fill-color: initial; color: var(--text); filter: none;
+}
+.arena-main .champion.closed .eyebrow { color: var(--text-3); }
+.refund-card {
+  max-width: 480px; margin: 18px auto 0; padding: 18px 20px; border-radius: 14px; text-align: left;
+  background: linear-gradient(180deg, rgba(19, 24, 36, 0.9), rgba(15, 19, 27, 0.7));
+  border: 1px solid var(--border);
+}
+.refund-card p { margin: 0 0 12px; font-family: 'Space Grotesk', sans-serif; font-size: 14px; line-height: 1.55; color: var(--text-2); }
+.refund-card p:last-child { margin-bottom: 0; }
+.refund-card b { color: var(--text); }
+.refund-card.ready { border-color: rgba(34, 211, 238, 0.45); box-shadow: 0 0 30px rgba(34, 211, 238, 0.1); }
+.refund-card.done { border-color: rgba(34, 211, 238, 0.3); }
+.refund-card.done b { color: var(--plasma); }
+.refund-card.muted p { color: var(--text-3); }
+
+/* Primary buttons in dialogs match the arcade action color on every page. */
+.game-mode .modal .btn.primary {
+  background: linear-gradient(180deg, var(--plasma), #0891b2); color: #051018; border-color: transparent;
+  font-family: 'Orbitron', sans-serif; font-weight: 800; letter-spacing: 1.4px; text-transform: uppercase;
+  border-radius: 10px; box-shadow: 0 6px 18px rgba(34, 211, 238, 0.25);
+}
+.game-mode .modal .btn.primary:disabled {
+  background: var(--surface-alt); color: var(--text-3); box-shadow: none;
 }

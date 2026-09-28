@@ -8,10 +8,11 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { cancelArena, checkSeatFunds, enrollWithEscrow, newRound } from "@/lib/round-client";
-import { shortPk } from "@/lib/username";
+import { shortPk, USERNAME_MAX, validateUsername } from "@/lib/username";
+import { avatarDataUrl } from "@/lib/avatars";
 import { useEscrowStatus, useWalletIdentity } from "@/lib/use-wallet";
 import SiteHeader from "@/app/SiteHeader";
-import CallsignModal from "@/app/CallsignModal";
+import UsernameModal from "@/app/UsernameModal";
 import PantaGraduationBanner from "@/app/PantaGraduationBanner";
 
 const usd = new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 0 });
@@ -58,10 +59,13 @@ const STATUS_LABEL: Record<string, string> = {
 };
 
 type Tab = "play" | "host";
+
+/** Quick arenas stay open this long after the host's seat is confirmed. */
+const QUICK_ENROLL_SEC = 120;
 type HostStep = "" | "checking" | "opening" | "signing";
 
 export default function ArenasDirectory() {
-  const { wallet, callsign, toggleConnect, saveCallsign } = useWalletIdentity();
+  const { wallet, username, toggleConnect, saveUsername } = useWalletIdentity();
   const escrow = useEscrowStatus();
   const [arenas, setArenas] = useState<ArenaItem[]>([]);
   const [loaded, setLoaded] = useState(false);
@@ -69,7 +73,8 @@ export default function ArenasDirectory() {
   const [hostStep, setHostStep] = useState<HostStep>("");
   const [toast, setToast] = useState("");
   const [tab, setTab] = useState<Tab>("play");
-  const [showCallsign, setShowCallsign] = useState(false);
+  const [showUsername, setShowUsername] = useState(false);
+  const [nameDraft, setNameDraft] = useState("");
 
   const [hMode, setHMode] = useState<"quick" | "scheduled">("quick");
   const [hAsset, setHAsset] = useState<"BTC" | "ETH" | "SOL">("SOL");
@@ -118,7 +123,7 @@ export default function ArenasDirectory() {
   const connect = useCallback(async () => {
     const r = await toggleConnect();
     setToast(r.message);
-    if (r.needsCallsign) setShowCallsign(true);
+    if (r.needsUsername) setShowUsername(true);
   }, [toggleConnect]);
 
   const entryNum = Number(hEntry) || 0;
@@ -136,10 +141,12 @@ export default function ArenasDirectory() {
       setToast("Connect a wallet first — hosting on-chain needs your seat deposit.");
       return;
     }
-    if (wallet && !callsign) {
-      setShowCallsign(true);
-      setToast("Choose a callsign before hosting.");
-      return;
+    let hostName = username;
+    if (wallet && !hostName) {
+      // Username typed inline in the host card — save it on the way through.
+      const r = saveUsername(nameDraft);
+      if (!r.ok) { setToast(nameDraft ? r.message : "Set a username so players know who is hosting."); return; }
+      hostName = nameDraft.trim();
     }
 
     try {
@@ -151,7 +158,7 @@ export default function ArenasDirectory() {
       }
 
       setHostStep("opening");
-      const enrollmentSec = hMode === "scheduled" ? hStartInMin * 60 : undefined;
+      const enrollmentSec = hMode === "scheduled" ? hStartInMin * 60 : QUICK_ENROLL_SEC;
       const v = await newRound({
         asset: hAsset, horizon: hHorizon, format: hFormat,
         entryUsdc: entryNum, startingBankroll: vaultNum,
@@ -172,13 +179,20 @@ export default function ArenasDirectory() {
       setHostStep("signing");
       if (escrow?.active) setToast("Approve the seat deposit in your wallet…");
       let enrollError = "";
+      let refundable = false;
       try {
-        const r = await enrollWithEscrow(wallet, callsign || shortPk(wallet).replace("…", ""), v.arena);
-        if (r.error) enrollError = r.error;
+        const r = await enrollWithEscrow(wallet, hostName || shortPk(wallet).replace("…", ""), v.arena);
+        if (r.error) { enrollError = r.error; refundable = !!r.refundable; }
       } catch (err) {
         enrollError = err instanceof Error ? err.message : "wallet signing failed";
       }
       if (enrollError) {
+        if (refundable) {
+          // Deposit landed after the arena closed — take them to the refund.
+          setToast(enrollError);
+          window.setTimeout(() => { window.location.href = `/a/${v.arena}`; }, 1500);
+          return;
+        }
         await cancelArena(v.arena, wallet).catch(() => { /* best effort */ });
         setToast(`Arena not opened — ${enrollError}`);
         return;
@@ -187,7 +201,7 @@ export default function ArenasDirectory() {
       setInviteInfo({ code: v.arena, url });
       refresh();
     } finally { setHostStep(""); }
-  }, [hostInputError, escrow, wallet, callsign, hostSeat, hMode, hStartInMin, hAsset, hHorizon, hFormat, entryNum, vaultNum, hCapacity, hRounds, refresh]);
+  }, [hostInputError, escrow, wallet, username, nameDraft, saveUsername, hostSeat, hMode, hStartInMin, hAsset, hHorizon, hFormat, entryNum, vaultNum, hCapacity, hRounds, refresh]);
 
   const doCopy = useCallback(async (url: string) => {
     try { await navigator.clipboard.writeText(url); setToast("Invite link copied."); }
@@ -220,10 +234,10 @@ export default function ArenasDirectory() {
       <SiteHeader
         active={tab === "play" ? "arenas" : "host"}
         wallet={wallet}
-        callsign={callsign}
+        username={username}
         escrow={escrow}
         onConnect={connect}
-        onEditCallsign={() => setShowCallsign(true)}
+        onEditUsername={() => setShowUsername(true)}
         onNav={(k) => setTab(k === "arenas" ? "play" : "host")}
       />
 
@@ -299,6 +313,8 @@ export default function ArenasDirectory() {
                 hostSeat={hostSeat} poolIfFull={poolIfFull}
                 inputError={hostInputError}
                 wallet={wallet} escrowActive={!!escrow?.active} escrowKnown={escrow != null}
+                username={username} nameDraft={nameDraft} setNameDraft={setNameDraft}
+                onEditUsername={() => setShowUsername(true)} onConnect={connect}
                 step={hostStep} onSubmit={doHostAndJoin}
               />
             )}
@@ -313,11 +329,11 @@ export default function ArenasDirectory() {
         </div>
       )}
 
-      {showCallsign && (
-        <CallsignModal
-          initial={callsign}
-          onSave={(v) => { const r = saveCallsign(v); if (r.ok) setToast(r.message); return r; }}
-          onClose={() => setShowCallsign(false)}
+      {showUsername && (
+        <UsernameModal
+          initial={username}
+          onSave={(v) => { const r = saveUsername(v); if (r.ok) setToast(r.message); return r; }}
+          onClose={() => setShowUsername(false)}
         />
       )}
 
@@ -411,7 +427,8 @@ function HostPanel({
   hAsset, setHAsset, hHorizon, setHHorizon,
   hFormat, setHFormat, hRounds, setHRounds,
   hCapacity, setHCapacity, hEntry, setHEntry, hVault, setHVault,
-  hostSeat, poolIfFull, inputError, wallet, escrowActive, escrowKnown, step, onSubmit
+  hostSeat, poolIfFull, inputError, wallet, escrowActive, escrowKnown,
+  username, nameDraft, setNameDraft, onEditUsername, onConnect, step, onSubmit
 }: {
   hMode: "quick" | "scheduled"; setHMode: (v: "quick" | "scheduled") => void;
   hStartInMin: number; setHStartInMin: (v: number) => void;
@@ -424,26 +441,63 @@ function HostPanel({
   hVault: string; setHVault: (v: string) => void;
   hostSeat: number; poolIfFull: number; inputError: string;
   wallet: string | null; escrowActive: boolean; escrowKnown: boolean;
+  username: string; nameDraft: string; setNameDraft: (v: string) => void;
+  onEditUsername: () => void; onConnect: () => void;
   step: HostStep; onSubmit: () => void;
 }) {
   const busy = step !== "";
+  const draftCheck = validateUsername(nameDraft);
+  const needsWallet = escrowActive && !wallet;
   const label =
     step === "checking" ? "Checking balance…" :
     step === "opening" ? "Opening arena…" :
     step === "signing" ? "Confirm in your wallet…" :
-    escrowActive ? (wallet ? "Host & take seat 1" : "Connect wallet to host") :
+    escrowActive ? "Host & take seat 1" :
     (wallet ? "Host & take seat 1 · practice" : "Host practice arena");
 
   return (
     <div className="jc-host">
+      {/* Who is hosting — set the username right here if it's missing. */}
+      {needsWallet ? (
+        <div className="host-id">
+          <span>Connect a wallet to host — you take seat 1 with a real deposit.</span>
+          <button className="host-id-btn" onClick={onConnect}>Connect wallet</button>
+        </div>
+      ) : wallet && username ? (
+        <div className="host-id">
+          {/* eslint-disable-next-line @next/next/no-img-element */}
+          <img src={avatarDataUrl(wallet, 26)} width={26} height={26} alt="" className="host-id-avatar" />
+          <span>Hosting as <b>{username}</b></span>
+          <button className="link-btn" onClick={onEditUsername}>Change</button>
+        </div>
+      ) : wallet ? (
+        <label className="host-name">
+          <span className="jc-field-label">Your username</span>
+          <input
+            value={nameDraft}
+            onChange={(e) => setNameDraft(e.target.value)}
+            placeholder="e.g. nova_9"
+            maxLength={USERNAME_MAX}
+            autoComplete="off"
+            autoCapitalize="off"
+            spellCheck={false}
+            aria-invalid={nameDraft.length > 0 && !draftCheck.ok}
+            aria-describedby="host-name-hint"
+          />
+          <span id="host-name-hint" className={`username-hint ${nameDraft.length === 0 ? "" : draftCheck.ok ? "ok" : "bad"}`}>
+            {nameDraft.length === 0 ? "How players will see you — 3–16 letters, numbers or _" : draftCheck.ok ? "Saved when you host." : draftCheck.reason}
+          </span>
+        </label>
+      ) : null}
+
       <div className="gm-seg" role="radiogroup" aria-label="Start mode">
         <button role="radio" aria-checked={hMode === "quick"} className={`opt ${hMode === "quick" ? "on" : ""}`} onClick={() => setHMode("quick")}>Quick</button>
         <button role="radio" aria-checked={hMode === "scheduled"} className={`opt ${hMode === "scheduled" ? "on" : ""}`} onClick={() => setHMode("scheduled")}>Scheduled</button>
       </div>
       <p className="jc-help">
         {hMode === "quick"
-          ? "Enrollment opens now and locks after 30 seconds — best when your players are ready."
-          : "Enrollment stays open for the window you pick, then the round starts."}
+          ? "Stays open 2 minutes after your seat is confirmed, or until every seat fills."
+          : "Stays open for the window you pick (counted from your seat), or until every seat fills."}
       </p>
 
       {hMode === "scheduled" && (
@@ -521,7 +575,7 @@ function HostPanel({
         <p className="jc-note"><b>Practice mode.</b> Hosting works, but no USDC moves and your wallet won&apos;t be asked to sign.</p>
       )}
 
-      <button className="gm-host-cta" onClick={onSubmit} disabled={busy || !!inputError} aria-busy={busy}>
+      <button className="gm-host-cta" onClick={onSubmit} disabled={busy || !!inputError || needsWallet} aria-busy={busy}>
         {label}
       </button>
     </div>

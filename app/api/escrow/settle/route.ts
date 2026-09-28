@@ -1,9 +1,47 @@
 import { NextResponse } from "next/server";
-import { escrowReady, settleArenaOnChain, type SettleEntry } from "@/lib/escrow-server";
+import { escrowReady, listDepositors, readVault, settleArenaOnChain, type SettleEntry } from "@/lib/escrow-server";
 import { getLatestRound, saveRound } from "@/lib/round-store";
-import { normalizeArenaCode } from "@/lib/royale";
+import { normalizeArenaCode, type Round } from "@/lib/royale";
 
 export const dynamic = "force-dynamic";
+
+/**
+ * A deposit signed just before a cancel can still land until its blockhash
+ * expires (~60–90 s). Refunds close the vault, and a deposit landing after
+ * that could never be settled — so wait this long after the cancel.
+ */
+const REFUND_SAFETY_MS = 120_000;
+
+/** Cancelled arena → refund every on-chain depositor their full seat. */
+async function refundCancelled(round: Round) {
+  const escrow = round.escrow!;
+  if (escrow.settleSignatures && escrow.settleSignatures.length > 0) {
+    return NextResponse.json({ ok: true, refund: true, alreadySettled: true, signatures: escrow.settleSignatures });
+  }
+  const waitMs = (round.endedAt || 0) + REFUND_SAFETY_MS - Date.now();
+  if (waitMs > 0) return NextResponse.json({ ok: false, refund: true, pending: true, retryInMs: waitMs });
+
+  const vault = await readVault(escrow.roundVault);
+  if (!vault) return NextResponse.json({ error: "vault not found on-chain" }, { status: 502 });
+  if (vault.settled) return NextResponse.json({ ok: true, refund: true, alreadySettled: true });
+  if (vault.deposited === 0) return NextResponse.json({ ok: true, refund: true, depositors: 0 });
+
+  const seat = vault.entryUsdc + vault.vaultUsdc;
+  const depositors = (await listDepositors(escrow.roundVault)).filter((d) => !d.settled);
+  if (depositors.length !== vault.deposited) {
+    // Account index lagging behind the vault counter — try again shortly
+    // rather than closing with someone left out.
+    return NextResponse.json({ ok: false, refund: true, pending: true, retryInMs: 5_000 });
+  }
+  const res = await settleArenaOnChain(escrow.roundVault, depositors.map((d) => ({ wallet: d.wallet, entitlementUsdc: seat })));
+  if (!res.ok) return NextResponse.json({ error: res.error }, { status: 502 });
+
+  escrow.settleSignatures = res.signatures;
+  escrow.history.push(...res.signatures.map((s) => `Refund ✓ ${s.slice(0, 12)}…`));
+  round.history.push(`Refunds open — ${depositors.length} deposit${depositors.length === 1 ? "" : "s"} can be claimed in full.`);
+  await saveRound(round);
+  return NextResponse.json({ ok: true, refund: true, signatures: res.signatures, depositors: depositors.length });
+}
 
 /**
  * POST /api/escrow/settle { arena }
@@ -27,6 +65,7 @@ export async function POST(request: Request) {
   const round = await getLatestRound(arena);
   if (!round) return NextResponse.json({ error: "arena not found", arena }, { status: 404 });
   if (!round.escrow) return NextResponse.json({ error: "arena is ledger-only" }, { status: 409 });
+  if (round.status === "cancelled") return refundCancelled(round);
   if (round.status !== "complete") return NextResponse.json({ error: `round is ${round.status}, not complete` }, { status: 409 });
   if (round.escrow.settleSignatures && round.escrow.settleSignatures.length > 0) {
     return NextResponse.json({ ok: true, alreadySettled: true, signatures: round.escrow.settleSignatures });

@@ -1,5 +1,5 @@
 /**
- * Username / callsign utilities — client-only.
+ * Username / username utilities — client-only.
  *
  * A username is what a player is called across the site (roster, arena
  * stage, activity feed, champion screen, invite views). It is stored per

@@ -20,11 +20,15 @@ import {
   humanCount,
   markToMarket,
   normalizeConfig,
+  PUBLIC_ARENA,
   settle,
   type PriceMap,
   type Round,
   type RoundConfig
 } from "@/lib/royale";
+
+/** How long a new hosted arena waits for the host's seat deposit to confirm. */
+const HOST_SEAT_GRACE_MS = 3 * 60_000;
 
 /**
  * Normalize a Panta YES price to cents (0..100). Panta returns a decimal like
@@ -182,7 +186,16 @@ async function pickMarketForAsset(asset?: string, horizon?: string): Promise<Mar
 export function tick(round: Round, yesPrice: number, priceMap?: PriceMap): Round {
   const now = Date.now();
 
-  if (round.status === "enrolling" && now >= round.enrollDeadline) {
+  // A hosted arena starts empty while the host approves their seat deposit
+  // in the wallet. Hold it open for that instead of cancelling on the first
+  // deadline; the enroll route restarts the clock once the host is seated.
+  if (round.status === "enrolling" && humanCount(round) === 0 && round.arenaCode !== PUBLIC_ARENA) {
+    const graceEnd = round.createdAt + HOST_SEAT_GRACE_MS;
+    if (now < graceEnd && round.enrollDeadline < graceEnd) round.enrollDeadline = graceEnd;
+  }
+
+  const full = humanCount(round) >= round.config.capacity;
+  if (round.status === "enrolling" && (now >= round.enrollDeadline || full)) {
     if (humanCount(round) === 0) {
       round.status = "cancelled";
       round.endedAt = now;

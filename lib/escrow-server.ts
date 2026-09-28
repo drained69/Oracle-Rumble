@@ -264,5 +264,86 @@ export async function verifyPlayerDeposited(walletPk: string, roundVaultPk: stri
   }
 }
 
+// ── On-chain reads for refunds ───────────────────────────────────────────
+
+const PLAYER_ENTRY_SIZE = 84;
+
+export type VaultState = {
+  entryUsdc: number;
+  vaultUsdc: number;
+  deposited: number;
+  totalEscrowedUsdc: number;
+  settledTotalUsdc: number;
+  settleDeadline: number; // unix seconds
+  settled: boolean;       // CloseSettlement ran — claims are open
+};
+
+/** Decode the RoundVault account (layout mirrors program/src/lib.rs). */
+export async function readVault(roundVaultPk: string): Promise<VaultState | null> {
+  const info = await connection().getAccountInfo(new PublicKey(roundVaultPk), "confirmed").catch(() => null);
+  if (!info || info.data.length < 160) return null;
+  const d = info.data;
+  let o = 1 + 96;
+  const u64 = () => { const v = Number(d.readBigUInt64LE(o)); o += 8; return v; };
+  const entry = u64();
+  const vault = u64();
+  o += 2; // capacity
+  const deposited = d.readUInt16LE(o); o += 2;
+  u64(); // pool_total
+  const escrowed = u64();
+  const settledTotal = u64();
+  u64(); // claimed_total
+  const deadline = Number(d.readBigInt64LE(o)); o += 8;
+  const status = d.readUInt8(o);
+  return {
+    entryUsdc: entry / 1e6,
+    vaultUsdc: vault / 1e6,
+    deposited,
+    totalEscrowedUsdc: escrowed / 1e6,
+    settledTotalUsdc: settledTotal / 1e6,
+    settleDeadline: deadline,
+    settled: status !== 0
+  };
+}
+
+export type DepositorEntry = { wallet: string; entitlementUsdc: number; settled: boolean; claimed: boolean };
+
+/** Every wallet with a PlayerEntry in this vault — the on-chain truth, not the ledger. */
+export async function listDepositors(roundVaultPk: string): Promise<DepositorEntry[]> {
+  if (!ESCROW_PROGRAM_ID) return [];
+  const accounts = await connection().getProgramAccounts(ESCROW_PROGRAM_ID, {
+    commitment: "confirmed",
+    filters: [{ dataSize: PLAYER_ENTRY_SIZE }, { memcmp: { offset: 1, bytes: roundVaultPk } }]
+  });
+  return accounts.map(({ account }) => {
+    const d = account.data;
+    return {
+      wallet: new PublicKey(d.subarray(33, 65)).toBase58(),
+      entitlementUsdc: Number(d.readBigUInt64LE(73)) / 1e6,
+      settled: d.readUInt8(81) === 1,
+      claimed: d.readUInt8(82) === 1
+    };
+  });
+}
+
+/** One wallet's PlayerEntry in a vault, or null if it never deposited. */
+export async function readPlayerEntry(walletPk: string, roundVaultPk: string): Promise<DepositorEntry | null> {
+  if (!ESCROW_PROGRAM_ID) return null;
+  try {
+    const [pda] = playerEntryPda(new PublicKey(roundVaultPk), new PublicKey(walletPk));
+    const info = await connection().getAccountInfo(pda, "confirmed");
+    if (!info || !info.owner.equals(ESCROW_PROGRAM_ID) || info.data.length < PLAYER_ENTRY_SIZE) return null;
+    const d = info.data;
+    return {
+      wallet: walletPk,
+      entitlementUsdc: Number(d.readBigUInt64LE(73)) / 1e6,
+      settled: d.readUInt8(81) === 1,
+      claimed: d.readUInt8(82) === 1
+    };
+  } catch {
+    return null;
+  }
+}
+
 // re-exports so routes only import from this one server module
 export { associatedTokenAddress, roundVaultPda, playerEntryPda };

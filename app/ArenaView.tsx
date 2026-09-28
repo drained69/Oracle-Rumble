@@ -4,7 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { getRound, enrollWithEscrow, tradeRound, newRound, placeParlayApi, claimFromEscrow, serverSettleArena, cancelArena, checkSeatFunds, type RoundView } from "@/lib/round-client";
 import { useEscrowStatus, useWalletIdentity } from "@/lib/use-wallet";
 import SiteHeader from "@/app/SiteHeader";
-import CallsignModal from "@/app/CallsignModal";
+import UsernameModal from "@/app/UsernameModal";
 import type { Entrant, Round, ParlayTicket } from "@/lib/royale";
 import { PUBLIC_ARENA } from "@/lib/royale";
 import { markets as boardMarkets } from "@/lib/arena-data";
@@ -51,9 +51,9 @@ const STATUS_LABEL: Record<string, string> = {
 
 export default function ArenaView({ arenaCode }: { arenaCode: string }) {
   const isPublic = arenaCode === PUBLIC_ARENA;
-  const { wallet, callsign, toggleConnect, saveCallsign } = useWalletIdentity();
+  const { wallet, username, toggleConnect, saveUsername } = useWalletIdentity();
   const escrow = useEscrowStatus();
-  const [showCallsign, setShowCallsign] = useState(false);
+  const [showUsername, setShowUsername] = useState(false);
   const [nickname, setNickname] = useState("");
   const [view, setView] = useState<RoundView | null>(null);
   const [now, setNow] = useState(() => Date.now());
@@ -92,8 +92,8 @@ export default function ArenaView({ arenaCode }: { arenaCode: string }) {
     return `${window.location.origin}/a/${arenaCode}`;
   }, [arenaCode, isPublic]);
 
-  // Prefill the seat form with the wallet's saved callsign.
-  useEffect(() => { if (callsign) setNickname(callsign); }, [callsign]);
+  // Prefill the seat form with the wallet's saved username.
+  useEffect(() => { if (username) setNickname(username); }, [username]);
 
   // Enable arcade palette / background across the arena view.
   useEffect(() => {
@@ -157,7 +157,7 @@ export default function ArenaView({ arenaCode }: { arenaCode: string }) {
   const connect = useCallback(async () => {
     const r = await toggleConnect();
     setToast(r.message);
-    if (r.needsCallsign) setShowCallsign(true);
+    if (r.needsUsername) setShowUsername(true);
   }, [toggleConnect]);
 
   // ── actions (all arena-scoped) ────────────────────────────────────
@@ -167,14 +167,14 @@ export default function ArenaView({ arenaCode }: { arenaCode: string }) {
     if (!v.ok) { setToast(v.reason); return; }
     const nick = v.value;
     if (round && !isUsernameFreeInArena(nick, round.entrants, wallet)) {
-      setToast(`Callsign "${nick}" is taken in this arena — pick another.`);
+      setToast(`Username "${nick}" is taken in this arena — pick another.`);
       return;
     }
 
     setBusy(true);
     try {
-      // Persist the callsign first so it survives a cancelled wallet prompt.
-      saveCallsign(nick);
+      // Persist the username first so it survives a cancelled wallet prompt.
+      saveUsername(nick);
 
       // enrollWithEscrow: if arena is on-chain, wallet signs a Deposit tx
       // (real USDC on devnet) before the ledger enrolls. Ledger-only arenas
@@ -190,27 +190,53 @@ export default function ArenaView({ arenaCode }: { arenaCode: string }) {
         await refresh();
       }
     } finally { setBusy(false); }
-  }, [wallet, nickname, arenaCode, refresh, round, saveCallsign]);
+  }, [wallet, nickname, arenaCode, refresh, round, saveUsername]);
 
-  // ── settlement + claim ────────────────────────────────────────────
-  // When a hosted arena's round hits `complete` and has an on-chain vault,
-  // any client can nudge the server to sign SettlePlayer + CloseSettlement.
-  // Idempotent server-side — first caller wins, everyone else no-ops.
-  const settleFiredRef = useRef(false);
+  // ── settlement, refunds + claim ───────────────────────────────────
+  // Complete arena → record payouts on-chain. Cancelled arena → record a
+  // full refund for every depositor. Any client can nudge; the server is
+  // idempotent. A cancelled arena waits ~2 min (in-flight deposits) first,
+  // so keep retrying while the server reports `pending`.
+  const roundId = round?.id;
+  const roundStatus = round?.status;
+  const hasVault = !!round?.escrow;
+  const vaultSettled = !!round?.escrow?.settleSignatures?.length;
+  const [escrowNudge, setEscrowNudge] = useState(0);
   useEffect(() => {
-    if (!round) return;
-    if (round.status !== "complete") return;
-    if (!round.escrow) return;
-    if (round.escrow.settleSignatures && round.escrow.settleSignatures.length > 0) return;
-    if (settleFiredRef.current) return;
-    settleFiredRef.current = true;
-    (async () => {
+    if (!hasVault || vaultSettled) return;
+    if (roundStatus !== "complete" && roundStatus !== "cancelled") return;
+    let timer: number | undefined;
+    let stopped = false;
+    const run = async () => {
       const res = await serverSettleArena(arenaCode);
-      if (res.error) setToast(`Settle: ${res.error}`);
-      else if (res.signatures?.length) setToast(`Arena settled on-chain · ${res.signatures.length} txs`);
+      if (stopped) return;
+      if (res.pending) {
+        timer = window.setTimeout(run, Math.min(30_000, Math.max(3_000, res.retryInMs ?? 5_000)));
+        return;
+      }
+      if (res.error) setToast(`${roundStatus === "cancelled" ? "Refund" : "Settlement"}: ${res.error}`);
       await refresh();
-    })();
-  }, [round, arenaCode, refresh]);
+      setEscrowNudge((n) => n + 1);
+    };
+    run();
+    return () => { stopped = true; if (timer) window.clearTimeout(timer); };
+  }, [roundId, roundStatus, hasVault, vaultSettled, arenaCode, refresh]);
+
+  // This wallet's on-chain position in the arena — drives the refund card,
+  // including deposits that landed after the round closed.
+  type MyEscrow = { deposited: boolean; seatUsdc?: number; settled?: boolean; claimed?: boolean; entitlementUsdc?: number; claimsOpen?: boolean; recoverAt?: number | null };
+  const [myEscrow, setMyEscrow] = useState<MyEscrow | null>(null);
+  const loadMyEscrow = useCallback(async () => {
+    if (!wallet || !hasVault) { setMyEscrow(null); return; }
+    try {
+      const r = await fetch(`/api/escrow/entry?arena=${encodeURIComponent(arenaCode)}&wallet=${encodeURIComponent(wallet)}`, { cache: "no-store" }).then((x) => x.json());
+      setMyEscrow(r);
+    } catch { /* transient */ }
+  }, [wallet, hasVault, arenaCode]);
+  useEffect(() => {
+    if (roundStatus !== "cancelled" && roundStatus !== "complete") return;
+    loadMyEscrow();
+  }, [roundStatus, loadMyEscrow, escrowNudge, vaultSettled]);
 
   const doClaim = useCallback(async (recover = false) => {
     if (!wallet) return setToast("Connect a wallet first.");
@@ -220,8 +246,9 @@ export default function ArenaView({ arenaCode }: { arenaCode: string }) {
       if (r.error) setToast(`Claim: ${r.error}`);
       else if (r.signature) setToast(`${recover ? "Recovered" : "Claimed"} · ${r.signature.slice(0, 8)}…`);
       else setToast("Withdrawal submitted.");
+      await loadMyEscrow();
     } finally { setBusy(false); }
-  }, [wallet, arenaCode]);
+  }, [wallet, arenaCode, loadMyEscrow]);
 
   const marketId = round?.config.marketId;
   const pantaFillAvailable = !!wallet && !!marketId && looksLikePantaMarketId(marketId);
@@ -328,9 +355,9 @@ export default function ArenaView({ arenaCode }: { arenaCode: string }) {
       setToast("Connect a wallet first — hosting on-chain needs your seat deposit signature.");
       return;
     }
-    if (wallet && !callsign) {
-      setShowCallsign(true);
-      setToast("Choose a callsign before hosting.");
+    if (wallet && !username) {
+      setShowUsername(true);
+      setToast("Set a username before hosting.");
       return;
     }
 
@@ -349,6 +376,7 @@ export default function ArenaView({ arenaCode }: { arenaCode: string }) {
         startingBankroll: Number(hVault) || 5,
         capacity: hCapacity,
         roundLimit: hFormat === "royale" ? hRounds : 1,
+        enrollmentSec: 120, // counted from the host's confirmed seat
         host: wallet ?? ""
       });
       if (v.error || !v.arena) { setToast(v.error ?? "Host failed."); return; }
@@ -364,17 +392,24 @@ export default function ArenaView({ arenaCode }: { arenaCode: string }) {
       // With wallet: the host must sign seat #1 deposit before the arena
       // is announced. If signing is dismissed or fails, roll back so the
       // room doesn't linger as an unfunded orphan.
-      const nick = callsign || shortPk(wallet).replace("…", "");
+      const nick = username || shortPk(wallet).replace("…", "");
       if (escrow?.active) setToast("Approve the seat deposit in your wallet…");
       let enrollError = "";
+      let refundable = false;
       try {
         const r = await enrollWithEscrow(wallet, nick, v.arena);
-        if (r.error) enrollError = r.error;
+        if (r.error) { enrollError = r.error; refundable = !!r.refundable; }
       } catch (err) {
         enrollError = err instanceof Error ? err.message : "wallet signing failed";
       }
 
       if (enrollError) {
+        if (refundable) {
+          // Deposit landed after the arena closed — its page offers the refund.
+          setToast(enrollError);
+          window.setTimeout(() => { window.location.href = `/a/${v.arena}`; }, 1500);
+          return;
+        }
         await cancelArena(v.arena, wallet).catch(() => { /* best effort */ });
         setToast(`Arena not opened — ${enrollError}`);
         return;
@@ -383,7 +418,7 @@ export default function ArenaView({ arenaCode }: { arenaCode: string }) {
       setInviteInfo({ code: v.arena, url });
       setToast(`Arena ${v.arena} is open. Share the link.`);
     } finally { setBusy(false); }
-  }, [hAsset, hHorizon, hFormat, hEntry, hVault, hCapacity, hRounds, wallet, escrow, callsign]);
+  }, [hAsset, hHorizon, hFormat, hEntry, hVault, hCapacity, hRounds, wallet, escrow, username]);
 
   const doCopyInvite = useCallback(async (url?: string) => {
     const link = url ?? currentInviteUrl;
@@ -415,10 +450,10 @@ export default function ArenaView({ arenaCode }: { arenaCode: string }) {
       <SiteHeader
         active="arenas"
         wallet={wallet}
-        callsign={callsign}
+        username={username}
         escrow={escrow}
         onConnect={connect}
-        onEditCallsign={() => setShowCallsign(true)}
+        onEditUsername={() => setShowUsername(true)}
         extra={!isPublic ? (
           <button className="arena-chip private" onClick={() => doCopyInvite()} title="Copy invite link">
             {arenaCode}
@@ -568,21 +603,25 @@ export default function ArenaView({ arenaCode }: { arenaCode: string }) {
             })()}
           </div>
         ) : round?.status === "cancelled" ? (
-          <div className="champion">
-            <p className="eyebrow">Arena {arenaCode} · cancelled</p>
-            <h1>Rumble didn&apos;t finish</h1>
-            <p className="lead">This arena was cancelled before it could complete. Depositors can recover their entry + starting vault after the settle deadline.</p>
-            {/* Only participants who actually deposited see the Recover button. */}
-            {round.escrow && wallet && me && !me.isBot ? (
-              <div className="claim-box">
-                <button className="btn primary full" onClick={() => doClaim(true)} disabled={busy}>
-                  {busy ? "Recovering…" : `Recover ${usd2.format(round.config.entryUsdc + round.config.startingBankroll)} to my wallet`}
-                </button>
-                <p className="disclaimer">Recovery unlocks after the settle deadline (~1 hour after enrollment). If it fails with &quot;too early&quot;, wait then retry.</p>
-              </div>
-            ) : round.escrow && !wallet ? (
-              <p className="disclaimer">Connect the wallet you deposited from to recover.</p>
-            ) : null}
+          <div className="champion closed">
+            <p className="eyebrow">Arena {arenaCode} · closed</p>
+            <h1>This arena didn&apos;t start</h1>
+            <p className="lead">{cancelReason(round.history)}</p>
+            {round.escrow && (
+              <RefundCard
+                wallet={wallet}
+                state={myEscrow}
+                refundReady={vaultSettled}
+                busy={busy}
+                onConnect={connect}
+                onClaim={() => doClaim(false)}
+                onRecover={() => doClaim(true)}
+              />
+            )}
+            <div className="cta-row" style={{ marginTop: 18 }}>
+              <a className="btn primary" href="/?tab=host">Host a new arena</a>
+              <a className="btn secondary" href="/">Browse arenas</a>
+            </div>
           </div>
         ) : !round ? (
           <div className="enroll-cta" style={{ margin: "20px 0" }}>
@@ -855,11 +894,11 @@ export default function ArenaView({ arenaCode }: { arenaCode: string }) {
         />
       )}
 
-      {showCallsign && (
-        <CallsignModal
-          initial={callsign}
-          onSave={(v) => { const r = saveCallsign(v); if (r.ok) setToast(r.message); return r; }}
-          onClose={() => setShowCallsign(false)}
+      {showUsername && (
+        <UsernameModal
+          initial={username}
+          onSave={(v) => { const r = saveUsername(v); if (r.ok) setToast(r.message); return r; }}
+          onClose={() => setShowUsername(false)}
         />
       )}
 
@@ -886,7 +925,7 @@ export default function ArenaView({ arenaCode }: { arenaCode: string }) {
               </dl>
               <form onSubmit={(e) => { e.preventDefault(); if (ok && !busy && wallet) doEnroll(); }}>
                 <label>
-                  Callsign
+                  Username
                   <input
                     value={nickname}
                     onChange={(e) => setNickname(e.target.value)}
@@ -899,7 +938,7 @@ export default function ArenaView({ arenaCode }: { arenaCode: string }) {
                     aria-describedby="seat-hint"
                   />
                 </label>
-                <p id="seat-hint" className={`callsign-hint ${nickname.length === 0 ? "" : ok ? "ok" : "bad"}`} role="status">{hint}</p>
+                <p id="seat-hint" className={`username-hint ${nickname.length === 0 ? "" : ok ? "ok" : "bad"}`} role="status">{hint}</p>
                 <button type="submit" className="btn primary full" disabled={busy || !ok || !wallet} style={{ marginTop: 10 }}>
                   {busy ? "Confirm in your wallet…" : wallet ? `Deposit ${usd2.format(seat)} & join` : "Connect a wallet first"}
                 </button>
@@ -1039,5 +1078,83 @@ export default function ArenaView({ arenaCode }: { arenaCode: string }) {
         </div>
       )}
     </main>
+  );
+}
+
+/** Plain-language reason from the round's last cancellation event. */
+function cancelReason(history: string[]): string {
+  const line = [...history].reverse().find((h) => /cancelled/i.test(h)) ?? "";
+  if (/no players/i.test(line)) return "No seat was confirmed before enrollment closed, so the round never started.";
+  if (/host deposit/i.test(line)) return "The host's seat deposit wasn't approved, so the arena was closed before anyone could join.";
+  if (/only \d+ entrants/i.test(line)) return "Not enough players joined before enrollment closed.";
+  return "The round was cancelled before it started.";
+}
+
+type RefundState = {
+  deposited: boolean;
+  seatUsdc?: number;
+  settled?: boolean;
+  claimed?: boolean;
+  entitlementUsdc?: number;
+  claimsOpen?: boolean;
+  recoverAt?: number | null;
+} | null;
+
+/** What a (possible) depositor needs after a cancelled arena: their refund. */
+function RefundCard({
+  wallet, state, refundReady, busy, onConnect, onClaim, onRecover
+}: {
+  wallet: string | null;
+  state: RefundState;
+  refundReady: boolean;
+  busy: boolean;
+  onConnect: () => void;
+  onClaim: () => void;
+  onRecover: () => void;
+}) {
+  const money = (n?: number) => `${(n ?? 0).toFixed(2)} USDC`;
+
+  if (!wallet) {
+    return (
+      <div className="refund-card">
+        <p><b>Deposited into this arena?</b> Connect that wallet to get your refund.</p>
+        <button className="btn primary full" onClick={onConnect}>Connect wallet</button>
+      </div>
+    );
+  }
+  if (!state) return <div className="refund-card"><p>Checking your deposit…</p></div>;
+  if (!state.deposited) {
+    return <div className="refund-card muted"><p>This wallet has no deposit in this arena — nothing to refund.</p></div>;
+  }
+  if (state.claimed) {
+    return (
+      <div className="refund-card done">
+        <p><b>Refund complete.</b> {money(state.entitlementUsdc || state.seatUsdc)} was returned to your wallet.</p>
+      </div>
+    );
+  }
+  if (state.settled && state.claimsOpen) {
+    return (
+      <div className="refund-card ready">
+        <p><b>Your {money(state.seatUsdc)} deposit is ready to refund.</b> Nothing was lost — claim it back to your wallet.</p>
+        <button className="btn primary full" onClick={onClaim} disabled={busy}>
+          {busy ? "Confirm in your wallet…" : `Claim ${money(state.entitlementUsdc || state.seatUsdc)} refund`}
+        </button>
+      </div>
+    );
+  }
+  const canRecover = !!state.recoverAt && Date.now() >= state.recoverAt;
+  return (
+    <div className="refund-card">
+      <p>
+        <b>Your {money(state.seatUsdc)} deposit is safe in escrow.</b>{" "}
+        {refundReady
+          ? "Your refund is being recorded — this page updates automatically."
+          : "A full refund is being prepared and opens within about two minutes of the arena closing. This page updates automatically."}
+      </p>
+      {canRecover && (
+        <button className="btn secondary full" onClick={onRecover} disabled={busy}>Recover deposit directly</button>
+      )}
+    </div>
   );
 }

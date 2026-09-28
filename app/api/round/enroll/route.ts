@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
-import { getActiveRound, mutateActiveRound } from "@/lib/round-store";
-import { enroll, makeEntrant, normalizeArenaCode } from "@/lib/royale";
+import { getActiveRound, getLatestRound, mutateActiveRound } from "@/lib/round-store";
+import { PUBLIC_ARENA, enroll, humanCount, makeEntrant, normalizeArenaCode } from "@/lib/royale";
 import { confirmSignature, escrowReady, verifyPlayerDeposited } from "@/lib/escrow-server";
 
 /**
@@ -29,7 +29,18 @@ export async function POST(request: Request) {
 
   // Peek to see whether this arena requires an on-chain deposit.
   const peek = await getActiveRound(arena);
-  if (!peek) return NextResponse.json({ error: "no active round in this arena", arena }, { status: 404 });
+  if (!peek) {
+    // A deposit can confirm after the arena closed. Tell the player their
+    // funds are safe and where to get them back, rather than a bare 404.
+    const latest = await getLatestRound(arena);
+    if (latest?.escrow && body.escrowSignature && (await verifyPlayerDeposited(body.wallet, latest.escrow.roundVault)).ok) {
+      return NextResponse.json({
+        error: `Arena ${arena} closed before your seat was registered. Your deposit is safe in escrow — open the arena to claim a full refund.`,
+        refundable: true, arena
+      }, { status: 409 });
+    }
+    return NextResponse.json({ error: "this arena is no longer taking players", arena }, { status: 404 });
+  }
 
   // BUG D fix — if this wallet is already enrolled, short-circuit with success.
   // Prevents a page reload from asking the wallet to sign a Deposit that would
@@ -96,10 +107,16 @@ export async function POST(request: Request) {
       enrollError = "wallet already enrolled"; return;
     }
     const nickname = (body.nickname || body.wallet.slice(0, 4)).slice(0, 16);
+    const firstPlayer = humanCount(r) === 0;
     const entrant = makeEntrant(r, body.wallet, nickname, false);
     const res = enroll(r, entrant);
     if (!res.ok) { enrollError = res.reason; return; }
     entrantId = entrant.id;
+    // A hosted arena's enrollment clock starts once the first seat (the
+    // host's) is confirmed — wallet approval time never eats into it.
+    if (firstPlayer && r.arenaCode !== PUBLIC_ARENA) {
+      r.enrollDeadline = Math.max(r.enrollDeadline, Date.now() + r.config.enrollmentSec * 1000);
+    }
     if (escrowSignature && r.escrow) r.escrow.history.push(`Deposit ${entrant.nickname} ✓ ${escrowSignature.slice(0, 12)}…`);
     // No eager bot seeding — the roster shows the real players who joined.
     // A thin backfill only happens at lock, and only if we're below the

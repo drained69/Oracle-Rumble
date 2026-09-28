@@ -5,13 +5,13 @@
 import { useCallback, useEffect, useState } from "react";
 import { useEscrowStatus, useWalletIdentity } from "@/lib/use-wallet";
 import SiteHeader from "@/app/SiteHeader";
-import CallsignModal from "@/app/CallsignModal";
+import UsernameModal from "@/app/UsernameModal";
 import PantaPositions from "@/app/PantaPositions";
 
 export default function PositionsPage() {
-  const { wallet, callsign, toggleConnect, saveCallsign } = useWalletIdentity();
+  const { wallet, username, toggleConnect, saveUsername } = useWalletIdentity();
   const escrow = useEscrowStatus();
-  const [showCallsign, setShowCallsign] = useState(false);
+  const [showUsername, setShowUsername] = useState(false);
   const [toast, setToast] = useState("");
 
   useEffect(() => {
@@ -28,7 +28,7 @@ export default function PositionsPage() {
   const connect = useCallback(async () => {
     const r = await toggleConnect();
     setToast(r.message);
-    if (r.needsCallsign) setShowCallsign(true);
+    if (r.needsUsername) setShowUsername(true);
   }, [toggleConnect]);
 
   return (
@@ -39,10 +39,10 @@ export default function PositionsPage() {
       <SiteHeader
         active="positions"
         wallet={wallet}
-        callsign={callsign}
+        username={username}
         escrow={escrow}
         onConnect={connect}
-        onEditCallsign={() => setShowCallsign(true)}
+        onEditUsername={() => setShowUsername(true)}
       />
 
       <section className="page-hero">
@@ -73,11 +73,11 @@ export default function PositionsPage() {
           <button onClick={() => setToast("")} aria-label="Dismiss">×</button>
         </div>
       )}
-      {showCallsign && (
-        <CallsignModal
-          initial={callsign}
-          onSave={(v) => { const r = saveCallsign(v); if (r.ok) setToast(r.message); return r; }}
-          onClose={() => setShowCallsign(false)}
+      {showUsername && (
+        <UsernameModal
+          initial={username}
+          onSave={(v) => { const r = saveUsername(v); if (r.ok) setToast(r.message); return r; }}
+          onClose={() => setShowUsername(false)}
         />
       )}
     </main>

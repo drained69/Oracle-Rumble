@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { PublicKey } from "@solana/web3.js";
-import { buildDepositTx, buildWithdrawTx, escrowReady, playerBalances, verifyPlayerDeposited } from "@/lib/escrow-server";
+import { buildDepositTx, buildWithdrawTx, escrowReady, playerBalances, readPlayerEntry, verifyPlayerDeposited } from "@/lib/escrow-server";
 import { getActiveRound, getLatestRound } from "@/lib/round-store";
 import { normalizeArenaCode } from "@/lib/royale";
 
@@ -78,17 +78,25 @@ export async function POST(request: Request) {
       }
     }
     if (body.action === "claim") {
-      if (round.status !== "complete") {
+      if (round.status !== "complete" && round.status !== "cancelled") {
         return NextResponse.json({ error: `round is ${round.status} — nothing to claim yet` }, { status: 409 });
       }
       if (!escrow.settleSignatures || escrow.settleSignatures.length === 0) {
-        return NextResponse.json({ error: "arena not settled yet — settlement pending" }, { status: 409 });
+        return NextResponse.json({ error: round.status === "cancelled" ? "refund is still being prepared — try again in a minute" : "arena not settled yet — settlement pending" }, { status: 409 });
       }
-      // Only entrants can claim — bots and observers cannot.
-      const entrant = round.entrants.find((e) => e.wallet === body.wallet);
-      if (!entrant) return NextResponse.json({ error: "this wallet did not play in this arena" }, { status: 403 });
-      if ((entrant.cash + entrant.prizeUsdc) <= 0) {
-        return NextResponse.json({ error: "no entitlement to claim" }, { status: 409 });
+      if (round.status === "cancelled") {
+        // Refunds go by the on-chain entry — a late deposit may not be in the ledger.
+        const pe = await readPlayerEntry(body.wallet, escrow.roundVault);
+        if (!pe) return NextResponse.json({ error: "this wallet has no deposit in this arena" }, { status: 403 });
+        if (pe.claimed) return NextResponse.json({ error: "refund already claimed" }, { status: 409 });
+        if (!pe.settled) return NextResponse.json({ error: "refund not recorded for this wallet yet" }, { status: 409 });
+      } else {
+        // Only entrants can claim — bots and observers cannot.
+        const entrant = round.entrants.find((e) => e.wallet === body.wallet);
+        if (!entrant) return NextResponse.json({ error: "this wallet did not play in this arena" }, { status: 403 });
+        if ((entrant.cash + entrant.prizeUsdc) <= 0) {
+          return NextResponse.json({ error: "no entitlement to claim" }, { status: 409 });
+        }
       }
     }
     if (body.action === "recover") {

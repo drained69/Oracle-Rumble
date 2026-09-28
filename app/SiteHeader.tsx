@@ -21,19 +21,19 @@ const NAV: { key: NavKey; label: string; href: string }[] = [
 export default function SiteHeader({
   active,
   wallet,
-  callsign,
+  username,
   escrow,
   onConnect,
-  onEditCallsign,
+  onEditUsername,
   onNav,
   extra
 }: {
   active: NavKey | null;
   wallet: string | null;
-  callsign: string;
+  username: string;
   escrow: EscrowStatus | null;
   onConnect: () => void;
-  onEditCallsign: () => void;
+  onEditUsername: () => void;
   /** Home page switches its Arenas/Host tabs in place instead of navigating. */
   onNav?: (key: "arenas" | "host") => void;
   extra?: ReactNode;
@@ -81,13 +81,14 @@ export default function SiteHeader({
           {extra}
           {wallet ? (
             <div className="acct">
-              <button className="acct-main" onClick={onEditCallsign} title="Edit callsign">
+              <button className={`acct-main ${username ? "" : "needs-name"}`} onClick={onEditUsername} title={username ? "Edit username" : "Set username"}>
                 {/* eslint-disable-next-line @next/next/no-img-element */}
                 <img className="acct-avatar" src={avatarDataUrl(wallet, 26)} width={26} height={26} alt="" />
                 <span className="acct-text">
-                  <span className={`acct-name ${callsign ? "" : "unset"}`}>{callsign || "Set callsign"}</span>
+                  <span className={`acct-name ${username ? "" : "unset"}`}>{username || "Set username"}</span>
                   <span className="acct-pk">{shortPk(wallet)}</span>
                 </span>
+                {!username && <span className="acct-alert" aria-hidden="true" />}
               </button>
               <button className="acct-exit" onClick={onConnect} aria-label="Disconnect wallet" title="Disconnect">
                 <svg viewBox="0 0 24 24" width="15" height="15" aria-hidden="true">

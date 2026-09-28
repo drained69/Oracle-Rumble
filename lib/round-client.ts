@@ -84,7 +84,7 @@ export async function getRound(arena?: string): Promise<RoundView> {
  * server responds with 402 { needsDeposit: true }; the caller must sign a
  * Deposit tx and re-post with the resulting signature.
  */
-export async function enrollRound(wallet: string, nickname: string, arena?: string, escrowSignature?: string): Promise<{ round?: Round; arena?: string; entrantId?: string; error?: string; needsDeposit?: boolean; already?: boolean; escrowDown?: boolean }> {
+export async function enrollRound(wallet: string, nickname: string, arena?: string, escrowSignature?: string): Promise<{ round?: Round; arena?: string; entrantId?: string; error?: string; needsDeposit?: boolean; already?: boolean; escrowDown?: boolean; refundable?: boolean }> {
   const res = await fetch("/api/round/enroll", {
     method: "POST",
     headers: { "content-type": "application/json" },
@@ -98,7 +98,7 @@ export async function enrollRound(wallet: string, nickname: string, arena?: stri
  * the connected wallet, then finalize the enrollment. Falls back cleanly to
  * ledger enroll when the arena is not escrow-backed.
  */
-export async function enrollWithEscrow(wallet: string, nickname: string, arena?: string): Promise<{ round?: Round; entrantId?: string; escrowSignature?: string; already?: boolean; error?: string }> {
+export async function enrollWithEscrow(wallet: string, nickname: string, arena?: string): Promise<{ round?: Round; entrantId?: string; escrowSignature?: string; already?: boolean; error?: string; refundable?: boolean }> {
   // Attempt 1: plain ledger enroll. Returns 402 if the arena needs a deposit,
   // or a fast-path `already: true` if this wallet is already enrolled.
   const first = await enrollRound(wallet, nickname, arena);
@@ -132,7 +132,7 @@ export async function enrollWithEscrow(wallet: string, nickname: string, arena?:
 }
 
 /** Ask the server to sign + submit SettlePlayer + CloseSettlement for the arena. */
-export async function serverSettleArena(arena: string): Promise<{ ok?: boolean; signatures?: string[]; alreadySettled?: boolean; error?: string; escrow?: string }> {
+export async function serverSettleArena(arena: string): Promise<{ ok?: boolean; signatures?: string[]; alreadySettled?: boolean; error?: string; escrow?: string; refund?: boolean; pending?: boolean; retryInMs?: number; depositors?: number }> {
   const res = await fetch("/api/escrow/settle", {
     method: "POST", headers: { "content-type": "application/json" },
     body: JSON.stringify({ arena })

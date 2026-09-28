@@ -257,7 +257,7 @@ export default function ArenaStage({ round, standings, survivors, yesPrice, wall
             })}
           </ol>
 
-          {pods.length === 0 && (
+          {pods.length === 0 && !isCancelled && !isComplete && (
             <p className="mr-empty" role="status">No players yet — the first seat is open.</p>
           )}
           {hidden > 0 && <p className="mr-more">+{hidden} more in standings</p>}
@@ -270,7 +270,7 @@ export default function ArenaStage({ round, standings, survivors, yesPrice, wall
             </div>
           )}
           {isCancelled && (
-            <div className="mr-cancelled" role="status">Round cancelled — depositors can recover their seat</div>
+            <div className="mr-cancelled" role="status">Arena closed — every deposit is refunded in full</div>
           )}
         </div>
 
