@@ -3702,3 +3702,100 @@ body.no-scroll { overflow: hidden; }
 .game-mode .modal .btn.primary:disabled {
   background: var(--surface-alt); color: var(--text-3); box-shadow: none;
 }
+
+/* ── UP / DOWN calls ───────────────────────────────────────────── */
+b.up { color: var(--plasma); }
+b.down { color: var(--danger); }
+.modal-backdrop { overflow-y: auto; }
+.modal.seat-modal { max-width: 500px; margin: auto; }
+
+.call-pick { border: 0; margin: 14px 0 12px; padding: 0; min-width: 0; }
+.call-pick legend {
+  padding: 0; margin-bottom: 8px; font-family: 'JetBrains Mono', monospace; font-size: 11px;
+  letter-spacing: 1.2px; text-transform: uppercase; color: var(--text-3);
+}
+.call-pick legend b { color: var(--text); font-weight: 700; }
+.call-options { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.call-opt {
+  display: grid; grid-template-columns: auto 1fr; align-items: center; column-gap: 10px; row-gap: 2px;
+  padding: 12px 14px; border-radius: 12px; text-align: left; cursor: pointer;
+  background: rgba(15, 19, 27, 0.7); border: 1px solid var(--border); color: var(--text);
+  transition: border-color 0.15s ease, box-shadow 0.15s ease, background 0.15s ease;
+}
+.call-opt .co-arrow { grid-row: span 2; font-size: 20px; line-height: 1; }
+.call-opt .co-t { font-family: 'Orbitron', sans-serif; font-size: 15px; font-weight: 900; letter-spacing: 1.5px; }
+.call-opt .co-d { font-family: 'Space Grotesk', sans-serif; font-size: 12px; line-height: 1.35; color: var(--text-2); }
+.call-opt.up .co-arrow, .call-opt.up .co-t { color: var(--plasma); }
+.call-opt.down .co-arrow, .call-opt.down .co-t { color: var(--danger); }
+.call-opt:hover { border-color: var(--border-strong); }
+.call-opt.up.on { border-color: var(--plasma); background: rgba(34, 211, 238, 0.08); box-shadow: 0 0 0 3px rgba(34, 211, 238, 0.14); }
+.call-opt.down.on { border-color: var(--danger); background: rgba(244, 63, 94, 0.08); box-shadow: 0 0 0 3px rgba(244, 63, 94, 0.14); }
+.call-later {
+  margin-top: 8px; width: 100%; padding: 8px 12px; border-radius: 10px; cursor: pointer;
+  background: transparent; border: 1px dashed var(--border-strong); color: var(--text-2);
+  font-family: 'Space Grotesk', sans-serif; font-size: 13px; font-weight: 600;
+}
+.call-later.on { border-style: solid; border-color: var(--neon); color: var(--text); background: rgba(192, 132, 252, 0.08); }
+.call-explain { margin: 10px 0 0; font-family: 'Space Grotesk', sans-serif; font-size: 13px; line-height: 1.5; color: var(--text-2); }
+.call-explain b { font-weight: 800; }
+
+.seat-steps {
+  list-style: none; margin: 0 0 12px; padding: 0; display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px;
+  counter-reset: seat;
+}
+.seat-steps li {
+  counter-increment: seat; position: relative; padding: 9px 10px 9px 30px; border-radius: 10px;
+  background: rgba(15, 19, 27, 0.55); border: 1px solid var(--border);
+  font-family: 'Space Grotesk', sans-serif; font-size: 12px; line-height: 1.35; color: var(--text-2);
+}
+.seat-steps li::before {
+  content: counter(seat); position: absolute; left: 9px; top: 9px; width: 15px; height: 15px; border-radius: 50%;
+  display: grid; place-items: center; font-family: 'Orbitron', sans-serif; font-size: 9px; font-weight: 800;
+  color: var(--bg, #0a0d13); background: var(--neon);
+}
+.seat-steps b { color: var(--text); }
+
+/* Seated, waiting for the lock */
+.arena-main .my-call { text-align: left; }
+.arena-main .my-call .call-row { display: flex; align-items: center; gap: 12px; margin: 12px 0 8px; flex-wrap: wrap; }
+.arena-main .my-call .call-k {
+  font-family: 'JetBrains Mono', monospace; font-size: 11px; letter-spacing: 1.2px; text-transform: uppercase; color: var(--text-3);
+}
+.arena-main .my-call .seg { width: auto; flex: 1; min-width: 260px; }
+.arena-main .my-call .seg-opt { flex: 1; }
+.arena-main .my-call .seg-opt.on.up { color: var(--plasma); box-shadow: inset 0 0 0 1px var(--plasma); background: rgba(34, 211, 238, 0.08); }
+.arena-main .my-call .seg-opt.on.down { color: var(--danger); box-shadow: inset 0 0 0 1px var(--danger); background: rgba(244, 63, 94, 0.08); }
+.arena-main .my-call .call-note { font-size: 13px; line-height: 1.5; }
+
+/* Live trading rule + result line */
+.arena-main .trade-rule {
+  margin: 0 0 10px; padding: 9px 12px; border-radius: 10px; font-size: 13px; line-height: 1.45;
+  background: rgba(15, 19, 27, 0.6); border: 1px solid var(--border); color: var(--text-2);
+}
+.arena-main .trade-rule b { color: var(--text); }
+.arena-main .trade-rule b.up { color: var(--plasma); }
+.arena-main .trade-rule b.down { color: var(--danger); }
+.arena-main .champion .resolution { margin: 6px 0 10px; font-size: 15px; color: var(--text-2); }
+.arena-main .champion .resolution b { color: var(--text); }
+.arena-main .champion .resolution.up b:last-child { color: var(--plasma); }
+.arena-main .champion .resolution.down b:last-child { color: var(--danger); }
+.arena-main .roundbar .rb-move { font-style: normal; font-size: 11px; }
+.arena-main .roundbar .rb-move.up { color: var(--plasma); }
+.arena-main .roundbar .rb-move.down { color: var(--danger); }
+
+/* Stage orb: live asset price + move vs the open */
+.arena-main .mr-orb { width: 176px; height: 176px; }
+.arena-main .mr-orb-price.spot { font-size: 19px; font-weight: 800; letter-spacing: -0.3px; }
+.arena-main .mr-orb-move { font-family: 'JetBrains Mono', monospace; font-size: 10px; font-weight: 700; color: var(--text-3); }
+.arena-main .mr-orb-move.up { color: var(--plasma); }
+.arena-main .mr-orb-move.down { color: var(--danger); }
+
+@media (max-width: 640px) {
+  .call-options { grid-template-columns: 1fr; }
+  .seat-steps { grid-template-columns: 1fr; }
+  .arena-main .mr-orb { width: 128px; height: 128px; }
+  .arena-main .mr-orb-price.spot { font-size: 14px; }
+  .arena-main .my-call .seg { min-width: 0; width: 100%; }
+}
+.gm-seg.call-seg .opt.up.on { color: #051018; background: var(--plasma); box-shadow: 0 0 14px rgba(34, 211, 238, 0.35); }
+.gm-seg.call-seg .opt.down.on { color: #fff; background: var(--danger); box-shadow: 0 0 14px rgba(244, 63, 94, 0.35); }

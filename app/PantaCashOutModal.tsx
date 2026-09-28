@@ -55,15 +55,14 @@ export default function PantaCashOutModal({
     // Client-side estimate — advisory only; the server re-prices at confirm.
     (async () => {
       try {
-        const yesPricesByMarket: Record<string, number> = {};
-        for (const leg of ticket.legs) {
-          try {
-            const res = await fetch(`/api/markets/${encodeURIComponent(leg.marketId)}`, { cache: "no-store" });
-            if (!res.ok) continue;
-            const j = (await res.json()) as { market?: { yesPrice?: number } };
-            if (j.market?.yesPrice !== undefined) yesPricesByMarket[leg.marketId] = j.market.yesPrice;
-          } catch { /* ignore */ }
-        }
+        // The round's own live leg prices — the same ones the server
+        // prices the cash-out at.
+        let yesPricesByMarket: Record<string, number> = {};
+        try {
+          const res = await fetch(`/api/round?arena=${encodeURIComponent(arena)}`, { cache: "no-store" });
+          const j = (await res.json()) as { prices?: Record<string, number> };
+          yesPricesByMarket = j.prices ?? {};
+        } catch { /* fall back to entry prices */ }
         if (cancelled) return;
         // Cheap client-side mirror of quoteCashOut.
         let prob = 1;
@@ -89,7 +88,7 @@ export default function PantaCashOutModal({
       } catch { /* ignore */ }
     })();
     return () => { cancelled = true; };
-  }, [ticket]);
+  }, [ticket, arena]);
 
   const commit = useCallback(async () => {
     setPhase("committing"); setError(null);
@@ -129,7 +128,7 @@ export default function PantaCashOutModal({
             return (
               <div key={l.marketId} className="cashout-leg">
                 <div className="cashout-leg-line">
-                  <span className={`side ${l.side === "YES" ? "up" : "down"}`}>{l.side}</span>
+                  <span className={`side ${l.side === "YES" ? "up" : "down"}`}>{l.side === "YES" ? "UP" : "DOWN"}</span>
                   <span className="q">{l.question || l.marketId}</span>
                 </div>
                 <div className="cashout-leg-line small">

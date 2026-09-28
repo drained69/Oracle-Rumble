@@ -22,6 +22,8 @@ type Props = {
   standings: Entrant[];
   survivors: number;
   yesPrice: number;
+  /** Latest USD spot price of the round's asset (oracle), if known. */
+  spot?: number | null;
   wallet: string | null;
 };
 
@@ -53,7 +55,7 @@ const STATE_LABEL: Record<PodState, string> = {
   safe: "Safe"
 };
 
-export default function ArenaStage({ round, standings, survivors, yesPrice, wallet }: Props) {
+export default function ArenaStage({ round, standings, survivors, yesPrice, spot, wallet }: Props) {
   const isLive = round.status === "live";
   const isComplete = round.status === "complete";
   const isCancelled = round.status === "cancelled";
@@ -179,6 +181,14 @@ export default function ArenaStage({ round, standings, survivors, yesPrice, wall
   // Radial marker between the last survivor slot and the first slot below it.
   const cutAngle = cutActive ? -90 + ((survivors - 0.5) / pods.length) * 360 : null;
 
+  // Oracle view of the asset: open / close from the round, live spot from the poll.
+  const asset = round.config.asset;
+  const open = round.oracle?.open?.[asset];
+  const close = round.oracle?.close?.[asset];
+  const closed = !!close;
+  const shown = close ?? spot ?? round.oracle?.last?.[asset] ?? null;
+  const move = open && shown ? ((shown - open) / open) * 100 : null;
+
   return (
     <section className="mr-stage" aria-label="Arena stage">
       <div className="mr-stage-body">
@@ -200,15 +210,26 @@ export default function ArenaStage({ round, standings, survivors, yesPrice, wall
           <div
             className={`mr-orb ${yesPrice >= 50 ? "up" : "down"} ${isLive ? "live" : ""}`}
             role="img"
-            aria-label={`Market price: YES ${yesPrice} cents, NO ${100 - yesPrice} cents`}
+            aria-label={`${round.config.asset}${shown ? ` at ${usdPrice(shown)}` : ""}${move != null ? `, ${move >= 0 ? "up" : "down"} ${Math.abs(move).toFixed(2)}% from the open` : ""}. UP ${yesPrice} cents, DOWN ${100 - yesPrice} cents`}
           >
             <div className="mr-orb-ring" aria-hidden="true" />
             <div className="mr-orb-core">
-              <span className="mr-orb-q">{round.config.asset}</span>
-              <span className="mr-orb-price">{yesPrice}<em>¢</em></span>
+              <span className="mr-orb-q">{round.config.asset}{closed ? " · close" : ""}</span>
+              {shown ? (
+                <span className="mr-orb-price spot">{usdPrice(shown)}</span>
+              ) : (
+                <span className="mr-orb-price">{yesPrice}<em>¢</em></span>
+              )}
+              {move != null ? (
+                <span className={`mr-orb-move ${move > 0 ? "up" : move < 0 ? "down" : ""}`}>
+                  {move > 0 ? "▲" : move < 0 ? "▼" : "•"} {Math.abs(move).toFixed(2)}% vs open
+                </span>
+              ) : shown ? (
+                <span className="mr-orb-move">{round.status === "enrolling" ? "opens when trading starts" : "live price"}</span>
+              ) : null}
               <span className="mr-orb-sides">
-                <span className="y">YES {yesPrice}¢</span>
-                <span className="n">NO {100 - yesPrice}¢</span>
+                <span className="y">UP {yesPrice}¢</span>
+                <span className="n">DOWN {100 - yesPrice}¢</span>
               </span>
             </div>
           </div>
@@ -236,7 +257,7 @@ export default function ArenaStage({ round, standings, survivors, yesPrice, wall
                   key={e.id}
                   className={cls}
                   style={pinFor(i, pods.length)}
-                  aria-label={`Rank ${rank}, ${displayName(e)}${isMe ? " (you)" : ""}, ${STATE_LABEL[state]}, vault $${e.bankroll.toFixed(2)}, P&L ${pnl >= 0 ? "+" : "-"}$${Math.abs(pnl).toFixed(2)}${e.side ? `, holding ${e.side}` : ""}`}
+                  aria-label={`Rank ${rank}, ${displayName(e)}${isMe ? " (you)" : ""}, ${STATE_LABEL[state]}, vault $${e.bankroll.toFixed(2)}, P&L ${pnl >= 0 ? "+" : "-"}$${Math.abs(pnl).toFixed(2)}${e.side ? `, holding ${e.side === "YES" ? "UP" : "DOWN"}` : ""}`}
                 >
                   <span className="mr-pod-rank">{state === "eliminated" ? "OUT" : `#${rank}`}</span>
                   {/* eslint-disable-next-line @next/next/no-img-element */}
@@ -249,7 +270,7 @@ export default function ArenaStage({ round, standings, survivors, yesPrice, wall
                   <span className="mr-pod-bank">${e.bankroll.toFixed(2)}</span>
                   <span className={`mr-pod-pnl ${pnl >= 0 ? "up" : "down"}`}>{pnl >= 0 ? "+" : "−"}${Math.abs(pnl).toFixed(2)}</span>
                   {e.side && state !== "eliminated" && (
-                    <span className={`mr-pod-side ${e.side === "YES" ? "yes" : "no"}`}>{e.side === "YES" ? "▲ YES" : "▼ NO"}</span>
+                    <span className={`mr-pod-side ${e.side === "YES" ? "yes" : "no"}`}>{e.side === "YES" ? "▲ UP" : "▼ DOWN"}</span>
                   )}
                   <span className={`mr-pod-state s-${state}`}>{STATE_LABEL[state]}</span>
                 </li>
@@ -293,11 +314,15 @@ export default function ArenaStage({ round, standings, survivors, yesPrice, wall
 }
 
 /** Classify a server history line so the feed can color it. */
+function usdPrice(n: number): string {
+  return `$${n.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: n < 10 ? 4 : 2 })}`;
+}
+
 function kindOf(line: string): FeedKind {
   if (/bought|liquidated|parlay|cashed out/i.test(line)) return "trade";
   if (/cancelled|eliminated/i.test(line)) return "elim";
   if (/takes .* USDC/i.test(line)) return "champion";
-  if (/settled|locked|opened/i.test(line)) return "round";
+  if (/settled|locked|opened|closed at|wins/i.test(line)) return "round";
   return "info";
 }
 

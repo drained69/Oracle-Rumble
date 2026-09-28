@@ -1,8 +1,9 @@
 "use client";
 
 /**
- * /docs — how Oracle Rumble works: game rules, money flow, escrow, Panta
- * integration, and the API. Every statement here should match the code.
+ * /docs — how Oracle Rumble works: game rules, UP/DOWN calls and the price
+ * oracle, money flow, escrow, Panta integration, and the API. Every
+ * statement here should match the code.
  */
 
 import { useCallback, useEffect, useState } from "react";
@@ -20,6 +21,7 @@ const SECTIONS: { id: string; title: string }[] = [
   { id: "money", title: "Seats, pool & payouts" },
   { id: "escrow", title: "Non-custodial escrow" },
   { id: "recovery", title: "Cancellations & recovery" },
+  { id: "calls", title: "UP / DOWN & the price oracle" },
   { id: "trading", title: "Trading in an arena" },
   { id: "parlays", title: "Parlays & cash-out" },
   { id: "panta", title: "Panta integration" },
@@ -70,8 +72,8 @@ export default function DocsPage() {
         <p className="jt-eyebrow">Documentation</p>
         <h1><span className="hl-a">How</span> Oracle Rumble <span className="hl-b">works</span></h1>
         <p className="page-lead">
-          The rules of an arena, where your USDC goes, how the escrow protects it, and how trades
-          reach Panta. Written for players, hosts and integrators.
+          The rules of an arena, how UP and DOWN calls are priced and resolved, where your USDC
+          goes and how the escrow protects it. Written for players, hosts and integrators.
         </p>
       </section>
 
@@ -89,13 +91,15 @@ export default function DocsPage() {
           <Section id="overview" title="Overview">
             <p>
               <b>Oracle Rumble</b> is a prediction-market battle royale on Solana. Players pay the
-              same seat, trade the same live market, and are ranked by vault value. At the end of
-              each round the bottom half is eliminated; the finalists split the prize pool.
+              same seat and call whether BTC, ETH or SOL finishes the round <b>UP</b> or <b>DOWN</b>
+              from its opening price. Everyone is ranked by vault value; at the end of each round the
+              bottom half is eliminated and the finalists split the prize pool.
             </p>
             <ol>
               <li><b>Arena engine</b> — server-side rounds (enrolling → live → settling → advancing/complete) persisted in Postgres.</li>
               <li><b>USDC escrow</b> — a non-custodial Solana program holds every seat deposit until players withdraw.</li>
-              <li><b>Panta</b> — market prices, and optional mirrored orders on Panta&apos;s primary book.</li>
+              <li><b>Price oracle</b> — live BTC, ETH and SOL spot prices open and resolve every round.</li>
+              <li><b>Panta</b> — positions, and optional mirrored orders on Panta&apos;s primary book.</li>
             </ol>
             <div className="callout">
               <b>Devnet.</b> Everything runs on Solana {CLUSTER} with Circle&apos;s devnet USDC. Test tokens have no monetary value.
@@ -120,9 +124,9 @@ export default function DocsPage() {
             </div>
             <ul>
               <li><b>Enrolling</b> — seats are open. The clock starts once the host&apos;s own seat is confirmed: <em>Quick</em> arenas stay open for 2 minutes, <em>Scheduled</em> arenas for the chosen window (5 minutes to 3 hours). Enrollment locks early when every seat is filled. A host who ends up alone gets one practice opponent so the round can run.</li>
-              <li><b>Live</b> — everyone trades YES/NO on the same market with the same starting vault. The arena shows who is above and below the cut in real time.</li>
-              <li><b>Settling</b> — open positions are closed at the market&apos;s YES price when the timer ends (100¢ or 0¢ if the market has a hard outcome). Players are ranked by vault value; ties go to whoever joined first.</li>
-              <li><b>Cut</b> — the top <code>ceil(alive / 2)</code> players survive. Everyone else is eliminated for that round.</li>
+              <li><b>Live</b> — the round opens at the asset&apos;s live price. Opening calls go in, then everyone trades UP/DOWN with the same starting vault. The arena shows who is above and below the cut in real time.</li>
+              <li><b>Settling</b> — at the deadline the asset&apos;s close is compared with its open: UP shares pay $1 if it closed higher, DOWN shares if lower (50¢ each if exactly flat). Players are ranked by vault value; ties go to whoever joined first.</li>
+              <li><b>Cut</b> — the top <code>ceil(alive / 2)</code> players survive. Everyone else is eliminated, keeps the vault they finished with, and withdraws it at the end.</li>
               <li><b>Complete</b> — the arena settles on-chain and every player can withdraw.</li>
             </ul>
           </Section>
@@ -171,16 +175,32 @@ withdraw  = remaining vault + prize share`}</pre>
           <Section id="recovery" title="Cancellations & recovery">
             <ul>
               <li><b>Host doesn&apos;t fund seat #1</b> — if the host rejects the deposit, or no seat is confirmed within 3 minutes of opening, the arena closes before anyone else can join.</li>
-              <li><b>Full refunds</b> — when an arena closes without starting, every wallet that deposited (including a deposit that confirmed after the close) is refunded its full seat. The refund opens about two minutes after the close; claim it from the arena page.</li>
+              <li><b>Your seat follows your deposit</b> — the escrow vault is the source of truth. If your deposit confirms but the page loses its connection before the seat is registered, the arena seats you from your on-chain entry automatically (before it locks, with the username and call you chose). An arena that has received a deposit can&apos;t be cancelled as empty.</li>
+              <li><b>Full refunds</b> — when an arena closes without starting, every wallet that deposited (including a deposit that confirmed after the close) is refunded its full seat. The refund opens about two minutes after the close; claim it from the arena page. A deposit that lands after the round has already started is refunded in full at settlement.</li>
               <li><b>Settlement never happens</b> — as a last resort, one hour after enrollment closes any depositor can call Recover directly on the escrow program and receive their full seat.</li>
+            </ul>
+          </Section>
+
+          <Section id="calls" title="UP / DOWN & the price oracle">
+            <p>
+              Every round asks one question — for example <em>&ldquo;Will Solana be up in 5 minutes?&rdquo;</em>
+              <b> UP</b> (a YES share) pays $1 if the asset closes the round above its opening price;
+              <b> DOWN</b> (a NO share) pays $1 if it closes below. A dead-flat close pays 50¢ each way.
+            </p>
+            <ul>
+              <li><b>Opening call</b> — when you take a seat you pick UP, DOWN or <em>decide later</em>. A call puts your whole vault on that side at the opening price (50¢ a share) the moment trading opens. You can change it until then, and switch or sell any time while the round is live. Other players can&apos;t see your call until the round starts.</li>
+              <li><b>Open</b> — the asset&apos;s spot price when enrollment locks. BTC, ETH and SOL are all recorded so parlay legs resolve over the same window.</li>
+              <li><b>Live price</b> — the UP price is the chance the asset finishes above the open, given the move so far and the time left, so positions gain or lose value as the asset moves.</li>
+              <li><b>Close</b> — the price sample nearest the deadline (the arena is polled every few seconds while anyone watches; otherwise the one-minute candle at the deadline).</li>
+              <li><b>Source</b> — Coinbase&apos;s public spot price, with Kraken as backup. If no price is available the lock or the settlement waits up to a minute; a round that still can&apos;t be priced settles at 50¢ both ways.</li>
             </ul>
           </Section>
 
           <Section id="trading" title="Trading in an arena">
             <p>
-              Buying YES or NO moves USDC from your vault into shares at the current price; selling
+              Buying UP or DOWN moves USDC from your vault into shares at the current price; selling
               closes the position at the live mark. Your vault value — cash plus marked positions —
-              decides your rank and is what the cut line compares.
+              decides your rank and is what the cut line compares. Trading closes at the deadline.
             </p>
             <p>
               When the arena runs on a real Panta market you can switch on <b>Also fill on Panta</b>.
@@ -199,8 +219,8 @@ withdraw  = remaining vault + prize share`}</pre>
 
           <Section id="parlays" title="Parlays & cash-out">
             <ul>
-              <li><b>2–5 legs</b> across the live BTC, ETH and SOL markets, paid from your vault.</li>
-              <li><b>Correlation block</b> — legs from the same correlation group can&apos;t be combined.</li>
+              <li><b>Up to 3 legs</b> — one UP/DOWN call each on BTC, ETH and SOL, paid from your vault. Every leg resolves on its asset&apos;s move over the round.</li>
+              <li><b>Correlation block</b> — one leg per asset.</li>
               <li><b>Variance fee</b> — the fee scales with the combined risk of the legs.</li>
               <li><b>Void fallback</b> — a leg voided at resolution counts as 0.5× instead of killing the ticket.</li>
             </ul>
@@ -245,6 +265,7 @@ net  = fair − fee   → credited to your vault`}</pre>
           <Section id="wallet" title="Wallets & signing">
             <p>Phantom, Backpack and Solflare are supported. Set the wallet to Solana {CLUSTER}.</p>
             <ul>
+              <li><b>Sign-in</b> — before your first seat or trade the wallet signs a free sign-in message (not a transaction). It proves the requests for your seat come from you; the session lasts a week on this browser and ends when you disconnect.</li>
               <li><b>Escrow deposit, claim and recover</b> are legacy transactions built by the server and signed by you.</li>
               <li><b>Panta orders and claims</b> are v0 transactions compiled in your browser from Panta&apos;s instructions.</li>
               <li>You pay the network fee for every transaction you sign. Private keys never leave your wallet.</li>
@@ -260,11 +281,13 @@ net  = fair − fee   → credited to your vault`}</pre>
               <thead><tr><th>Route</th><th>Purpose</th></tr></thead>
               <tbody>
                 <tr><td><code>GET /api/arenas</code></td><td>Open arenas (enrolling, live, settling, advancing)</td></tr>
-                <tr><td><code>GET /api/round?arena=</code></td><td>Round state, standings, cut line and price for one arena</td></tr>
+                <tr><td><code>GET /api/round?arena=</code></td><td>Round state, standings, cut line, UP price and live spot price for one arena</td></tr>
                 <tr><td><code>POST /api/round</code></td><td>Open a new arena (creates its on-chain vault)</td></tr>
-                <tr><td><code>POST /api/round/enroll</code></td><td>Take a seat; returns <code>needsDeposit</code> until the deposit signature is supplied</td></tr>
+                <tr><td><code>POST /api/auth/challenge</code> · <code>/verify</code></td><td>Wallet sign-in (message signature → session cookie)</td></tr>
+                <tr><td><code>POST /api/round/enroll</code></td><td>Take a seat (signed in); returns <code>needsDeposit</code> until your on-chain deposit exists, <code>pending</code> while it confirms</td></tr>
+                <tr><td><code>POST /api/round/call</code></td><td>Change your opening UP/DOWN call while enrolling</td></tr>
                 <tr><td><code>POST /api/round/cancel</code></td><td>Cancel an arena whose host never funded seat #1</td></tr>
-                <tr><td><code>POST /api/round/trade</code></td><td>Buy YES/NO or sell inside the arena</td></tr>
+                <tr><td><code>POST /api/round/trade</code></td><td>Buy UP/DOWN or sell inside the arena (signed in)</td></tr>
                 <tr><td><code>POST /api/round/parlay</code> · <code>/cashout</code></td><td>Place or cash out a parlay</td></tr>
                 <tr><td><code>GET /api/escrow/status</code></td><td>On-chain or practice mode</td></tr>
                 <tr><td><code>GET /api/escrow/balance?wallet=</code></td><td>Devnet USDC and SOL for a wallet</td></tr>
@@ -282,7 +305,8 @@ net  = fair − fee   → credited to your vault`}</pre>
               <tbody>
                 <tr><td>Escrow program</td><td>Holding deposits</td><td>Funds only move with your signature</td></tr>
                 <tr><td>Oracle Rumble server</td><td>Running rounds and recording results</td><td>Recover returns your full seat after the deadline</td></tr>
-                <tr><td>Panta</td><td>Market prices and mirrored orders</td><td>Arena trading continues on the last known price</td></tr>
+                <tr><td>Price oracle (Coinbase, Kraken)</td><td>Opening and closing prices</td><td>The round waits up to a minute, then settles at 50¢ both ways</td></tr>
+                <tr><td>Panta</td><td>Positions and mirrored orders</td><td>Arena trading is unaffected</td></tr>
                 <tr><td>Your wallet</td><td>Every signature</td><td>Nothing moves without it</td></tr>
               </tbody>
             </table>
@@ -297,6 +321,10 @@ net  = fair − fee   → credited to your vault`}</pre>
               <details>
                 <summary>Can the host take my deposit?</summary>
                 <p>No. The host only chooses the settings. Deposits sit in the escrow program and only your signature can withdraw them.</p>
+              </details>
+              <details>
+                <summary>Do I have to pick UP or DOWN when I sit down?</summary>
+                <p>No — choose <em>decide later</em> and trade once the round is live. If you do pick, your whole vault goes on that side at the opening price, and you can still switch or sell during the round.</p>
               </details>
               <details>
                 <summary>What if I close the tab mid-round?</summary>

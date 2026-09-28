@@ -1,21 +1,51 @@
 import { NextResponse } from "next/server";
+import { requireWallet } from "@/lib/session";
 import { getActiveRound, getLatestRound, mutateActiveRound } from "@/lib/round-store";
-import { PUBLIC_ARENA, enroll, humanCount, makeEntrant, normalizeArenaCode } from "@/lib/royale";
+import { normalizeArenaCode, redactOpeningCalls, seatPlayer, type Side } from "@/lib/royale";
 import { confirmSignature, escrowReady, verifyPlayerDeposited } from "@/lib/escrow-server";
+import { validateUsername } from "@/lib/username";
+
+export const dynamic = "force-dynamic";
+
+/** How long to wait for a just-signed deposit to show up on chain. */
+const DEPOSIT_WAIT_MS = 25_000;
 
 /**
- * POST /api/round/enroll  { wallet, nickname, arena?, escrowSignature? }
+ * Wait (HTTP polling) until the wallet's PlayerEntry exists in the vault.
+ * The PDA — not the signature — is the proof of payment; the signature is
+ * only used to fail fast when the tx itself errored on chain.
+ */
+async function waitForDeposit(wallet: string, roundVault: string, signature?: string): Promise<{ ok: boolean; err?: string; pending?: boolean }> {
+  const deadline = Date.now() + DEPOSIT_WAIT_MS;
+  while (true) {
+    const chk = await verifyPlayerDeposited(wallet, roundVault);
+    if (chk.ok) return { ok: true };
+    if (signature) {
+      const st = await confirmSignature(signature, 0);
+      if (!st.ok && !st.pending) return { ok: false, err: `deposit failed on chain: ${st.err}` };
+    }
+    if (!signature || Date.now() >= deadline) {
+      return { ok: false, pending: !!signature, err: signature ? "deposit still confirming" : "no deposit found for this wallet" };
+    }
+    await new Promise((r) => setTimeout(r, 1_500));
+  }
+}
+
+/**
+ * POST /api/round/enroll  { wallet, nickname, arena?, escrowSignature?, openingCall? }
  *
  * Enroll a wallet into an arena's current enrolling round.
  *
- * Ledger-only arenas (PUBLIC or when escrow isn't deployed): single-step —
- * the caller just enrolls and the entry fee is credited to the pool as a
- * ledger figure.
+ * Ledger-only arenas (PUBLIC or when escrow isn't deployed): single step.
  *
- * On-chain arenas (Round.escrow set): the caller MUST first sign + broadcast
- * a Deposit tx (obtained from POST /api/escrow/tx {action:"deposit"}) and
- * pass the resulting `escrowSignature`. We confirm the signature on chain
- * before crediting the ledger entry. Prevents free enrollment.
+ * On-chain arenas: the wallet's PlayerEntry PDA in the arena vault is the
+ * seat ticket. The caller signs a Deposit tx (POST /api/escrow/tx) and
+ * posts the signature; we wait for the PDA over HTTP and seat them. A
+ * wallet that already deposited can re-post without a signature and gets
+ * its seat — a dropped request never strands a paid deposit.
+ *
+ * Responses: 200 seated · 202 { pending } deposit still confirming, retry ·
+ * 402 { needsDeposit } · 409 closed/full/refundable.
  */
 export async function POST(request: Request) {
   const body = (await request.json()) as {
@@ -23,17 +53,23 @@ export async function POST(request: Request) {
     nickname?: string;
     arena?: string;
     escrowSignature?: string;
+    openingCall?: Side | null;
   };
   if (!body?.wallet) return NextResponse.json({ error: "wallet required" }, { status: 400 });
+  // Only the wallet itself (signed-in session) may act for its seat.
+  const denied = requireWallet(request, body.wallet);
+  if (denied) return denied;
   const arena = normalizeArenaCode(body.arena);
+  const openingCall: Side | null = body.openingCall === "YES" || body.openingCall === "NO" ? body.openingCall : null;
+  const name = validateUsername(body.nickname ?? "");
+  const nickname = name.ok ? name.value : "";
 
-  // Peek to see whether this arena requires an on-chain deposit.
   const peek = await getActiveRound(arena);
   if (!peek) {
     // A deposit can confirm after the arena closed. Tell the player their
     // funds are safe and where to get them back, rather than a bare 404.
     const latest = await getLatestRound(arena);
-    if (latest?.escrow && body.escrowSignature && (await verifyPlayerDeposited(body.wallet, latest.escrow.roundVault)).ok) {
+    if (latest?.escrow && (await verifyPlayerDeposited(body.wallet, latest.escrow.roundVault)).ok) {
       return NextResponse.json({
         error: `Arena ${arena} closed before your seat was registered. Your deposit is safe in escrow — open the arena to claim a full refund.`,
         refundable: true, arena
@@ -42,89 +78,63 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: "this arena is no longer taking players", arena }, { status: 404 });
   }
 
-  // BUG D fix — if this wallet is already enrolled, short-circuit with success.
-  // Prevents a page reload from asking the wallet to sign a Deposit that would
-  // then fail on-chain with AlreadyInitialized.
+  // Already seated → success (page reloads never ask for a second deposit).
   const existing = peek.entrants.find((e) => e.wallet === body.wallet);
   if (existing) {
-    return NextResponse.json({ round: peek, arena, entrantId: existing.id, already: true });
+    return NextResponse.json({ round: redactOpeningCalls(peek, body.wallet), arena, entrantId: existing.id, already: true });
   }
 
-  // BUG E fix — if the arena is escrow-backed but the server can no longer
-  // reach the escrow (env var removed, host key missing), REFUSE. Never fall
-  // through to ledger-only enrollment for an arena that expects on-chain USDC.
+  // Never fall back to ledger-only for an arena that expects on-chain USDC.
   if (peek.escrow && !escrowReady()) {
-    return NextResponse.json({
-      error: "escrow service unavailable — try again later",
-      escrowDown: true
-    }, { status: 503 });
+    return NextResponse.json({ error: "escrow service unavailable — try again later", escrowDown: true }, { status: 503 });
   }
 
-  const needsDeposit = escrowReady() && !!peek.escrow;
-  let escrowSignature: string | undefined;
+  const needsDeposit = !!peek.escrow;
   if (needsDeposit) {
-    // Only enrolling rounds accept deposits. Refuse early so the client
-    // doesn't get a wallet prompt for a tx that will fail on-chain.
-    if (peek.status !== "enrolling") {
-      return NextResponse.json({ error: `enrollment closed (round is ${peek.status})` }, { status: 409 });
+    const deposited = await waitForDeposit(body.wallet, peek.escrow!.roundVault, body.escrowSignature);
+    if (!deposited.ok) {
+      if (deposited.pending) {
+        return NextResponse.json({ pending: true, error: "Your deposit is still confirming — hold on." }, { status: 202 });
+      }
+      if (body.escrowSignature) return NextResponse.json({ error: deposited.err }, { status: 400 });
+      // No deposit yet: only an enrolling arena with a free seat takes one.
+      if (peek.status !== "enrolling") {
+        return NextResponse.json({ error: `enrollment closed (round is ${peek.status})` }, { status: 409 });
+      }
+      if (peek.entrants.filter((e) => !e.isBot).length >= peek.config.capacity) {
+        return NextResponse.json({ error: "arena is full" }, { status: 409 });
+      }
+      return NextResponse.json({ error: "deposit required", needsDeposit: true, escrow: { roundVault: peek.escrow!.roundVault, mint: peek.escrow!.mint } }, { status: 402 });
     }
-    if (peek.entrants.filter((e) => !e.isBot).length >= peek.config.capacity) {
-      return NextResponse.json({ error: "arena is full" }, { status: 409 });
-    }
-    if (!body.escrowSignature) {
-      return NextResponse.json({
-        error: "deposit required",
-        needsDeposit: true,
-        escrow: peek.escrow
-      }, { status: 402 }); // Payment Required
-    }
-    // Confirm the signature landed AND the PlayerEntry PDA now exists — the
-    // ground truth for "this wallet has deposited into THIS arena." Signature
-    // alone is not enough (an attacker could paste any confirmed sig).
-    const conf = await confirmSignature(body.escrowSignature);
-    if (!conf.ok) return NextResponse.json({ error: `deposit not confirmed: ${conf.err ?? "unknown"}` }, { status: 400 });
-    const chk = await verifyPlayerDeposited(body.wallet, peek.escrow!.roundVault);
-    if (!chk.ok) return NextResponse.json({ error: `on-chain deposit missing: ${chk.err ?? "unknown"}` }, { status: 400 });
-    escrowSignature = body.escrowSignature;
   }
 
   let entrantId = "";
   let enrollError: string | undefined;
+  let closedWithDeposit = false;
   const { round, error } = await mutateActiveRound(arena, (r) => {
-    if (r.status !== "enrolling") { enrollError = "enrollment closed for this round"; return; }
-    // Replay guard runs INSIDE the advisory lock so two concurrent enrolls
-    // with the same signature can't both make it through.
-    if (escrowSignature && r.escrow) {
-      const sigMark = escrowSignature.slice(0, 12);
-      if (r.escrow.history.some((h) => h.includes(sigMark))) {
-        enrollError = "signature already used"; return;
-      }
+    const already = r.entrants.find((e) => e.wallet === body.wallet);
+    if (already) { entrantId = already.id; return; } // seated by the keeper meanwhile
+    const res = seatPlayer(r, body.wallet, nickname, {
+      signature: body.escrowSignature,
+      openingCall
+    });
+    if (!res.ok) {
+      enrollError = res.reason;
+      closedWithDeposit = needsDeposit;
+      return;
     }
-    // Also gate: this wallet can only enroll once. The on-chain PlayerEntry
-    // PDA already prevents double-deposits, but we mirror it in the ledger
-    // to give a fast, arena-scoped answer without needing another RPC call.
-    if (r.entrants.some((e) => e.wallet === body.wallet)) {
-      enrollError = "wallet already enrolled"; return;
-    }
-    const nickname = (body.nickname || body.wallet.slice(0, 4)).slice(0, 16);
-    const firstPlayer = humanCount(r) === 0;
-    const entrant = makeEntrant(r, body.wallet, nickname, false);
-    const res = enroll(r, entrant);
-    if (!res.ok) { enrollError = res.reason; return; }
-    entrantId = entrant.id;
-    // A hosted arena's enrollment clock starts once the first seat (the
-    // host's) is confirmed — wallet approval time never eats into it.
-    if (firstPlayer && r.arenaCode !== PUBLIC_ARENA) {
-      r.enrollDeadline = Math.max(r.enrollDeadline, Date.now() + r.config.enrollmentSec * 1000);
-    }
-    if (escrowSignature && r.escrow) r.escrow.history.push(`Deposit ${entrant.nickname} ✓ ${escrowSignature.slice(0, 12)}…`);
-    // No eager bot seeding — the roster shows the real players who joined.
-    // A thin backfill only happens at lock, and only if we're below the
-    // minimum to run a game (see round-keeper tick).
+    entrantId = res.entrant.id;
+    if (r.escrow?.pendingSeats) delete r.escrow.pendingSeats[body.wallet];
   });
 
   if (!round) return NextResponse.json({ error: "no active round in this arena", arena }, { status: 404 });
-  if (enrollError) return NextResponse.json({ error: enrollError }, { status: 409 });
+  if (enrollError) {
+    // Paid but the round locked or filled first: the deposit is refunded at
+    // settlement (every on-chain entry is settled, seated or not).
+    return NextResponse.json(closedWithDeposit
+      ? { error: `${enrollError} Your deposit is safe — it's returned in full when this arena settles.`, refundable: true }
+      : { error: enrollError }, { status: 409 });
+  }
   if (error) return NextResponse.json({ error }, { status: 500 });
-  return NextResponse.json({ round, arena, entrantId });
+  return NextResponse.json({ round: redactOpeningCalls(round, body.wallet), arena, entrantId });
 }

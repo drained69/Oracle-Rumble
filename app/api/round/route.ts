@@ -1,8 +1,9 @@
 import { NextResponse } from "next/server";
 import { STORE_ENABLED, withKeeperLock } from "@/lib/round-store";
-import { advanceToNext, bootstrapRound, buildPriceMap, marketYesPrice, pickMarket, tick } from "@/lib/round-keeper";
-import { PUBLIC_ARENA, cutLine, humanCount, newArenaCode, normalizeArenaCode, standings, type Round } from "@/lib/royale";
+import { advanceToNext, bootstrapRound, livePricing, oraclePriceMap, pickMarket, tick, yesAfterTick, type Pricing } from "@/lib/round-keeper";
+import { PUBLIC_ARENA, cutLine, humanCount, newArenaCode, normalizeArenaCode, redactOpeningCalls, seatPlayer, standings, type Round } from "@/lib/royale";
 import { escrowReady, initArenaOnChain } from "@/lib/escrow-server";
+import { LOCK_HOLD_MAX_MS, unseatedDepositors, type SeatSync } from "@/lib/seat-sync";
 
 export const dynamic = "force-dynamic";
 
@@ -21,19 +22,19 @@ const HOLD_MS = 20_000; // keep a finished round on screen this long
  * lock so concurrent reads to one arena serialize while different arenas run
  * in parallel. External I/O is fetched BEFORE the lock.
  */
-async function currentWithTick(arena: string, allowBootstrap: boolean): Promise<Round | null> {
+async function currentWithTick(arena: string, allowBootstrap: boolean): Promise<{ round: Round | null; pricing: Pricing; pricedId?: string }> {
   // Phase 1 — unlocked peek + external I/O (kept out of the lock).
   const peek = await import("@/lib/round-store").then((m) => m.getActiveRound(arena));
-  const priceMarketId = peek?.config.marketId;
-  const yesPrice = priceMarketId ? await marketYesPrice(priceMarketId) : 50;
-  const priceMap = buildPriceMap(priceMarketId ? { marketId: priceMarketId, yesPrice } : undefined);
+  const pricing = await livePricing(peek);
   const mayAdvance = peek?.status === "live";
-  const nextMarket = mayAdvance ? await pickMarket(priceMarketId) : null;
+  const nextMarket = mayAdvance ? await pickMarket(peek?.config.marketId) : null;
   // Only the walk-in PUBLIC arena auto-boots. Hosted arenas stay empty when done.
   const bootRound = !peek && allowBootstrap ? await bootstrapRound(undefined, arena) : null;
+  // Paid-but-unseated wallets (escrow arenas while enrolling).
+  const sync = await unseatedDepositors(peek);
 
   // Phase 2 — locked, atomic keeper (per-arena lock).
-  return withKeeperLock(arena, async (ctx) => {
+  const round = await withKeeperLock(arena, async (ctx) => {
     let round = await ctx.getActive();
     if (!round) {
       const latest = await ctx.getLatest();
@@ -46,9 +47,15 @@ async function currentWithTick(arena: string, allowBootstrap: boolean): Promise<
     }
 
     await ctx.cancelOtherActive(round.id);
-    tick(round, yesPrice, priceMap);
+    if (peek?.id === round.id && seatDepositors(round, sync)) {
+      // Couldn't read the vault right at the lock — wait a few polls rather
+      // than start (or cancel) the round without someone who paid.
+      await ctx.save(round);
+      return round;
+    }
+    tick(round, pricing);
     if (round.status === "advancing") {
-      const next = advanceToNext(round, nextMarket);
+      const next = advanceToNext(round, nextMarket, pricing.spots);
       await ctx.save(round);
       await ctx.save(next);
       await ctx.cancelOtherActive(next.id);
@@ -58,14 +65,35 @@ async function currentWithTick(arena: string, allowBootstrap: boolean): Promise<
     }
     return round;
   });
+  return { round, pricing, pricedId: peek?.id };
+}
+
+/**
+ * Seat every wallet that deposited on chain but isn't on the roster yet.
+ * Returns true when the lock should be held because the chain check failed.
+ */
+function seatDepositors(round: Round, sync: SeatSync): boolean {
+  if (round.status !== "enrolling") return false;
+  for (const wallet of sync.wallets) {
+    if (round.entrants.some((e) => e.wallet === wallet)) continue;
+    const pending = round.escrow?.pendingSeats?.[wallet];
+    const res = seatPlayer(round, wallet, pending?.nickname ?? "", {
+      openingCall: pending?.openingCall ?? null,
+      restored: true
+    });
+    if (res.ok && round.escrow?.pendingSeats) delete round.escrow.pendingSeats[wallet];
+  }
+  const now = Date.now();
+  return sync.failed && now >= round.enrollDeadline && now < round.enrollDeadline + LOCK_HOLD_MAX_MS;
 }
 
 export async function GET(request: Request) {
   try {
     const url = new URL(request.url);
     const arena = normalizeArenaCode(url.searchParams.get("arena"));
+    const viewer = url.searchParams.get("wallet");
     const allowBootstrap = arena === PUBLIC_ARENA;
-    const round = await currentWithTick(arena, allowBootstrap);
+    const { round, pricing, pricedId } = await currentWithTick(arena, allowBootstrap);
     if (!round) {
       const status = arena === PUBLIC_ARENA ? 503 : 404;
       const error = arena === PUBLIC_ARENA
@@ -73,13 +101,21 @@ export async function GET(request: Request) {
         : `arena ${arena} not found`;
       return NextResponse.json({ round: null, arena, error }, { status });
     }
-    const yesPrice = await marketYesPrice(round.config.marketId);
+    // Price the round that is actually returned (it can differ from the one
+    // priced before the lock: a fresh boot, or the next royale round).
+    const yesPrice = round.id === pricedId || round.status === "live"
+      ? yesAfterTick(round, pricing)
+      : (await livePricing(round)).yesPrice;
+    const pub = redactOpeningCalls(round, viewer);
+    const asset = round.config.asset;
     return NextResponse.json({
-      round,
+      round: pub,
       arena: round.arenaCode,
       yesPrice,
+      prices: round.id === pricedId ? oraclePriceMap(round, pricing.spots) : undefined,
+      spot: (pricing.spots as Record<string, number | undefined>)[asset] ?? round.oracle?.last?.[asset] ?? null,
       cutLine: cutLine(round),
-      standings: standings(round),
+      standings: standings(pub),
       persisted: STORE_ENABLED
     });
   } catch (err) {
@@ -157,9 +193,9 @@ export async function POST(request: Request) {
   });
 
   if ("conflict" in result) {
-    return NextResponse.json({ error: "a rumble is already in progress in this arena", round: result.conflict }, { status: 409 });
+    return NextResponse.json({ error: "a rumble is already in progress in this arena", round: result.conflict ? redactOpeningCalls(result.conflict) : null }, { status: 409 });
   }
-  const yesPrice = await marketYesPrice(fresh.config.marketId);
+  const { yesPrice } = await livePricing(fresh);
   return NextResponse.json({
     round: fresh,
     arena: fresh.arenaCode,

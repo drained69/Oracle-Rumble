@@ -1,6 +1,7 @@
 /** Browser helpers for the Market Royale round API — every call is arena-scoped. */
 
 import type { Entrant, Round, RoundConfig } from "@/lib/royale";
+import { ensureSession, sessionLost } from "@/lib/session-client";
 
 const CONFIRM_TIMEOUT_MS = 60_000;
 const SOLANA_RPC = process.env.NEXT_PUBLIC_SOLANA_RPC ?? "https://api.devnet.solana.com";
@@ -44,15 +45,36 @@ async function signAndBroadcastLegacy(base64: string): Promise<string> {
 
   const deadline = Date.now() + CONFIRM_TIMEOUT_MS;
   while (Date.now() < deadline) {
+    let failed: unknown = null;
     try {
       const st = await conn.getSignatureStatus(signature, { searchTransactionHistory: true });
       const s = st.value?.confirmationStatus;
-      if (s === "confirmed" || s === "finalized") return signature;
-      if (st.value?.err) throw new Error(JSON.stringify(st.value.err));
-    } catch { /* transient — keep polling */ }
+      if (st.value?.err) failed = st.value.err;
+      else if (s === "confirmed" || s === "finalized") return signature;
+    } catch { /* transient RPC error — keep polling */ }
+    if (failed) throw new Error(`Transaction failed on chain: ${JSON.stringify(failed)}`);
     await new Promise((r) => setTimeout(r, 1200));
   }
   return signature; // return best-effort; server confirms too
+}
+
+/**
+ * POST as the signed-in wallet. Signs in first if needed (one free message
+ * signature), and once more if the server says the session is gone.
+ */
+async function postAsWallet(url: string, wallet: string, body: unknown): Promise<{ status: number; data: Record<string, unknown> }> {
+  const auth = await ensureSession(wallet);
+  if (!auth.ok) return { status: 401, data: { error: auth.error, needsAuth: true } };
+  const send = () => fetch(url, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
+  let res = await send();
+  if (res.status === 401) {
+    sessionLost();
+    const again = await ensureSession(wallet);
+    if (!again.ok) return { status: 401, data: { error: again.error, needsAuth: true } };
+    res = await send();
+  }
+  const data = (await res.json().catch(() => ({}))) as Record<string, unknown>;
+  return { status: res.status, data };
 }
 
 /** Host-tunable fields of a rumble (the rest are fixed by the arena). */
@@ -69,28 +91,80 @@ export type RoundView = {
   yesPrice: number;
   cutLine: number;
   standings: Entrant[];
+  /** UP price (cents) of every board market for this round — parlay legs. */
+  prices?: Record<string, number>;
+  /** Latest USD spot price of the round's asset. */
+  spot?: number | null;
   persisted?: boolean;
   error?: string;
 };
 
-export async function getRound(arena?: string): Promise<RoundView> {
-  const qs = arena ? `?arena=${encodeURIComponent(arena)}` : "";
-  const res = await fetch(`/api/round${qs}`, { cache: "no-store" });
+export async function getRound(arena?: string, wallet?: string | null): Promise<RoundView> {
+  const qs = new URLSearchParams();
+  if (arena) qs.set("arena", arena);
+  if (wallet) qs.set("wallet", wallet); // lets the server show me my own opening call
+  const q = qs.toString();
+  const res = await fetch(`/api/round${q ? `?${q}` : ""}`, { cache: "no-store" });
   return res.json();
 }
+
+/** UP = YES, DOWN = NO, null = decide once the round is live. */
+export type OpeningCall = "YES" | "NO" | null;
+
+export type EnrollResult = {
+  round?: Round;
+  arena?: string;
+  entrantId?: string;
+  error?: string;
+  needsDeposit?: boolean;
+  already?: boolean;
+  escrowDown?: boolean;
+  refundable?: boolean;
+  /** Deposit still confirming on chain — retry shortly. */
+  pending?: boolean;
+  /** A deposit tx was signed and sent — never cancel the arena after this. */
+  deposited?: boolean;
+  escrowSignature?: string;
+};
 
 /**
  * Enroll a wallet into an arena. When the arena runs on-chain escrow the
  * server responds with 402 { needsDeposit: true }; the caller must sign a
  * Deposit tx and re-post with the resulting signature.
  */
-export async function enrollRound(wallet: string, nickname: string, arena?: string, escrowSignature?: string): Promise<{ round?: Round; arena?: string; entrantId?: string; error?: string; needsDeposit?: boolean; already?: boolean; escrowDown?: boolean; refundable?: boolean }> {
-  const res = await fetch("/api/round/enroll", {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({ wallet, nickname, arena, escrowSignature })
-  });
-  return res.json();
+export async function enrollRound(wallet: string, nickname: string, arena?: string, escrowSignature?: string, openingCall: OpeningCall = null): Promise<EnrollResult> {
+  try {
+    const { status, data: raw } = await postAsWallet("/api/round/enroll", wallet, { wallet, nickname, arena, escrowSignature, openingCall });
+    const data = raw as EnrollResult;
+    if (status >= 500 && !data.error) return { pending: true, error: "server busy" };
+    if (status === 202) return { ...data, pending: true };
+    if (status >= 500) return { ...data, pending: !data.escrowDown };
+    return data;
+  } catch {
+    return { pending: true, error: "network error" };
+  }
+}
+
+/**
+ * Register the seat for a deposit that has been sent. Retries while the
+ * deposit is confirming or the server is unreachable — the on-chain entry is
+ * the ticket, so this can safely be repeated. (If every try fails the
+ * server's keeper still seats the wallet from its on-chain entry.)
+ */
+async function finishSeat(wallet: string, nickname: string, arena: string | undefined, sig: string | undefined, openingCall: OpeningCall): Promise<EnrollResult> {
+  let last: EnrollResult = {};
+  for (let attempt = 0; attempt < 8; attempt++) {
+    last = await enrollRound(wallet, nickname, arena, sig, openingCall);
+    if (!last.pending) return last;
+    await new Promise((r) => setTimeout(r, 3_000));
+  }
+  return {
+    ...last,
+    pending: true,
+    error: sig
+      ? "Your deposit hasn't confirmed yet. If it lands, your seat appears here automatically — if it doesn't, nothing was taken and you can try again."
+      : "Registering your seat is taking longer than usual — it will appear here automatically."
+  };
 }
 
 /**
@@ -98,28 +172,30 @@ export async function enrollRound(wallet: string, nickname: string, arena?: stri
  * the connected wallet, then finalize the enrollment. Falls back cleanly to
  * ledger enroll when the arena is not escrow-backed.
  */
-export async function enrollWithEscrow(wallet: string, nickname: string, arena?: string): Promise<{ round?: Round; entrantId?: string; escrowSignature?: string; already?: boolean; error?: string; refundable?: boolean }> {
-  // Attempt 1: plain ledger enroll. Returns 402 if the arena needs a deposit,
-  // or a fast-path `already: true` if this wallet is already enrolled.
-  const first = await enrollRound(wallet, nickname, arena);
+export async function enrollWithEscrow(wallet: string, nickname: string, arena?: string, openingCall: OpeningCall = null): Promise<EnrollResult> {
+  // Attempt 1: plain enroll. Seats a ledger-only arena, a wallet that is
+  // already seated, or one whose deposit already landed; otherwise 402.
+  const auth = await ensureSession(wallet);
+  if (!auth.ok) return { error: auth.error };
+  const first = await enrollRound(wallet, nickname, arena, undefined, openingCall);
+  if (first.pending) return finishSeat(wallet, nickname, arena, undefined, openingCall);
   if (!first.needsDeposit) return first;
 
   // Build a Deposit tx from the server.
-  const txRes = await fetch("/api/escrow/tx", {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({ action: "deposit", wallet, arena })
-  }).then((r) => r.json());
-  if (txRes.escrow === "inactive") return { error: "escrow is inactive on the server" };
-  // If the server tells us this wallet has already deposited on-chain, retry
-  // the enroll — the ledger probably just doesn't know yet. No signing needed.
-  if (txRes.alreadyDeposited) {
-    // We don't have the sig, but PDA exists — refetch enrollment. If the
-    // server-side replay check bounces us, that's fine (already-enrolled path).
-    const re = await enrollRound(wallet, nickname, arena);
-    return re.round ? re : { error: "already deposited on-chain but ledger enroll blocked — reload the arena" };
+  let txRes: { escrow?: string; alreadyDeposited?: boolean; error?: string; base64?: string };
+  try {
+    txRes = await fetch("/api/escrow/tx", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ action: "deposit", wallet, arena, nickname, openingCall })
+    }).then((r) => r.json());
+  } catch {
+    return { error: "Couldn't reach the server to prepare your deposit — try again." };
   }
-  if (txRes.error) return { error: txRes.error };
+  if (txRes.escrow === "inactive") return { error: "escrow is inactive on the server" };
+  // Already paid on chain → just claim the seat, no signing.
+  if (txRes.alreadyDeposited) return { ...(await finishSeat(wallet, nickname, arena, undefined, openingCall)), deposited: true };
+  if (txRes.error || !txRes.base64) return { error: txRes.error ?? "could not build the deposit" };
 
   // Sign + broadcast via the connected wallet.
   let sig: string;
@@ -127,8 +203,18 @@ export async function enrollWithEscrow(wallet: string, nickname: string, arena?:
   catch (err) { return { error: err instanceof Error ? err.message : "wallet signing failed" }; }
   if (!sig) return { error: "wallet did not return a signature" };
 
-  // Finalize with the signature.
-  return enrollRound(wallet, nickname, arena, sig);
+  const done = await finishSeat(wallet, nickname, arena, sig, openingCall);
+  return { ...done, deposited: true, escrowSignature: sig };
+}
+
+/** Change my opening call while the arena is still enrolling. */
+export async function setOpeningCall(wallet: string, arena: string, call: OpeningCall): Promise<{ ok?: boolean; error?: string; needsAuth?: boolean }> {
+  try {
+    const { data } = await postAsWallet("/api/round/call", wallet, { wallet, arena, call });
+    return data as { ok?: boolean; error?: string; needsAuth?: boolean };
+  } catch {
+    return { error: "network error" };
+  }
 }
 
 /** Ask the server to sign + submit SettlePlayer + CloseSettlement for the arena. */
@@ -157,24 +243,24 @@ export async function claimFromEscrow(wallet: string, arena: string, recover = f
 }
 
 export async function tradeRound(args: { wallet: string; action: "buy" | "sell"; side?: "YES" | "NO"; usdc?: number; arena?: string }): Promise<{ round?: Round; entrant?: Entrant; yesPrice?: number; standings?: Entrant[]; error?: string }> {
-  const res = await fetch("/api/round/trade", {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify(args)
-  });
-  return res.json();
+  try {
+    const { data } = await postAsWallet("/api/round/trade", args.wallet, args);
+    return data as { round?: Round; entrant?: Entrant; yesPrice?: number; standings?: Entrant[]; error?: string };
+  } catch {
+    return { error: "network error — try again" };
+  }
 }
 
 export type ParlayLegInput = { marketId: string; side: "YES" | "NO" };
 
 /** Place a native parlay from the vault into the live round. */
 export async function placeParlayApi(wallet: string, legs: ParlayLegInput[], stakeUsdc: number, arena?: string): Promise<{ round?: Round; entrant?: Entrant; error?: string }> {
-  const res = await fetch("/api/round/parlay", {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({ wallet, legs, stakeUsdc, arena })
-  });
-  return res.json();
+  try {
+    const { data } = await postAsWallet("/api/round/parlay", wallet, { wallet, legs, stakeUsdc, arena });
+    return data as { round?: Round; entrant?: Entrant; error?: string };
+  } catch {
+    return { error: "network error — try again" };
+  }
 }
 
 /**
@@ -197,12 +283,12 @@ export async function cashOutParlayApi(wallet: string, ticketId: string, arena: 
   };
   error?: string;
 }> {
-  const res = await fetch("/api/round/parlay/cashout", {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({ wallet, ticketId, arena })
-  });
-  return res.json();
+  try {
+    const { data } = await postAsWallet("/api/round/parlay/cashout", wallet, { wallet, ticketId, arena });
+    return data as Awaited<ReturnType<typeof cashOutParlayApi>>;
+  } catch {
+    return { error: "network error — try again" };
+  }
 }
 
 /**

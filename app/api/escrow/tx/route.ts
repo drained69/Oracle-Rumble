@@ -1,8 +1,13 @@
 import { NextResponse } from "next/server";
+import { sessionWallet } from "@/lib/session";
 import { PublicKey } from "@solana/web3.js";
 import { buildDepositTx, buildWithdrawTx, escrowReady, playerBalances, readPlayerEntry, verifyPlayerDeposited } from "@/lib/escrow-server";
-import { getActiveRound, getLatestRound } from "@/lib/round-store";
-import { normalizeArenaCode } from "@/lib/royale";
+import { getActiveRound, getLatestRound, mutateActiveRound } from "@/lib/round-store";
+import { normalizeArenaCode, type Side } from "@/lib/royale";
+import { validateUsername } from "@/lib/username";
+
+/** Cap on remembered pending seats per arena (anti-spam). */
+const MAX_PENDING_SEATS = 64;
 
 export const dynamic = "force-dynamic";
 
@@ -25,6 +30,8 @@ export async function POST(request: Request) {
     action: "deposit" | "claim" | "recover";
     wallet: string;
     arena?: string;
+    nickname?: string;
+    openingCall?: Side | null;
   };
   if (!escrowReady()) {
     return NextResponse.json({ escrow: "inactive" });
@@ -107,6 +114,19 @@ export async function POST(request: Request) {
       // a wallet prompt for a tx that would fail with AccountMismatch.
       const dep = await verifyPlayerDeposited(body.wallet, escrow.roundVault);
       if (!dep.ok) return NextResponse.json({ error: "this wallet did not deposit into this arena" }, { status: 403 });
+    }
+
+    if (body.action === "deposit" && sessionWallet(request) === body.wallet) {
+      // Remember who this wallet wants to be, so if its deposit lands but the
+      // enroll request never arrives the keeper still seats it correctly.
+      const name = validateUsername(body.nickname ?? "");
+      const openingCall = body.openingCall === "YES" || body.openingCall === "NO" ? body.openingCall : null;
+      await mutateActiveRound(arena, (r) => {
+        if (r.status !== "enrolling" || !r.escrow) return;
+        const pending = (r.escrow.pendingSeats ??= {});
+        if (!pending[body.wallet] && Object.keys(pending).length >= MAX_PENDING_SEATS) return;
+        pending[body.wallet] = { nickname: name.ok ? name.value : "", openingCall };
+      }).catch(() => { /* best effort — enroll carries the same data */ });
     }
 
     const res = body.action === "deposit"

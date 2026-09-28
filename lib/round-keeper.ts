@@ -11,6 +11,7 @@
 import { PANTA_LIVE, pantaFetch, type PantaMarket } from "@/lib/panta";
 import { markets as directionMarkets, findMockMarket } from "@/lib/arena-data";
 import { ASSET_SYMBOLS, assetOfMarketId, getAsset, type AssetSymbol } from "@/lib/assets";
+import { resolvedCents, spotPrices, spotPricesAt, upCents, type Spots } from "@/lib/oracle";
 import {
   advance,
   botTick,
@@ -20,6 +21,7 @@ import {
   humanCount,
   markToMarket,
   normalizeConfig,
+  placeOpeningCalls,
   PUBLIC_ARENA,
   settle,
   type PriceMap,
@@ -29,6 +31,79 @@ import {
 
 /** How long a new hosted arena waits for the host's seat deposit to confirm. */
 const HOST_SEAT_GRACE_MS = 3 * 60_000;
+/** Max time to hold a lock or a settlement waiting for the price oracle. */
+const ORACLE_WAIT_MS = 60_000;
+/** A spot price read this soon after the deadline counts as the close. */
+const CLOSE_FRESH_MS = 15_000;
+
+/** Prices a keeper tick / trade runs at. */
+export type Pricing = {
+  yesPrice: number;      // the round market's UP (YES) price, cents
+  priceMap: PriceMap;    // every board market's UP price, cents (parlay legs)
+  spots: Spots;          // latest USD spot per asset
+  closeSpots?: Spots;    // USD per asset at the live deadline (late settles)
+};
+
+/** Is this round on one of our BTC/ETH/SOL direction markets (oracle-resolved)? */
+export function isDirectionRound(round: Round): boolean {
+  return !!assetOfMarketId(round.config.marketId);
+}
+
+/**
+ * UP price of every direction market for a round right now: 50 before the
+ * round opens, the live probability while trading, the resolved value once
+ * the round has a close.
+ */
+export function oraclePriceMap(round: Round, spots: Spots, now = Date.now()): PriceMap {
+  const map: PriceMap = {};
+  const o = round.oracle;
+  const secondsLeft = Math.max(0, (round.liveDeadline - now) / 1000);
+  for (const m of directionMarkets) {
+    const a = m.asset as AssetSymbol;
+    if (!o?.open?.[a]) { map[m.id] = 50; continue; }
+    if (o.close) { map[m.id] = resolvedCents(o.open[a], o.close[a]); continue; }
+    map[m.id] = upCents(a, o.open[a], spots[a] ?? o.last?.[a], secondsLeft);
+  }
+  return map;
+}
+
+/** Record the opening prices when a direction round starts trading. */
+function openOracle(round: Round, spots: Spots, now: number): void {
+  const open: Record<string, number> = {};
+  for (const [a, p] of Object.entries(spots)) if (p) open[a] = p;
+  round.oracle = { source: "coinbase", open, openAt: now, last: open, lastAt: now };
+}
+
+const usdFmt = (n: number) => `$${n.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: n < 10 ? 4 : 2 })}`;
+
+/**
+ * Everything needed to price a round: live spots (direction rounds), the UP
+ * price of every market, and — for a round whose deadline passed a while
+ * ago — the prices at the deadline. Does the external I/O, so call it before
+ * taking the arena lock.
+ */
+export async function livePricing(round: Round | null): Promise<Pricing> {
+  if (!round) return { yesPrice: 50, priceMap: {}, spots: {} };
+  const now = Date.now();
+  if (!isDirectionRound(round)) {
+    const yesPrice = await marketYesPrice(round.config.marketId);
+    return { yesPrice, priceMap: { ...buildPriceMap(), [round.config.marketId]: yesPrice }, spots: {} };
+  }
+  const active = round.status !== "complete" && round.status !== "cancelled";
+  const spots = active ? await spotPrices() : {};
+  const closeSpots = round.status === "live" && round.liveDeadline && now - round.liveDeadline > CLOSE_FRESH_MS
+    ? await spotPricesAt(round.liveDeadline)
+    : undefined;
+  const priceMap = oraclePriceMap(round, spots, now);
+  return { yesPrice: priceMap[round.config.marketId] ?? 50, priceMap, spots, closeSpots };
+}
+
+/** The round market's UP price after a tick, for the response. */
+export function yesAfterTick(round: Round, pricing: Pricing): number {
+  return isDirectionRound(round)
+    ? oraclePriceMap(round, pricing.spots)[round.config.marketId] ?? 50
+    : pricing.yesPrice;
+}
 
 /**
  * Normalize a Panta YES price to cents (0..100). Panta returns a decimal like
@@ -178,13 +253,21 @@ async function pickMarketForAsset(asset?: string, horizon?: string): Promise<Mar
 }
 
 /**
- * Advance a round in place based on wall-clock time. Pure/synchronous — the
- * live YES price is passed in (fetched before the keeper lock) so this can
- * run safely inside a locked transaction. If it transitions to `advancing`,
- * the caller spins up the next round via `advanceToNext`.
+ * Advance a round in place based on wall-clock time. Synchronous — prices
+ * are fetched before the keeper lock (`livePricing`) and passed in, so this
+ * can run safely inside a locked transaction. If it transitions to
+ * `advancing`, the caller spins up the next round via `advanceToNext`.
  */
-export function tick(round: Round, yesPrice: number, priceMap?: PriceMap): Round {
+export function tick(round: Round, pricing: Pricing): Round {
   const now = Date.now();
+  const direction = isDirectionRound(round);
+  const asset = round.config.asset as AssetSymbol;
+  // The sample from the previous tick — the close may be closer to it.
+  const prevSample = round.oracle?.last && round.oracle.lastAt ? { spots: round.oracle.last, at: round.oracle.lastAt } : null;
+  if (direction && round.oracle && !round.oracle.close && Object.keys(pricing.spots).length) {
+    round.oracle.last = { ...(round.oracle.last ?? {}), ...(pricing.spots as Record<string, number>) };
+    round.oracle.lastAt = now;
+  }
 
   // A hosted arena starts empty while the host approves their seat deposit
   // in the wallet. Hold it open for that instead of cancelling on the first
@@ -202,6 +285,9 @@ export function tick(round: Round, yesPrice: number, priceMap?: PriceMap): Round
       round.history.push("Round cancelled — no players entered.");
       return round;
     }
+    // The open price is the whole bet — wait (briefly) for the oracle
+    // rather than open a round nobody can resolve.
+    if (direction && !pricing.spots[asset] && now < round.enrollDeadline + ORACLE_WAIT_MS) return round;
     // Thin backfill: only add bots to reach the minimum to run a game, and
     // never pad beyond the number of real players. A 5-human lobby runs
     // 5-handed; a solo host gets one opponent so the game can start. Real
@@ -218,15 +304,54 @@ export function tick(round: Round, yesPrice: number, priceMap?: PriceMap): Round
     round.status = "live";
     round.liveDeadline = now + round.config.liveSec * 1000;
     round.history.push(`Enrollment locked — ${round.entrants.length} entrants live on ${round.config.asset}.`);
+    if (direction && pricing.spots[asset]) {
+      openOracle(round, pricing.spots, now);
+      round.history.push(`${asset} opened at ${usdFmt(pricing.spots[asset]!)} — UP wins if it closes higher.`);
+    }
+    // UP/DOWN calls picked at the seat go in at the opening price.
+    placeOpeningCalls(round, direction ? 50 : pricing.yesPrice);
   }
 
   if (round.status === "live") {
+    // Rounds that went live without an open (advanced royale rounds, or an
+    // oracle outage at the lock) open on the first priced tick.
+    if (direction && !round.oracle?.open?.[asset] && pricing.spots[asset]) {
+      openOracle(round, pricing.spots, now);
+      round.history.push(`${asset} opened at ${usdFmt(pricing.spots[asset]!)} — UP wins if it closes higher.`);
+    }
+    const priceMap = direction ? oraclePriceMap(round, pricing.spots, now) : pricing.priceMap;
+    const yesPrice = direction ? priceMap[round.config.marketId] ?? 50 : pricing.yesPrice;
     for (const e of round.entrants) {
       if (e.isBot) botTick(e, yesPrice);
       markToMarket(e, yesPrice, priceMap);
     }
     if (now >= round.liveDeadline) {
-      settle(round, yesPrice, priceMap);
+      if (!direction) {
+        settle(round, yesPrice, priceMap);
+        return round;
+      }
+      // Close = the price sample nearest the deadline: this tick's spot, the
+      // previous tick's (polls run every few seconds while anyone watches),
+      // or the 1-minute candle when the arena went unwatched.
+      const after = now - round.liveDeadline;
+      const before = prevSample && prevSample.at <= round.liveDeadline ? round.liveDeadline - prevSample.at : Infinity;
+      const close: Spots =
+        pricing.spots[asset] && after <= CLOSE_FRESH_MS && after <= before ? pricing.spots
+        : prevSample?.spots[asset] && before <= CLOSE_FRESH_MS ? (prevSample.spots as Spots)
+        : pricing.spots[asset] && after <= CLOSE_FRESH_MS ? pricing.spots
+        : (pricing.closeSpots ?? {});
+      if (!close[asset] && round.oracle?.open?.[asset] && now < round.liveDeadline + ORACLE_WAIT_MS) return round;
+      const open = round.oracle?.open ?? {};
+      const closeRec: Record<string, number> = {};
+      for (const [a, p] of Object.entries(close)) if (p) closeRec[a] = p;
+      round.oracle = { ...(round.oracle ?? { source: "coinbase", open: {}, openAt: now }), close: closeRec, closeAt: round.liveDeadline };
+      const finalMap: PriceMap = {};
+      for (const m of directionMarkets) finalMap[m.id] = resolvedCents(open[m.asset], closeRec[m.asset]);
+      const o = open[asset], c = closeRec[asset];
+      round.history.push(o && c
+        ? `${asset} closed at ${usdFmt(c)} vs ${usdFmt(o)} open — ${c > o ? "UP wins" : c < o ? "DOWN wins" : "flat, both sides pay 50¢"}.`
+        : `${asset} price unavailable at the close — both sides settle at 50¢.`);
+      settle(round, finalMap[round.config.marketId] ?? 50, finalMap);
     }
   }
 
@@ -234,11 +359,17 @@ export function tick(round: Round, yesPrice: number, priceMap?: PriceMap): Round
 }
 
 /** Build the next round from a settled `advancing` round on a pre-picked market. */
-export function advanceToNext(round: Round, nextMarket: { marketId: string; marketQuestion: string; category: string; asset: string } | null): Round {
-  return advance(round, nextMarket ?? {
+export function advanceToNext(round: Round, nextMarket: { marketId: string; marketQuestion: string; category: string; asset: string } | null, spots: Spots = {}): Round {
+  const next = advance(round, nextMarket ?? {
     marketId: round.config.marketId,
     marketQuestion: round.config.marketQuestion,
     category: round.config.category,
     asset: round.config.asset
   });
+  const a = next.config.asset as AssetSymbol;
+  if (isDirectionRound(next) && spots[a]) {
+    openOracle(next, spots, Date.now());
+    next.history.push(`${a} opened at ${usdFmt(spots[a]!)} — UP wins if it closes higher.`);
+  }
+  return next;
 }

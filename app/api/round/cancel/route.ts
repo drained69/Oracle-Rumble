@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
-import { withKeeperLock } from "@/lib/round-store";
+import { getActiveRound, withKeeperLock } from "@/lib/round-store";
 import { normalizeArenaCode } from "@/lib/royale";
+import { readVault } from "@/lib/escrow-server";
 
 export const dynamic = "force-dynamic";
 
@@ -15,8 +16,11 @@ export const dynamic = "force-dynamic";
  *   1. Arena is still `enrolling` (the only state where the host would be
  *      the first depositor).
  *   2. No entrants have joined yet other than possibly the caller themselves.
+ *   3. Nobody has deposited into the arena's on-chain vault. A paid seat is
+ *      registered by the keeper even if its enroll request failed, so a
+ *      funded arena must never be torn down from the client.
  *
- * If either check fails we return 409 without touching the row — someone
+ * If a check fails we return 409 without touching the row — someone
  * else is already using this arena and we shouldn't rip it out from under
  * them.
  */
@@ -27,6 +31,15 @@ export async function POST(request: Request) {
   };
   const arenaCode = normalizeArenaCode(body.arena ?? "");
   if (!arenaCode) return NextResponse.json({ error: "arena required" }, { status: 400 });
+
+  const peek = await getActiveRound(arenaCode);
+  if (peek?.escrow) {
+    const vault = await readVault(peek.escrow.roundVault);
+    if (!vault) return NextResponse.json({ error: "could not read the arena vault — not cancelling" }, { status: 409 });
+    if (vault.deposited > 0) {
+      return NextResponse.json({ error: "a seat deposit already landed in this arena", funded: true }, { status: 409 });
+    }
+  }
 
   const result = await withKeeperLock(arenaCode, async (ctx) => {
     const round = await ctx.getActive();

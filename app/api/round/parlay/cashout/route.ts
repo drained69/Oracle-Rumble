@@ -1,7 +1,8 @@
 import { NextResponse } from "next/server";
+import { requireWallet } from "@/lib/session";
 import { getActiveRound, mutateActiveRound } from "@/lib/round-store";
-import { markToMarket, normalizeArenaCode, standings } from "@/lib/royale";
-import { buildPriceMap, marketYesPrice, pantaPriceToCents } from "@/lib/round-keeper";
+import { markToMarket, normalizeArenaCode, standings, redactOpeningCalls } from "@/lib/royale";
+import { livePricing, pantaPriceToCents } from "@/lib/round-keeper";
 import { quoteCashOut } from "@/lib/parlay";
 import { findMockMarket } from "@/lib/arena-data";
 import { PANTA_LIVE, pantaFetch, type PantaMarket } from "@/lib/panta";
@@ -28,6 +29,9 @@ import { PANTA_LIVE, pantaFetch, type PantaMarket } from "@/lib/panta";
 export async function POST(request: Request) {
   const body = (await request.json()) as { wallet?: string; ticketId?: string; arena?: string };
   if (!body?.wallet) return NextResponse.json({ error: "wallet required" }, { status: 400 });
+  // Only the wallet itself (signed-in session) may act for its seat.
+  const denied = requireWallet(request, body.wallet);
+  if (denied) return denied;
   if (!body?.ticketId) return NextResponse.json({ error: "ticketId required" }, { status: 400 });
   const arena = normalizeArenaCode(body.arena);
 
@@ -41,13 +45,18 @@ export async function POST(request: Request) {
   if (!ticket) return NextResponse.json({ error: "ticket not found" }, { status: 404 });
   if (ticket.status !== "open") return NextResponse.json({ error: `ticket is ${ticket.status}, not open` }, { status: 409 });
 
+  if (Date.now() >= peek.liveDeadline) return NextResponse.json({ error: "the round is settling — cash-out is closed" }, { status: 409 });
+  // Direction legs are priced by the round's oracle, the same prices the
+  // ticket settles against.
+  const pricing = await livePricing(peek);
+
   // Fetch live YES prices for every leg's market. Reuses the same source
   // policy as /api/round/parlay: synthetic dir- ids are priced from the
   // arena-data board, real Panta ids come from Panta live-api.
   const currentYesPrices: Record<string, number> = {};
   for (const leg of ticket.legs) {
     const local = findMockMarket(leg.marketId);
-    if (local) { currentYesPrices[leg.marketId] = local.market.yesPrice; continue; }
+    if (local) { currentYesPrices[leg.marketId] = pricing.priceMap[leg.marketId] ?? 50; continue; }
     if (PANTA_LIVE) {
       try {
         const live = await pantaFetch<PantaMarket & { yesPrice?: number | string }>(`/markets/${encodeURIComponent(leg.marketId)}`);
@@ -72,8 +81,8 @@ export async function POST(request: Request) {
   }
 
   // The round-view YES price + priceMap so markToMarket is fresh post-cashout.
-  const yesForRound = await marketYesPrice(peek.config.marketId);
-  const priceMap = buildPriceMap({ marketId: peek.config.marketId, yesPrice: yesForRound });
+  const yesForRound = pricing.yesPrice;
+  const priceMap = { ...pricing.priceMap };
   for (const [mid, y] of Object.entries(currentYesPrices)) priceMap[mid] = y;
 
   let mutationError: string | undefined;
@@ -100,5 +109,5 @@ export async function POST(request: Request) {
   if (error) return NextResponse.json({ error }, { status: 500 });
 
   const updated = round.entrants.find((e) => e.wallet === body.wallet);
-  return NextResponse.json({ round, arena, entrant: updated, quote, yesPrice: yesForRound, standings: standings(round) });
+  return NextResponse.json({ round: redactOpeningCalls(round, body.wallet), arena, entrant: updated, quote, yesPrice: yesForRound, standings: standings(round) });
 }

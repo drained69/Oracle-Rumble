@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { connectSolanaWallet } from "@/lib/panta-client";
+import { signOut } from "@/lib/session-client";
 import { getStoredUsername, saveStoredUsername, shortPk, validateUsername } from "@/lib/username";
 
 export const WALLET_KEY = "oracle-rumble/wallet/v1";
@@ -32,6 +33,7 @@ export function useWalletIdentity() {
       setWallet(null);
       setUsername("");
       try { localStorage.removeItem(WALLET_KEY); } catch { /* ignore */ }
+      await signOut();
       return { message: "Wallet disconnected.", needsUsername: false };
     }
     const real = await connectSolanaWallet();

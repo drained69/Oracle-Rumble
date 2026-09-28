@@ -43,6 +43,12 @@ export type Entrant = {
   rank: number | null;    // filled at settlement
   prizeUsdc: number;      // prize-pool share won at the final (0 until then)
   parlays: ParlayTicket[];// open + settled parlay tickets bought from the vault
+  /**
+   * The direction picked when taking the seat — YES = UP, NO = DOWN. Placed
+   * with the whole vault the moment the round goes live, then cleared. Null
+   * means the player decides once trading opens.
+   */
+  openingCall?: Side | null;
 };
 
 /** One leg of a placed parlay — an UP/DOWN call on a board market. */
@@ -186,6 +192,28 @@ export type RoundEscrowRecord = {
   mint: string;
   history: string[];    // "Deposit ✓ <sig12>…" style entries
   settleSignatures?: string[];  // set after SettlePlayer + CloseSettlement
+  /**
+   * Username + opening call a wallet asked for when it requested its deposit
+   * tx. If the deposit lands but the enroll request never arrives, the keeper
+   * seats the wallet from its on-chain entry using these.
+   */
+  pendingSeats?: Record<string, { nickname: string; openingCall: Side | null }>;
+};
+
+/**
+ * Oracle prices (USD) for a BTC/ETH/SOL direction round. `open` is taken
+ * when trading opens, `close` at the deadline; the round's market resolves
+ * UP if close > open. All three assets are recorded so parlay legs on the
+ * other assets resolve over the same window.
+ */
+export type RoundOracle = {
+  source: string;
+  open: Record<string, number>;
+  openAt: number;
+  last?: Record<string, number>;
+  lastAt?: number;
+  close?: Record<string, number>;
+  closeAt?: number;
 };
 
 export type Round = {
@@ -207,6 +235,7 @@ export type Round = {
   endedAt: number;        // ms epoch — set when complete/cancelled, else 0
   championId: string | null;
   history: string[];      // human-readable event log
+  oracle?: RoundOracle;   // direction rounds: open/last/close prices
   /** On-chain escrow record; undefined = ledger-only arena. */
   escrow?: RoundEscrowRecord;
 };
@@ -336,6 +365,91 @@ export function humanCount(round: Round): number {
   return round.entrants.filter((e) => !e.isBot).length;
 }
 
+/** Plain-language name of a side on the direction markets: YES = UP, NO = DOWN. */
+export function sideWord(side: Side): "UP" | "DOWN" {
+  return side === "YES" ? "UP" : "DOWN";
+}
+
+/** `nickname`, or `nickname_2`, `nickname_3`… if another entrant already uses it (case-insensitive). */
+function uniqueNickname(round: Round, wallet: string, nickname: string): string {
+  const taken = new Set(round.entrants.filter((e) => e.wallet !== wallet).map((e) => e.nickname.toLowerCase()));
+  if (!taken.has(nickname.toLowerCase())) return nickname;
+  for (let i = 2; i < 100; i++) {
+    const suffix = `_${i}`;
+    const candidate = nickname.slice(0, 16 - suffix.length) + suffix;
+    if (!taken.has(candidate.toLowerCase())) return candidate;
+  }
+  return nickname;
+}
+
+export type SeatOptions = {
+  /** Deposit tx signature, logged in the escrow history. */
+  signature?: string;
+  openingCall?: Side | null;
+  /**
+   * Seated from an on-chain deposit whose enroll request never arrived
+   * (dropped connection, closed tab). Doesn't restart the enrollment clock.
+   */
+  restored?: boolean;
+};
+
+/**
+ * Seat a real player in an enrolling round. Shared by the enroll route and
+ * the keeper's on-chain reconciliation so both apply the same rules.
+ */
+export function seatPlayer(round: Round, wallet: string, nickname: string, opts: SeatOptions = {}): { ok: true; entrant: Entrant } | { ok: false; reason: string } {
+  if (round.status !== "enrolling") return { ok: false, reason: "Enrollment is closed for this round." };
+  if (round.entrants.some((e) => e.wallet === wallet)) return { ok: false, reason: "Already enrolled." };
+  const firstPlayer = humanCount(round) === 0;
+  const name = uniqueNickname(round, wallet, (nickname || `${wallet.slice(0, 4)}_${wallet.slice(-4)}`).slice(0, 16));
+  const entrant = makeEntrant(round, wallet, name, false);
+  entrant.openingCall = opts.openingCall ?? null;
+  const res = enroll(round, entrant);
+  if (!res.ok) return { ok: false, reason: res.reason ?? "Could not take a seat." };
+  // A hosted arena's clock starts once its first seat (the host's) is
+  // confirmed, so wallet approval time never eats into it.
+  if (firstPlayer && !opts.restored && round.arenaCode !== PUBLIC_ARENA) {
+    round.enrollDeadline = Math.max(round.enrollDeadline, Date.now() + round.config.enrollmentSec * 1000);
+  }
+  if (round.escrow) {
+    round.escrow.history.push(opts.signature
+      ? `Deposit ${name} ✓ ${opts.signature.slice(0, 12)}…`
+      : `Deposit ${name} ✓ seat matched to on-chain entry`);
+  }
+  return { ok: true, entrant };
+}
+
+/**
+ * Public copy of a round for a given viewer. Opening calls stay private while
+ * enrolling (only the viewer sees their own), and the keeper's pending-seat
+ * notes are never sent to browsers.
+ */
+export function redactOpeningCalls(round: Round, viewer?: string | null): Round {
+  const hideCalls = round.status === "enrolling";
+  const entrants = hideCalls
+    ? round.entrants.map((e) => (e.wallet === viewer || !e.openingCall ? e : { ...e, openingCall: null }))
+    : round.entrants;
+  const escrow = round.escrow?.pendingSeats
+    ? (({ pendingSeats: _omit, ...rest }) => rest)(round.escrow)
+    : round.escrow;
+  return { ...round, entrants, escrow };
+}
+
+/** Place every seated player's opening call (whole vault) as the round goes live. */
+export function placeOpeningCalls(round: Round, yesPrice: number): void {
+  for (const e of round.entrants) {
+    const call = e.openingCall;
+    if (!call) continue;
+    e.openingCall = null;
+    if (e.isBot || e.shares > 0 || e.cash <= 0) continue;
+    const price = call === "YES" ? yesPrice : 100 - yesPrice;
+    const stake = e.cash;
+    if (buyShares(e, call, stake, price, yesPrice).ok) {
+      round.history.push(`${e.nickname} bought ${sideWord(call)} $${stake.toFixed(2)} at ${price}¢ (opening call).`);
+    }
+  }
+}
+
 // ── bankroll / trading ────────────────────────────────────────────────
 
 /**
@@ -442,7 +556,7 @@ export function botTick(entrant: Entrant, markYesPrice: number): void {
     liquidate(entrant, markYesPrice); // take profit / cut
     return;
   }
-  if (r < 0.55 && entrant.cash > 10) {
+  if (r < 0.55 && entrant.cash > 1) {
     const side: Side = Math.random() > 0.5 ? "YES" : "NO";
     const price = side === "YES" ? markYesPrice : 100 - markYesPrice;
     const spend = Math.min(entrant.cash, entrant.cash * (0.3 + Math.random() * 0.4));
@@ -541,13 +655,19 @@ export function entitlementUsdc(round: Round, e: Entrant): number {
  */
 export function advance(round: Round, nextMarket: { marketId: string; marketQuestion: string; category: string; asset: string }): Round {
   const survivors = round.entrants.filter((e) => e.eliminatedRound === null);
+  // Players cut in earlier rounds stay on the roster, frozen at the vault
+  // they finished with: they still withdraw it at the final settlement and
+  // still count in the overall finishing order.
+  const knockedOut = round.entrants
+    .filter((e) => e.eliminatedRound !== null)
+    .map((e): Entrant => ({ ...e, bankroll: e.cash, shares: 0, side: null, avgPrice: 0, parlays: [], openingCall: null }));
   const next: Round = {
     id: uid("round"),
     arenaCode: round.arenaCode,
     config: { ...round.config, ...nextMarket },
     roundNumber: round.roundNumber + 1,
     status: "live",
-    entrants: survivors.map((e) => ({
+    entrants: survivors.map((e): Entrant => ({
       ...e,
       bankroll: e.cash,   // carry forward the vault they earned
       cash: e.cash,
@@ -556,8 +676,9 @@ export function advance(round: Round, nextMarket: { marketId: string; marketQues
       avgPrice: 0,
       rank: null,
       prizeUsdc: 0,
-      parlays: []
-    })),
+      parlays: [],
+      openingCall: null
+    })).concat(knockedOut),
     prizePoolUsdc: round.prizePoolUsdc,
     createdAt: Date.now(),
     enrollDeadline: Date.now(),

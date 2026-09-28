@@ -85,6 +85,8 @@ export default function ArenasDirectory() {
   const [hEntry, setHEntry] = useState("2");
   const [hVault, setHVault] = useState("10");
   const [hStartInMin, setHStartInMin] = useState(15);
+  // The host's own opening call (they take seat 1 like everyone else).
+  const [hCall, setHCall] = useState<"YES" | "NO" | "LATER">("LATER");
   const [inviteInfo, setInviteInfo] = useState<{ code: string; url: string } | null>(null);
 
   useEffect(() => {
@@ -181,8 +183,10 @@ export default function ArenasDirectory() {
       let enrollError = "";
       let refundable = false;
       try {
-        const r = await enrollWithEscrow(wallet, hostName || shortPk(wallet).replace("…", ""), v.arena);
-        if (r.error) { enrollError = r.error; refundable = !!r.refundable; }
+        const r = await enrollWithEscrow(wallet, hostName || shortPk(wallet).replace("…", ""), v.arena, hCall === "LATER" ? null : hCall);
+        // A signed deposit means the room is funded — never tear it down;
+        // the seat is registered from the on-chain entry if this call lags.
+        if (r.error && !(r.entrantId || r.already)) { enrollError = r.error; refundable = !!r.refundable || !!r.deposited; }
       } catch (err) {
         enrollError = err instanceof Error ? err.message : "wallet signing failed";
       }
@@ -201,7 +205,7 @@ export default function ArenasDirectory() {
       setInviteInfo({ code: v.arena, url });
       refresh();
     } finally { setHostStep(""); }
-  }, [hostInputError, escrow, wallet, username, nameDraft, saveUsername, hostSeat, hMode, hStartInMin, hAsset, hHorizon, hFormat, entryNum, vaultNum, hCapacity, hRounds, refresh]);
+  }, [hostInputError, escrow, wallet, username, nameDraft, saveUsername, hostSeat, hMode, hStartInMin, hAsset, hHorizon, hFormat, entryNum, vaultNum, hCapacity, hRounds, hCall, refresh]);
 
   const doCopy = useCallback(async (url: string) => {
     try { await navigator.clipboard.writeText(url); setToast("Invite link copied."); }
@@ -255,7 +259,7 @@ export default function ArenasDirectory() {
 
           <ol className="jt-steps">
             <li><b>01</b><span>Take a seat — entry funds the pool, the vault is your bankroll.</span></li>
-            <li><b>02</b><span>Trade UP or DOWN on the same Panta market as everyone else.</span></li>
+            <li><b>02</b><span>Call UP or DOWN on BTC, ETH or SOL. The round opens at the live price and pays out on the real move.</span></li>
             <li><b>03</b><span>Survive the cut. Top finishers claim the pool to their wallet.</span></li>
           </ol>
 
@@ -267,7 +271,7 @@ export default function ArenasDirectory() {
 
           <ul className="jt-trust">
             <li>Non-custodial USDC escrow</li>
-            <li>Markets by Panta</li>
+            <li>Live price oracle</li>
             <li>No house cut</li>
           </ul>
         </div>
@@ -310,6 +314,7 @@ export default function ArenasDirectory() {
                 hCapacity={hCapacity} setHCapacity={setHCapacity}
                 hEntry={hEntry} setHEntry={setHEntry}
                 hVault={hVault} setHVault={setHVault}
+                hCall={hCall} setHCall={setHCall}
                 hostSeat={hostSeat} poolIfFull={poolIfFull}
                 inputError={hostInputError}
                 wallet={wallet} escrowActive={!!escrow?.active} escrowKnown={escrow != null}
@@ -426,7 +431,7 @@ function HostPanel({
   hMode, setHMode, hStartInMin, setHStartInMin,
   hAsset, setHAsset, hHorizon, setHHorizon,
   hFormat, setHFormat, hRounds, setHRounds,
-  hCapacity, setHCapacity, hEntry, setHEntry, hVault, setHVault,
+  hCapacity, setHCapacity, hEntry, setHEntry, hVault, setHVault, hCall, setHCall,
   hostSeat, poolIfFull, inputError, wallet, escrowActive, escrowKnown,
   username, nameDraft, setNameDraft, onEditUsername, onConnect, step, onSubmit
 }: {
@@ -439,6 +444,7 @@ function HostPanel({
   hCapacity: number; setHCapacity: (v: number) => void;
   hEntry: string; setHEntry: (v: string) => void;
   hVault: string; setHVault: (v: string) => void;
+  hCall: "YES" | "NO" | "LATER"; setHCall: (v: "YES" | "NO" | "LATER") => void;
   hostSeat: number; poolIfFull: number; inputError: string;
   wallet: string | null; escrowActive: boolean; escrowKnown: boolean;
   username: string; nameDraft: string; setNameDraft: (v: string) => void;
@@ -540,6 +546,13 @@ function HostPanel({
             ))}
           </div>
         </FieldRow>
+        <FieldRow label={`Your call on ${hAsset}`}>
+          <div className="gm-seg call-seg" role="radiogroup" aria-label="Your opening call">
+            <button role="radio" aria-checked={hCall === "YES"} className={`opt up ${hCall === "YES" ? "on" : ""}`} onClick={() => setHCall("YES")}>▲ Up</button>
+            <button role="radio" aria-checked={hCall === "NO"} className={`opt down ${hCall === "NO" ? "on" : ""}`} onClick={() => setHCall("NO")}>▼ Down</button>
+            <button role="radio" aria-checked={hCall === "LATER"} className={`opt ${hCall === "LATER" ? "on" : ""}`} onClick={() => setHCall("LATER")}>Later</button>
+          </div>
+        </FieldRow>
         {hFormat === "royale" && (
           <FieldRow label="Rounds">
             <div className="gm-seg">
@@ -569,6 +582,12 @@ function HostPanel({
         <div><span>Pool if full</span><b className="plasma">{usd2.format(poolIfFull)}</b></div>
         <div><span>Payout</span><b>{hCapacity <= 2 ? "Winner" : "Top 3"}</b></div>
       </div>
+
+      <p className="jc-help">
+        {hCall === "LATER"
+          ? `Every round opens at ${hAsset}'s live price. UP pays if it closes higher, DOWN if lower — you pick once trading opens.`
+          : `Your whole vault goes on ${hCall === "YES" ? "UP" : "DOWN"} at ${hAsset}'s opening price when trading starts. You can switch any time during the round.`}
+      </p>
 
       {inputError && <p className="jc-error" role="alert">{inputError}</p>}
       {escrowKnown && !escrowActive && (

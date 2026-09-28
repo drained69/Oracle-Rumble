@@ -55,13 +55,14 @@ export function hostKeypair(): Keypair | null {
 }
 
 export function connection(): Connection {
-  // Disable the WebSocket endpoint entirely — Railway's bundle drops the
-  // optional `bufferutil` dep, which makes `Connection.confirmTransaction`
-  // (WS-based) hang forever on `bufferUtil.mask is not a function`. Setting
-  // wsEndpoint to a bogus value that never opens keeps HTTP calls working
-  // while forcing us to poll via getSignatureStatus below.
+  // HTTP only. Railway's bundle drops the optional `bufferutil` dep, so any
+  // WebSocket call (`confirmTransaction`, `sendAndConfirmTransaction`,
+  // `onSignature`, `onAccountChange`) fails with `b.mask is not a function`,
+  // retries forever, floods the logs and eventually runs the server out of
+  // memory. Nothing server-side may use those — confirm by polling
+  // `getSignatureStatus` (see `signSendConfirm` / `confirmSignature`).
   if (!_g.__or_conn) {
-    _g.__or_conn = new Connection(RPC, { commitment: "confirmed", wsEndpoint: undefined });
+    _g.__or_conn = new Connection(RPC, { commitment: "confirmed" });
   }
   return _g.__or_conn;
 }
@@ -232,13 +233,21 @@ export async function settleArenaOnChain(roundVaultPk: string, players: SettleEn
 }
 
 // ── VERIFICATION ─────────────────────────────────────────────────────────
-export async function confirmSignature(signature: string): Promise<{ ok: boolean; err?: string }> {
-  try {
-    const res = await connection().confirmTransaction(signature, "confirmed");
-    if (res.value.err) return { ok: false, err: JSON.stringify(res.value.err) };
-    return { ok: true };
-  } catch (err) {
-    return { ok: false, err: err instanceof Error ? err.message : "confirm failed" };
+/**
+ * Poll a signature over HTTP until it is confirmed, fails, or `timeoutMs`
+ * passes. `pending` means "not seen as confirmed yet" — not a failure.
+ */
+export async function confirmSignature(signature: string, timeoutMs = 20_000): Promise<{ ok: boolean; err?: string; pending?: boolean }> {
+  const deadline = Date.now() + timeoutMs;
+  while (true) {
+    try {
+      const st = await connection().getSignatureStatus(signature, { searchTransactionHistory: true });
+      if (st?.value?.err) return { ok: false, err: JSON.stringify(st.value.err) };
+      const s = st?.value?.confirmationStatus;
+      if (s === "confirmed" || s === "finalized") return { ok: true };
+    } catch { /* transient RPC error — keep polling */ }
+    if (Date.now() >= deadline) return { ok: false, pending: true, err: "not confirmed yet" };
+    await new Promise((r) => setTimeout(r, CONFIRM_POLL_MS));
   }
 }
 

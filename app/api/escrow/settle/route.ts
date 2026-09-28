@@ -71,41 +71,54 @@ export async function POST(request: Request) {
     return NextResponse.json({ ok: true, alreadySettled: true, signatures: round.escrow.settleSignatures });
   }
 
-  // Build entitlements — remaining vault + prize share for each human.
-  const rawEntries = round.entrants
-    .filter((e) => !e.isBot && !e.wallet.startsWith("bot:"))
-    .map((e) => ({ wallet: e.wallet, entitlementUsdc: Math.max(0, e.cash + e.prizeUsdc) }));
-
-  // BUG N — CRITICAL conservation gate.
-  //
-  // On-chain the vault holds exactly `humansEnrolled × (entry + vault)`. Ledger
-  // trading against bots (or price-maker slippage on our synthetic market) can
-  // inflate sum(cash + prize) beyond that. If we sent inflated entitlements
-  // to SettlePlayer, later players would hit the on-chain Overpay guard and
-  // be permanently stuck (round moves to SETTLED without their entry.settled
-  // flag flipped — neither Claim nor Recover would work for them).
-  //
-  // Fix: cap sum(entitlements) at total_escrowed by proportional scale-down.
-  // This is fair (everyone loses the same fraction of their surplus) and
-  // guarantees every human can Claim their assigned entitlement.
-  const humansEnrolled = round.entrants.filter((e) => !e.isBot).length;
+  // Settle against the chain, not just the ledger: every PlayerEntry in the
+  // vault must be settled before CloseSettlement, or that wallet's USDC is
+  // locked for good (Claim needs a settled entry; Recover needs an open vault).
+  const vault = await readVault(round.escrow.roundVault);
+  if (!vault) return NextResponse.json({ error: "vault not found on-chain" }, { status: 502 });
+  if (vault.settled) return NextResponse.json({ ok: true, alreadySettled: true });
+  const onChain = await listDepositors(round.escrow.roundVault);
+  if (onChain.length !== vault.deposited) {
+    return NextResponse.json({ ok: false, pending: true, retryInMs: 5_000 });
+  }
+  const depositorSet = new Set(onChain.map((d) => d.wallet));
   const seatUsdc = round.config.entryUsdc + round.config.startingBankroll;
-  const totalEscrowed = humansEnrolled * seatUsdc;
+
+  // Players: remaining vault + prize share (includes players knocked out in
+  // earlier royale rounds — they withdraw the vault they finished with).
+  const players = round.entrants.filter((e) => !e.isBot && depositorSet.has(e.wallet));
+  const seated = new Set(players.map((e) => e.wallet));
+  // Paid but never seated (deposit landed after lock or the room was full):
+  // full refund of the seat.
+  const refunds: SettleEntry[] = onChain
+    .filter((d) => !seated.has(d.wallet))
+    .map((d) => ({ wallet: d.wallet, entitlementUsdc: seatUsdc }));
+  const rawEntries = players.map((e) => ({ wallet: e.wallet, entitlementUsdc: Math.max(0, e.cash + e.prizeUsdc) }));
+
+  // Conservation gate. Ledger trading against bots / the synthetic market can
+  // push sum(cash + prize) above what players actually escrowed; sending that
+  // would trip the on-chain Overpay guard and strand later players. Scale
+  // players down proportionally to the escrowed total (refunds come first).
+  const playerCap = Math.max(0, vault.totalEscrowedUsdc - refunds.length * seatUsdc);
   const rawSum = rawEntries.reduce((s, e) => s + e.entitlementUsdc, 0);
 
   let entries: SettleEntry[] = rawEntries;
   let capApplied: { rawSum: number; capped: number; ratio: number } | undefined;
-  if (rawSum > totalEscrowed && totalEscrowed > 0) {
-    const ratio = totalEscrowed / rawSum;
+  if (rawSum > playerCap) {
+    const ratio = rawSum > 0 ? playerCap / rawSum : 0;
     entries = rawEntries.map((e) => ({
       wallet: e.wallet,
       // Floor to 6 decimals (USDC precision) so we never round UP past cap.
       entitlementUsdc: Math.floor(e.entitlementUsdc * ratio * 1e6) / 1e6
     }));
-    capApplied = { rawSum, capped: totalEscrowed, ratio };
+    capApplied = { rawSum, capped: playerCap, ratio };
     round.history.push(
-      `Entitlements capped for conservation: ${rawSum.toFixed(2)} → ${totalEscrowed.toFixed(2)} USDC (×${ratio.toFixed(4)}).`
+      `Entitlements capped for conservation: ${rawSum.toFixed(2)} → ${playerCap.toFixed(2)} USDC (×${ratio.toFixed(4)}).`
     );
+  }
+  entries = entries.concat(refunds);
+  if (refunds.length) {
+    round.history.push(`${refunds.length} deposit${refunds.length === 1 ? "" : "s"} without a seat refunded in full.`);
   }
 
   const res = await settleArenaOnChain(round.escrow.roundVault, entries);

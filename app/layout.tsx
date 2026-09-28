@@ -2,7 +2,7 @@ import type { Metadata, Viewport } from "next";
 import "./globals.css";
 
 const DESCRIPTION =
-  "A prediction-market battle royale on Solana. Equal seats, one live Panta market, the bottom half cut each round — survivors split the pool. Non-custodial USDC escrow.";
+  "A prediction-market battle royale on Solana. Equal seats, UP or DOWN calls on live BTC, ETH and SOL prices, the bottom half cut each round — survivors split the pool. Non-custodial USDC escrow.";
 
 export const metadata: Metadata = {
   title: { default: "Oracle Rumble — prediction-market battle royale", template: "%s · Oracle Rumble" },

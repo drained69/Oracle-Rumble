@@ -1,7 +1,8 @@
 import { NextResponse } from "next/server";
+import { requireWallet } from "@/lib/session";
 import { getActiveRound, mutateActiveRound } from "@/lib/round-store";
-import { markToMarket, normalizeArenaCode, placeParlay, standings, type ParlayLegState, type ParlayTicket } from "@/lib/royale";
-import { buildPriceMap, marketYesPrice, pantaPriceToCents } from "@/lib/round-keeper";
+import { markToMarket, normalizeArenaCode, placeParlay, standings, type ParlayLegState, type ParlayTicket, redactOpeningCalls } from "@/lib/royale";
+import { livePricing, pantaPriceToCents } from "@/lib/round-keeper";
 import { quoteParlay, validateParlay, type ParlayLeg } from "@/lib/parlay";
 import { findMockMarket } from "@/lib/arena-data";
 import { assetOfMarketId } from "@/lib/assets";
@@ -23,6 +24,9 @@ export async function POST(request: Request) {
     arena?: string;
   };
   if (!body?.wallet) return NextResponse.json({ error: "wallet required" }, { status: 400 });
+  // Only the wallet itself (signed-in session) may act for its seat.
+  const denied = requireWallet(request, body.wallet);
+  if (denied) return denied;
   if (!Array.isArray(body.legs) || body.legs.length < 2) {
     return NextResponse.json({ error: "a parlay needs at least 2 legs" }, { status: 400 });
   }
@@ -32,6 +36,15 @@ export async function POST(request: Request) {
   }
   const arena = normalizeArenaCode(body.arena);
 
+  const peek = await getActiveRound(arena);
+  if (!peek) return NextResponse.json({ error: "no active round in this arena", arena }, { status: 404 });
+  if (peek.status !== "live" || Date.now() >= peek.liveDeadline) {
+    return NextResponse.json({ error: "parlays can only be placed while the round is live" }, { status: 409 });
+  }
+  // Direction legs are priced by the round's oracle (UP odds over the rest
+  // of this round), the same prices they settle against.
+  const { yesPrice: yes, priceMap } = await livePricing(peek);
+
   // Refresh each leg's price + metadata. Our own BTC/ETH/SOL board markets are
   // synthetic — price them from the board, never the Panta sandbox (which
   // returns a 50¢ fixture for any id). Only real Panta ids hit Panta.
@@ -39,7 +52,7 @@ export async function POST(request: Request) {
   const legState: ParlayLegState[] = [];
   for (const leg of body.legs) {
     let question = "";
-    let yes = 50;
+    let legYes = 50;
     let correlationGroup: string | undefined;
     let asset: string = assetOfMarketId(leg.marketId) ?? "";
 
@@ -48,22 +61,22 @@ export async function POST(request: Request) {
       question = local.market.question;
       correlationGroup = local.market.correlationGroup;
       asset = local.market.asset;
-      yes = local.market.yesPrice;
+      legYes = priceMap[leg.marketId] ?? 50;
     } else if (PANTA_LIVE) {
       try {
         const live = await pantaFetch<PantaMarket & { yesPrice?: number | string }>(`/markets/${encodeURIComponent(leg.marketId)}`);
         question = live.question;
-        yes = pantaPriceToCents(live.yesPrice);
+        legYes = pantaPriceToCents(live.yesPrice);
       } catch {
         if (!local) return NextResponse.json({ error: `market not found: ${leg.marketId}` }, { status: 404 });
-        question = local.market.question; correlationGroup = local.market.correlationGroup; asset = local.market.asset; yes = local.market.yesPrice;
+        question = local.market.question; correlationGroup = local.market.correlationGroup; asset = local.market.asset; legYes = priceMap[leg.marketId] ?? 50;
       }
     } else {
       if (!local) return NextResponse.json({ error: `market not found: ${leg.marketId}` }, { status: 404 });
-      question = local.market.question; correlationGroup = local.market.correlationGroup; asset = local.market.asset; yes = local.market.yesPrice;
+      question = local.market.question; correlationGroup = local.market.correlationGroup; asset = local.market.asset; legYes = priceMap[leg.marketId] ?? 50;
     }
 
-    const price = leg.side === "YES" ? yes : 100 - yes;
+    const price = leg.side === "YES" ? legYes : 100 - legYes;
     refreshed.push({ marketId: leg.marketId, side: leg.side, question, price, correlationGroup });
     legState.push({ marketId: leg.marketId, asset: String(asset), question, side: leg.side, entryPrice: price });
   }
@@ -73,14 +86,9 @@ export async function POST(request: Request) {
 
   const quote = quoteParlay(refreshed, stake);
 
-  const peek = await getActiveRound(arena);
-  if (!peek) return NextResponse.json({ error: "no active round in this arena", arena }, { status: 404 });
-  const yes = await marketYesPrice(peek.config.marketId);
-  const priceMap = buildPriceMap({ marketId: peek.config.marketId, yesPrice: yes });
-
   let placeError: string | undefined;
   const { round, error } = await mutateActiveRound(arena, (r) => {
-    if (r.status !== "live") { placeError = "round is not live"; return; }
+    if (r.status !== "live" || Date.now() >= r.liveDeadline) { placeError = "round is not live"; return; }
     const entrant = r.entrants.find((e) => e.wallet === body.wallet);
     if (!entrant) { placeError = "not enrolled in this round"; return; }
 
@@ -107,5 +115,5 @@ export async function POST(request: Request) {
   if (error) return NextResponse.json({ error }, { status: 500 });
 
   const entrant = round.entrants.find((e) => e.wallet === body.wallet);
-  return NextResponse.json({ round, arena, entrant, quote, yesPrice: yes, standings: standings(round) });
+  return NextResponse.json({ round: redactOpeningCalls(round, body.wallet), arena, entrant, quote, yesPrice: yes, standings: standings(round) });
 }
