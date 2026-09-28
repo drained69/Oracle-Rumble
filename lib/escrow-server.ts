@@ -26,6 +26,7 @@ import {
   USDC_MINT,
   associatedTokenAddress,
   ixCloseSettlement,
+  ixCreateAtaIdempotent,
   ixDeposit,
   ixInitRound,
   ixSettlePlayer,
@@ -173,15 +174,22 @@ async function buildTx(ixs: Awaited<ReturnType<typeof ixDeposit>>[], feePayer: P
 
 export async function buildDepositTx(player: PublicKey, roundVault: PublicKey): Promise<{ base64: string } | { error: string }> {
   if (!escrowReady() || !USDC_MINT) return { error: "escrow inactive" };
-  const ix = ixDeposit({ player, roundVault, mint: USDC_MINT });
-  const base64 = await buildTx([ix], player);
+  // Prepend an idempotent ATA-create for the player's USDC ATA. Without this
+  // a fresh wallet that has never held USDC on this cluster has no ATA yet,
+  // Deposit simulation fails, and Backpack/Phantom flag the tx "unsafe".
+  // The idempotent variant is a no-op if the ATA already exists.
+  const createAta = ixCreateAtaIdempotent({ payer: player, owner: player, mint: USDC_MINT });
+  const deposit = ixDeposit({ player, roundVault, mint: USDC_MINT });
+  const base64 = await buildTx([createAta, deposit], player);
   return { base64 };
 }
 
 export async function buildWithdrawTx(player: PublicKey, roundVault: PublicKey, recover = false): Promise<{ base64: string } | { error: string }> {
   if (!escrowReady() || !USDC_MINT) return { error: "escrow inactive" };
-  const ix = ixWithdraw({ player, roundVault, mint: USDC_MINT, recover });
-  const base64 = await buildTx([ix], player);
+  // Ditto: recover/claim may be the first time the wallet touches USDC.
+  const createAta = ixCreateAtaIdempotent({ payer: player, owner: player, mint: USDC_MINT });
+  const withdraw = ixWithdraw({ player, roundVault, mint: USDC_MINT, recover });
+  const base64 = await buildTx([createAta, withdraw], player);
   return { base64 };
 }
 

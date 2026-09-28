@@ -169,6 +169,32 @@ export function ixDeposit(params: {
   });
 }
 
+/**
+ * Idempotent CreateAssociatedTokenAccount — safe to prepend to a Deposit
+ * or Withdraw tx even if the ATA already exists. Data byte `1` selects the
+ * idempotent variant of the SPL Associated Token program (tag 1).
+ */
+export function ixCreateAtaIdempotent(params: {
+  payer: PublicKey;
+  owner: PublicKey;
+  mint: PublicKey;
+}): TransactionInstruction {
+  const { payer, owner, mint } = params;
+  const ata = associatedTokenAddress(owner, mint);
+  return new TransactionInstruction({
+    programId: ASSOCIATED_TOKEN_PROGRAM_ID,
+    keys: [
+      { pubkey: payer, isSigner: true, isWritable: true },
+      { pubkey: ata, isSigner: false, isWritable: true },
+      { pubkey: owner, isSigner: false, isWritable: false },
+      { pubkey: mint, isSigner: false, isWritable: false },
+      { pubkey: SystemProgram.programId, isSigner: false, isWritable: false },
+      { pubkey: TOKEN_PROGRAM_ID, isSigner: false, isWritable: false }
+    ],
+    data: Buffer.from([1])
+  });
+}
+
 /** SettlePlayer (tag 2) — host assigns a player's entitlement. */
 export function ixSettlePlayer(params: {
   host: PublicKey;
