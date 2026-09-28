@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { requireWallet } from "@/lib/session";
 import { getActiveRound, mutateActiveRound } from "@/lib/round-store";
-import { buyShares, liquidate, markToMarket, normalizeArenaCode, standings, redactOpeningCalls, sideWord } from "@/lib/royale";
+import { buyShares, liquidate, markToMarket, normalizeArenaCode, standings, redactOpeningCalls, sideWord, logEvent } from "@/lib/royale";
 import { livePricing } from "@/lib/round-keeper";
 
 /**
@@ -42,12 +42,12 @@ export async function POST(request: Request) {
 
     if (body.action === "sell") {
       liquidate(entrant, yes);
-      r.history.push(`${entrant.nickname} liquidated at ${yes}¢.`);
+      logEvent(r, `${entrant.nickname} liquidated at ${yes}¢.`);
     } else {
       const price = body.side === "YES" ? yes : 100 - yes;
       const res = buyShares(entrant, body.side!, body.usdc!, price, yes);
       if (!res.ok) { tradeError = res.reason; return; }
-      r.history.push(`${entrant.nickname} bought ${sideWord(body.side!)} $${body.usdc!.toFixed(2)} at ${price}¢.`);
+      logEvent(r, `${entrant.nickname} bought ${sideWord(body.side!)} $${body.usdc!.toFixed(2)} at ${price}¢.`);
     }
     markToMarket(entrant, yes, priceMap);
   });

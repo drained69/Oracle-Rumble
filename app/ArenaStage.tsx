@@ -40,10 +40,10 @@ type Snapshot = {
   eliminated: Set<string>;
   below: Set<string>;
   pos: Map<string, { shares: number; side: string | null; parlays: number; cashedOut: number }>;
-  championAnnounced: boolean;
 };
 
 const HIGHLIGHT_MS = 1600;
+const THROTTLE_MS = 20_000;
 const MAX_FEED = 40;
 const MAX_PODS = 16;
 
@@ -80,6 +80,9 @@ export default function ArenaStage({ round, standings, survivors, yesPrice, spot
 
   // ── snapshot diff → highlights + feed ──────────────────────────────
   const prev = useRef<Snapshot | null>(null);
+  // Last time each derived line (rank/cut change) was posted, to keep a
+  // lead that flips back and forth from flooding the feed.
+  const lastPosted = useRef<Map<string, number>>(new Map());
   const [feed, setFeed] = useState<FeedEvent[]>([]);
   const [rankMove, setRankMove] = useState<Record<string, "up" | "down">>({});
   const [tradePulse, setTradePulse] = useState<Record<string, "up" | "down">>({});
@@ -101,31 +104,55 @@ export default function ArenaStage({ round, standings, survivors, yesPrice, spot
     const p = prev.current;
     const events: FeedEvent[] = [];
     const t = Date.now();
-    const push = (id: string, text: string, kind: FeedKind) => events.push({ id, at: t, text, kind });
+    // Server log lines carry the time they happened; 0 = not recorded.
+    const loggedAt = (i: number) => round.historyAt?.[i] ?? 0;
+    const lastLogged = (re: RegExp) => {
+      for (let i = round.history.length - 1; i >= 0; i--) if (re.test(round.history[i])) return loggedAt(i);
+      return 0;
+    };
+    const push = (id: string, text: string, kind: FeedKind, at = t) => events.push({ id, at, text, kind });
     const nextRank: Record<string, "up" | "down"> = {};
     const nextPulse: Record<string, "up" | "down"> = {};
 
     if (!p || p.roundId !== round.id) {
       // First view of this round: seed the feed from recent server history.
-      round.history.slice(-6).forEach((line, i, arr) =>
-        push(`h-${round.id}-${round.history.length - arr.length + i}`, line, kindOf(line)));
+      const from = Math.max(0, round.history.length - 8);
+      round.history.slice(from).forEach((line, i) =>
+        push(`h-${round.id}-${from + i}`, line, kindOf(line), loggedAt(from + i)));
     } else {
       round.history.slice(p.historyLen).forEach((line, i) =>
-        push(`h-${round.id}-${p.historyLen + i}`, line, kindOf(line)));
+        push(`h-${round.id}-${p.historyLen + i}`, line, kindOf(line), loggedAt(p.historyLen + i) || t));
 
-      if (round.roundNumber !== p.roundNo) push(`round-${round.id}-${round.roundNumber}`, `Round ${round.roundNumber} begins`, "round");
+      if (round.roundNumber !== p.roundNo) push(`round-${round.id}-${round.roundNumber}`, `Round ${round.roundNumber} begins`, "round", round.createdAt || t);
       if (cutActive && survivors !== p.survivors) push(`cut-${round.id}-${survivors}-${t}`, `Top ${survivors} survive this round`, "cutline");
 
-      eliminated.forEach((id) => { if (!p.eliminated.has(id)) push(`elim-${round.id}-${id}`, `${name(id)} was eliminated`, "elim"); });
-      below.forEach((id) => { if (!p.below.has(id) && !eliminated.has(id)) push(`below-${id}-${t}`, `${name(id)} dropped below the cut`, "cutline"); });
-      p.below.forEach((id) => { if (!below.has(id) && !eliminated.has(id) && ranks.has(id)) push(`above-${id}-${t}`, `${name(id)} climbed above the cut`, "rank"); });
-
+      const settledAt = lastLogged(/ settled/) || t;
+      eliminated.forEach((id) => { if (!p.eliminated.has(id)) push(`elim-${round.id}-${id}`, `${name(id)} was eliminated`, "elim", settledAt); });
+      // Rank/cut changes: one line per player, and the same line at most
+      // once every THROTTLE_MS. With a single survivor slot "above the cut"
+      // just means "#1", so only the #1 line is posted.
+      const throttled = (key: string) => {
+        const last = lastPosted.current.get(key) ?? 0;
+        if (t - last < THROTTLE_MS) return true;
+        lastPosted.current.set(key, t);
+        return false;
+      };
       ranks.forEach((r, id) => {
         const before = p.ranks.get(id);
-        if (!before || before === r) return;
-        nextRank[id] = r < before ? "up" : "down";
-        if (r === 1) push(`rank1-${id}-${t}`, `${name(id)} moved to rank #1`, "rank");
+        if (before && before !== r) nextRank[id] = r < before ? "up" : "down";
       });
+      const newLeader = isLive ? [...ranks].find(([id, r]) => r === 1 && (p.ranks.get(id) ?? 1) !== 1)?.[0] : undefined;
+      if (newLeader && !eliminated.has(newLeader) && !throttled(`lead-${newLeader}`)) {
+        push(`rank1-${newLeader}-${t}`, `${name(newLeader)} took the lead`, "rank");
+      }
+      if (survivors > 1) {
+        below.forEach((id) => {
+          if (!p.below.has(id) && !eliminated.has(id) && !throttled(`below-${id}`)) push(`below-${id}-${t}`, `${name(id)} dropped below the cut`, "cutline");
+        });
+        p.below.forEach((id) => {
+          if (!below.has(id) && !eliminated.has(id) && ranks.has(id) && id !== newLeader && !throttled(`above-${id}`)) push(`above-${id}-${t}`, `${name(id)} climbed above the cut`, "rank");
+        });
+      }
 
       // Trades pulse the trader's pod. Keyed on position changes, not bankroll
       // (bankroll also moves with price). The feed line comes from the
@@ -140,14 +167,13 @@ export default function ArenaStage({ round, standings, survivors, yesPrice, spot
       });
     }
 
-    const announce = isComplete && champion && !(p?.roundId === round.id && p.championAnnounced);
-    if (announce && champion) push(`champ-${round.id}`, `${displayName(champion)} wins the arena`, "champion");
-
     if (events.length) {
       setFeed((f) => {
         const seen = new Set(f.map((x) => x.id));
         const fresh = events.filter((ev) => !seen.has(ev.id)).reverse();
-        return [...fresh, ...f].slice(0, MAX_FEED);
+        // Newest first by when it happened; lines with no recorded time
+        // (older rounds) keep their order below the timed ones.
+        return [...fresh, ...f].sort((a, b) => b.at - a.at).slice(0, MAX_FEED);
       });
     }
     if (Object.keys(nextRank).length) setRankMove(nextRank);
@@ -158,10 +184,9 @@ export default function ArenaStage({ round, standings, survivors, yesPrice, spot
       roundNo: round.roundNumber,
       historyLen: round.history.length,
       survivors,
-      ranks, eliminated, below, pos,
-      championAnnounced: !!(announce || (p?.roundId === round.id && p.championAnnounced))
+      ranks, eliminated, below, pos
     };
-  }, [standings, round, survivors, cutActive, alive, isComplete, champion]);
+  }, [standings, round, survivors, cutActive, alive, isLive]);
 
   // Clear transient highlights after they've played.
   useEffect(() => {
@@ -303,7 +328,9 @@ export default function ArenaStage({ round, standings, survivors, yesPrice, spot
               <li key={ev.id} className={`fe fe-${ev.kind}`}>
                 <span className="fe-dot" aria-hidden="true" />
                 <span className="fe-text">{ev.text}</span>
-                <span className="fe-time">{ago(ev.at)}</span>
+                {ev.at > 0 && (
+                  <time className="fe-time" dateTime={new Date(ev.at).toISOString()} title={new Date(ev.at).toLocaleTimeString()}>{ago(ev.at)}</time>
+                )}
               </li>
             ))}
           </ul>
@@ -320,9 +347,9 @@ function usdPrice(n: number): string {
 
 function kindOf(line: string): FeedKind {
   if (/bought|liquidated|parlay|cashed out/i.test(line)) return "trade";
+  if (/ wins \$|takes .* USDC/i.test(line)) return "champion";
+  if (/ settled|locked|opened|closed at| live —/i.test(line)) return "round";
   if (/cancelled|eliminated/i.test(line)) return "elim";
-  if (/takes .* USDC/i.test(line)) return "champion";
-  if (/settled|locked|opened|closed at|wins/i.test(line)) return "round";
   return "info";
 }
 
@@ -330,7 +357,9 @@ function ago(t: number): string {
   const s = Math.max(0, Math.floor((Date.now() - t) / 1000));
   if (s < 5) return "now";
   if (s < 60) return `${s}s`;
-  return `${Math.floor(s / 60)}m`;
+  if (s < 3600) return `${Math.floor(s / 60)}m`;
+  if (s < 86400) return `${Math.floor(s / 3600)}h`;
+  return `${Math.floor(s / 86400)}d`;
 }
 
 /** Even spacing on a circle, rank #1 at 12 o'clock, clockwise by rank. */

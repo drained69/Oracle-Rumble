@@ -91,20 +91,13 @@ export async function POST(request: Request) {
       if (!escrow.settleSignatures || escrow.settleSignatures.length === 0) {
         return NextResponse.json({ error: round.status === "cancelled" ? "refund is still being prepared — try again in a minute" : "arena not settled yet — settlement pending" }, { status: 409 });
       }
-      if (round.status === "cancelled") {
-        // Refunds go by the on-chain entry — a late deposit may not be in the ledger.
-        const pe = await readPlayerEntry(body.wallet, escrow.roundVault);
-        if (!pe) return NextResponse.json({ error: "this wallet has no deposit in this arena" }, { status: 403 });
-        if (pe.claimed) return NextResponse.json({ error: "refund already claimed" }, { status: 409 });
-        if (!pe.settled) return NextResponse.json({ error: "refund not recorded for this wallet yet" }, { status: 409 });
-      } else {
-        // Only entrants can claim — bots and observers cannot.
-        const entrant = round.entrants.find((e) => e.wallet === body.wallet);
-        if (!entrant) return NextResponse.json({ error: "this wallet did not play in this arena" }, { status: 403 });
-        if ((entrant.cash + entrant.prizeUsdc) <= 0) {
-          return NextResponse.json({ error: "no entitlement to claim" }, { status: 409 });
-        }
-      }
+      // Claims go by the on-chain entry: it covers players, refunds of
+      // cancelled arenas, and deposits that never got a seat.
+      const pe = await readPlayerEntry(body.wallet, escrow.roundVault);
+      if (!pe) return NextResponse.json({ error: "this wallet has no deposit in this arena" }, { status: 403 });
+      if (pe.claimed) return NextResponse.json({ error: "already claimed" }, { status: 409 });
+      if (!pe.settled) return NextResponse.json({ error: "settlement for this wallet isn't recorded yet — try again in a minute" }, { status: 409 });
+      if (pe.entitlementUsdc <= 0) return NextResponse.json({ error: "nothing to claim — this vault finished at $0" }, { status: 409 });
     }
     if (body.action === "recover") {
       if (round.status === "complete") {
@@ -129,8 +122,11 @@ export async function POST(request: Request) {
       }).catch(() => { /* best effort — enroll carries the same data */ });
     }
 
+    const seatUsdc = round.config.entryUsdc + round.config.startingBankroll;
+    const call = body.openingCall === "YES" ? "UP" : body.openingCall === "NO" ? "DOWN" : "decide later";
+    const memo = `Oracle Rumble arena ${arena}: ${seatUsdc.toFixed(2)} USDC seat, ${round.config.asset} opening call ${call}`;
     const res = body.action === "deposit"
-      ? await buildDepositTx(wallet, roundVault)
+      ? await buildDepositTx(wallet, roundVault, memo)
       : await buildWithdrawTx(wallet, roundVault, body.action === "recover");
     if ("error" in res) return NextResponse.json({ error: res.error }, { status: 500 });
     return NextResponse.json({ escrow: "active", base64: res.base64, roundVault: roundVault.toBase58() });

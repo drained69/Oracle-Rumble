@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { requireWallet } from "@/lib/session";
 import { getActiveRound, mutateActiveRound } from "@/lib/round-store";
-import { markToMarket, normalizeArenaCode, standings, redactOpeningCalls } from "@/lib/royale";
+import { markToMarket, normalizeArenaCode, standings, redactOpeningCalls, logEvent } from "@/lib/royale";
 import { livePricing, pantaPriceToCents } from "@/lib/round-keeper";
 import { quoteCashOut } from "@/lib/parlay";
 import { findMockMarket } from "@/lib/arena-data";
@@ -98,7 +98,7 @@ export async function POST(request: Request) {
     t.status = "cashed_out";
     t.settledPayout = quote.netCashoutUsdc;
     t.cashedOutAt = Date.now();
-    r.history.push(
+    logEvent(r, 
       `${e.nickname} cashed out a ${t.legs.length}-leg parlay for $${quote.netCashoutUsdc.toFixed(2)} (staked $${quote.originalStakeUsdc.toFixed(2)}).`
     );
     markToMarket(e, yesForRound, priceMap);

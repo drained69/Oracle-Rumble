@@ -235,6 +235,7 @@ export type Round = {
   endedAt: number;        // ms epoch — set when complete/cancelled, else 0
   championId: string | null;
   history: string[];      // human-readable event log
+  historyAt?: number[];   // ms epoch per history entry (0 = not recorded)
   oracle?: RoundOracle;   // direction rounds: open/last/close prices
   /** On-chain escrow record; undefined = ledger-only arena. */
   escrow?: RoundEscrowRecord;
@@ -310,7 +311,8 @@ export function createRound(config: RoundConfig, roundNumber = 1, arenaCode: str
     liveDeadline: 0,
     endedAt: 0,
     championId: null,
-    history: [`Round ${roundNumber} opened for enrollment.`]
+    history: [`Round ${roundNumber} opened for enrollment.`],
+    historyAt: [now]
   };
 }
 
@@ -341,7 +343,7 @@ export function enroll(round: Round, entrant: Entrant): { ok: boolean; reason?: 
   // Only real players fund the pool. Bots are seat-fillers (sponsor-backed
   // per the Market Royale model) and never inflate the prize.
   if (!entrant.isBot) round.prizePoolUsdc += round.config.entryUsdc;
-  round.history.push(`${entrant.nickname} entered (${round.entrants.length}/${round.config.capacity}).`);
+  logEvent(round, `${entrant.nickname} entered (${round.entrants.length}/${round.config.capacity}).`);
   return { ok: true };
 }
 
@@ -356,13 +358,22 @@ export function fillWithBots(round: Round, target = round.config.capacity): void
     if (used.has(name)) continue;
     const bot = makeEntrant(round, `bot:${name.toLowerCase()}`, name, true);
     round.entrants.push(bot);           // bots don't fund the pool
-    round.history.push(`${name} entered (${round.entrants.length}/${round.config.capacity}).`);
+    logEvent(round, `${name} entered (${round.entrants.length}/${round.config.capacity}).`);
     used.add(name);
   }
 }
 
 export function humanCount(round: Round): number {
   return round.entrants.filter((e) => !e.isBot).length;
+}
+
+/** Append to a round's activity log, stamped with when it happened. */
+export function logEvent(round: Round, text: string, at = Date.now()): void {
+  const times = (round.historyAt ??= []);
+  // Rounds saved before times were recorded: their earlier lines are unknown (0).
+  while (times.length < round.history.length) times.push(0);
+  round.history.push(text);
+  times.push(at);
 }
 
 /** Plain-language name of a side on the direction markets: YES = UP, NO = DOWN. */
@@ -445,7 +456,7 @@ export function placeOpeningCalls(round: Round, yesPrice: number): void {
     const price = call === "YES" ? yesPrice : 100 - yesPrice;
     const stake = e.cash;
     if (buyShares(e, call, stake, price, yesPrice).ok) {
-      round.history.push(`${e.nickname} bought ${sideWord(call)} $${stake.toFixed(2)} at ${price}¢ (opening call).`);
+      logEvent(round, `${e.nickname} bought ${sideWord(call)} $${stake.toFixed(2)} at ${price}¢ (opening call).`);
     }
   }
 }
@@ -590,12 +601,12 @@ export function settle(round: Round, finalYesPrice: number, priceMap?: PriceMap)
   const cut = ranked.slice(survivorCount);
   for (const e of cut) e.eliminatedRound = round.roundNumber;
 
-  round.history.push(
-    `Round ${round.roundNumber} settled at ${finalYesPrice}¢. ` +
-    `${cut.length} eliminated, ${survivors.length} advance.`
-  );
+  const final = survivors.length <= 1 || round.roundNumber >= round.config.roundLimit;
+  logEvent(round, final
+    ? `Round ${round.roundNumber} settled — final standings are in.`
+    : `Round ${round.roundNumber} settled — ${survivors.length} advance, ${cut.length} eliminated.`);
 
-  if (survivors.length <= 1 || round.roundNumber >= round.config.roundLimit) {
+  if (final) {
     round.status = "complete";
     round.endedAt = Date.now();
     // Overall finishing order across ALL entrants, then split the shared pool
@@ -611,9 +622,9 @@ export function settle(round: Round, finalYesPrice: number, priceMap?: PriceMap)
     round.championId = humanWinners[0] ?? survivors[0]?.id ?? null;
     const champ = round.entrants.find((e) => e.id === round.championId);
     const champPrize = champ ? (payouts[champ.id] ?? 0) : 0;
-    round.history.push(champ
-      ? `${champ.nickname} takes ${champPrize.toFixed(2)} USDC of the ${round.prizePoolUsdc} USDC pool.`
-      : `Round complete.`);
+    logEvent(round, champ
+      ? `${champ.nickname} wins $${champPrize.toFixed(2)} from the $${round.prizePoolUsdc.toFixed(2)} pool.`
+      : `Rumble complete.`);
   } else {
     round.status = "advancing";
   }
@@ -685,7 +696,8 @@ export function advance(round: Round, nextMarket: { marketId: string; marketQues
     liveDeadline: Date.now() + round.config.liveSec * 1000,
     endedAt: 0,
     championId: null,
-    history: [`Round ${round.roundNumber + 1} live — ${survivors.length} survivors on ${nextMarket.asset}.`],
+    history: [`Round ${round.roundNumber + 1} live — ${survivors.length} survivor${survivors.length === 1 ? "" : "s"} on ${nextMarket.asset}.`],
+    historyAt: [Date.now()],
     escrow: round.escrow
   };
   return next;

@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { getActiveRound, withKeeperLock } from "@/lib/round-store";
-import { normalizeArenaCode } from "@/lib/royale";
+import { normalizeArenaCode, logEvent } from "@/lib/royale";
 import { readVault } from "@/lib/escrow-server";
 
 export const dynamic = "force-dynamic";
@@ -59,7 +59,7 @@ export async function POST(request: Request) {
     }
     round.status = "cancelled";
     round.endedAt = Date.now();
-    round.history.push("Round cancelled — host deposit was not signed.");
+    logEvent(round, "Round cancelled — host deposit was not signed.");
     await ctx.save(round);
     return { ok: true, arena: arenaCode } as const;
   });

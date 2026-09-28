@@ -26,7 +26,8 @@ import {
   settle,
   type PriceMap,
   type Round,
-  type RoundConfig
+  type RoundConfig,
+  logEvent
 } from "@/lib/royale";
 
 /** How long a new hosted arena waits for the host's seat deposit to confirm. */
@@ -282,7 +283,7 @@ export function tick(round: Round, pricing: Pricing): Round {
     if (humanCount(round) === 0) {
       round.status = "cancelled";
       round.endedAt = now;
-      round.history.push("Round cancelled — no players entered.");
+      logEvent(round, "Round cancelled — no players entered.");
       return round;
     }
     // The open price is the whole bet — wait (briefly) for the oracle
@@ -298,15 +299,15 @@ export function tick(round: Round, pricing: Pricing): Round {
     if (round.entrants.length < round.config.minEntrants) {
       round.status = "cancelled";
       round.endedAt = now;
-      round.history.push(`Round cancelled — only ${round.entrants.length} entrants. Entry pool refunded.`);
+      logEvent(round, `Round cancelled — only ${round.entrants.length} entrants. Entry pool refunded.`);
       return round;
     }
     round.status = "live";
     round.liveDeadline = now + round.config.liveSec * 1000;
-    round.history.push(`Enrollment locked — ${round.entrants.length} entrants live on ${round.config.asset}.`);
+    logEvent(round, `Enrollment locked — ${round.entrants.length} entrants live on ${round.config.asset}.`);
     if (direction && pricing.spots[asset]) {
       openOracle(round, pricing.spots, now);
-      round.history.push(`${asset} opened at ${usdFmt(pricing.spots[asset]!)} — UP wins if it closes higher.`);
+      logEvent(round, `${asset} opened at ${usdFmt(pricing.spots[asset]!)} — UP wins if it closes higher.`);
     }
     // UP/DOWN calls picked at the seat go in at the opening price.
     placeOpeningCalls(round, direction ? 50 : pricing.yesPrice);
@@ -317,7 +318,7 @@ export function tick(round: Round, pricing: Pricing): Round {
     // oracle outage at the lock) open on the first priced tick.
     if (direction && !round.oracle?.open?.[asset] && pricing.spots[asset]) {
       openOracle(round, pricing.spots, now);
-      round.history.push(`${asset} opened at ${usdFmt(pricing.spots[asset]!)} — UP wins if it closes higher.`);
+      logEvent(round, `${asset} opened at ${usdFmt(pricing.spots[asset]!)} — UP wins if it closes higher.`);
     }
     const priceMap = direction ? oraclePriceMap(round, pricing.spots, now) : pricing.priceMap;
     const yesPrice = direction ? priceMap[round.config.marketId] ?? 50 : pricing.yesPrice;
@@ -348,7 +349,7 @@ export function tick(round: Round, pricing: Pricing): Round {
       const finalMap: PriceMap = {};
       for (const m of directionMarkets) finalMap[m.id] = resolvedCents(open[m.asset], closeRec[m.asset]);
       const o = open[asset], c = closeRec[asset];
-      round.history.push(o && c
+      logEvent(round, o && c
         ? `${asset} closed at ${usdFmt(c)} vs ${usdFmt(o)} open — ${c > o ? "UP wins" : c < o ? "DOWN wins" : "flat, both sides pay 50¢"}.`
         : `${asset} price unavailable at the close — both sides settle at 50¢.`);
       settle(round, finalMap[round.config.marketId] ?? 50, finalMap);
@@ -369,7 +370,7 @@ export function advanceToNext(round: Round, nextMarket: { marketId: string; mark
   const a = next.config.asset as AssetSymbol;
   if (isDirectionRound(next) && spots[a]) {
     openOracle(next, spots, Date.now());
-    next.history.push(`${a} opened at ${usdFmt(spots[a]!)} — UP wins if it closes higher.`);
+    logEvent(next, `${a} opened at ${usdFmt(spots[a]!)} — UP wins if it closes higher.`);
   }
   return next;
 }

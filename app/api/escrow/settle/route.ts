@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { escrowReady, listDepositors, readVault, settleArenaOnChain, type SettleEntry } from "@/lib/escrow-server";
 import { getLatestRound, saveRound } from "@/lib/round-store";
-import { normalizeArenaCode, type Round } from "@/lib/royale";
+import { normalizeArenaCode, type Round, logEvent } from "@/lib/royale";
 
 export const dynamic = "force-dynamic";
 
@@ -38,7 +38,7 @@ async function refundCancelled(round: Round) {
 
   escrow.settleSignatures = res.signatures;
   escrow.history.push(...res.signatures.map((s) => `Refund ✓ ${s.slice(0, 12)}…`));
-  round.history.push(`Refunds open — ${depositors.length} deposit${depositors.length === 1 ? "" : "s"} can be claimed in full.`);
+  logEvent(round, `Refunds open — ${depositors.length} deposit${depositors.length === 1 ? "" : "s"} can be claimed in full.`);
   await saveRound(round);
   return NextResponse.json({ ok: true, refund: true, signatures: res.signatures, depositors: depositors.length });
 }
@@ -112,13 +112,13 @@ export async function POST(request: Request) {
       entitlementUsdc: Math.floor(e.entitlementUsdc * ratio * 1e6) / 1e6
     }));
     capApplied = { rawSum, capped: playerCap, ratio };
-    round.history.push(
+    logEvent(round, 
       `Entitlements capped for conservation: ${rawSum.toFixed(2)} → ${playerCap.toFixed(2)} USDC (×${ratio.toFixed(4)}).`
     );
   }
   entries = entries.concat(refunds);
   if (refunds.length) {
-    round.history.push(`${refunds.length} deposit${refunds.length === 1 ? "" : "s"} without a seat refunded in full.`);
+    logEvent(round, `${refunds.length} deposit${refunds.length === 1 ? "" : "s"} without a seat refunded in full.`);
   }
 
   const res = await settleArenaOnChain(round.escrow.roundVault, entries);

@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { requireWallet } from "@/lib/session";
 import { getActiveRound, mutateActiveRound } from "@/lib/round-store";
-import { markToMarket, normalizeArenaCode, placeParlay, standings, type ParlayLegState, type ParlayTicket, redactOpeningCalls } from "@/lib/royale";
+import { markToMarket, normalizeArenaCode, placeParlay, standings, type ParlayLegState, type ParlayTicket, redactOpeningCalls, logEvent } from "@/lib/royale";
 import { livePricing, pantaPriceToCents } from "@/lib/round-keeper";
 import { quoteParlay, validateParlay, type ParlayLeg } from "@/lib/parlay";
 import { findMockMarket } from "@/lib/arena-data";
@@ -106,7 +106,7 @@ export async function POST(request: Request) {
     };
     const res = placeParlay(entrant, ticket);
     if (!res.ok) { placeError = res.reason; return; }
-    r.history.push(`${entrant.nickname} placed a ${legState.length}-leg parlay for $${quote.stakeUsdc.toFixed(0)} (pays $${quote.potentialPayoutUsdc.toFixed(0)}).`);
+    logEvent(r, `${entrant.nickname} placed a ${legState.length}-leg parlay for $${quote.stakeUsdc.toFixed(0)} (pays $${quote.potentialPayoutUsdc.toFixed(0)}).`);
     markToMarket(entrant, yes, priceMap);
   });
 

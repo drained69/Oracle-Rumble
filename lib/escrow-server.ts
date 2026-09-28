@@ -18,7 +18,8 @@ import {
   Connection,
   Keypair,
   PublicKey,
-  Transaction
+  Transaction,
+  TransactionInstruction
 } from "@solana/web3.js";
 import {
   ESCROW_ACTIVE,
@@ -186,7 +187,18 @@ async function buildTx(ixs: Awaited<ReturnType<typeof ixDeposit>>[], feePayer: P
   return Buffer.from(tx.serialize({ requireAllSignatures: false, verifySignatures: false })).toString("base64");
 }
 
-export async function buildDepositTx(player: PublicKey, roundVault: PublicKey): Promise<{ base64: string } | { error: string }> {
+/** SPL Memo v2 — a readable note on the deposit (arena, seat, opening call). */
+const MEMO_PROGRAM_ID = new PublicKey("MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr");
+
+function ixMemo(text: string, signer: PublicKey): TransactionInstruction {
+  return new TransactionInstruction({
+    programId: MEMO_PROGRAM_ID,
+    keys: [{ pubkey: signer, isSigner: true, isWritable: false }],
+    data: Buffer.from(text.slice(0, 200), "utf8")
+  });
+}
+
+export async function buildDepositTx(player: PublicKey, roundVault: PublicKey, memo?: string): Promise<{ base64: string } | { error: string }> {
   if (!escrowReady() || !USDC_MINT) return { error: "escrow inactive" };
   // Prepend an idempotent ATA-create for the player's USDC ATA. Without this
   // a fresh wallet that has never held USDC on this cluster has no ATA yet,
@@ -194,7 +206,7 @@ export async function buildDepositTx(player: PublicKey, roundVault: PublicKey): 
   // The idempotent variant is a no-op if the ATA already exists.
   const createAta = ixCreateAtaIdempotent({ payer: player, owner: player, mint: USDC_MINT });
   const deposit = ixDeposit({ player, roundVault, mint: USDC_MINT });
-  const base64 = await buildTx([createAta, deposit], player);
+  const base64 = await buildTx(memo ? [createAta, deposit, ixMemo(memo, player)] : [createAta, deposit], player);
   return { base64 };
 }
 

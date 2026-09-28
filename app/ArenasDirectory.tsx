@@ -86,7 +86,7 @@ export default function ArenasDirectory() {
   const [hVault, setHVault] = useState("10");
   const [hStartInMin, setHStartInMin] = useState(15);
   // The host's own opening call (they take seat 1 like everyone else).
-  const [hCall, setHCall] = useState<"YES" | "NO" | "LATER">("LATER");
+  const [hCall, setHCall] = useState<"YES" | "NO" | "LATER" | "">("");
   const [inviteInfo, setInviteInfo] = useState<{ code: string; url: string } | null>(null);
 
   useEffect(() => {
@@ -138,6 +138,7 @@ export default function ArenasDirectory() {
 
   const doHostAndJoin = useCallback(async () => {
     if (hostInputError) { setToast(hostInputError); return; }
+    if (!hCall) { setToast(`Pick UP or DOWN on ${hAsset} (or decide later) before taking seat 1.`); return; }
     // On-chain hosting needs the host's own seat deposit signature.
     if (escrow?.active && !wallet) {
       setToast("Connect a wallet first — hosting on-chain needs your seat deposit.");
@@ -179,7 +180,10 @@ export default function ArenasDirectory() {
       // The host takes seat #1. If that deposit isn't signed, roll the
       // arena back so no unfunded room is left behind.
       setHostStep("signing");
-      if (escrow?.active) setToast("Approve the seat deposit in your wallet…");
+      if (escrow?.active) {
+        const callText = hCall === "LATER" ? "no opening call yet" : `opening call ${hCall === "YES" ? "UP" : "DOWN"}`;
+        setToast(`Approve your ${usd2.format(hostSeat)} seat deposit in your wallet — ${callText}.`);
+      }
       let enrollError = "";
       let refundable = false;
       try {
@@ -444,7 +448,7 @@ function HostPanel({
   hCapacity: number; setHCapacity: (v: number) => void;
   hEntry: string; setHEntry: (v: string) => void;
   hVault: string; setHVault: (v: string) => void;
-  hCall: "YES" | "NO" | "LATER"; setHCall: (v: "YES" | "NO" | "LATER") => void;
+  hCall: "YES" | "NO" | "LATER" | ""; setHCall: (v: "YES" | "NO" | "LATER") => void;
   hostSeat: number; poolIfFull: number; inputError: string;
   wallet: string | null; escrowActive: boolean; escrowKnown: boolean;
   username: string; nameDraft: string; setNameDraft: (v: string) => void;
@@ -458,8 +462,9 @@ function HostPanel({
     step === "checking" ? "Checking balance…" :
     step === "opening" ? "Opening arena…" :
     step === "signing" ? "Confirm in your wallet…" :
-    escrowActive ? "Host & take seat 1" :
-    (wallet ? "Host & take seat 1 · practice" : "Host practice arena");
+    !wallet && !escrowActive ? "Host practice arena" :
+    !hCall ? `Pick UP or DOWN on ${hAsset}` :
+    `${hCall === "YES" ? "Deposit & call UP" : hCall === "NO" ? "Deposit & call DOWN" : "Deposit & take seat 1"} · ${usd2.format(hostSeat)}${escrowActive ? "" : " · practice"}`;
 
   return (
     <div className="jc-host">
@@ -495,6 +500,23 @@ function HostPanel({
           </span>
         </label>
       ) : null}
+
+      {/* Seat 1 is a real position — say which way it goes before any deposit. */}
+      <div className="jc-field host-call">
+        <span className="jc-field-label">Your call on {hAsset}</span>
+        <div className="gm-seg call-seg" role="radiogroup" aria-label="Your opening call">
+          <button role="radio" aria-checked={hCall === "YES"} className={`opt up ${hCall === "YES" ? "on" : ""}`} onClick={() => setHCall("YES")}>▲ Up</button>
+          <button role="radio" aria-checked={hCall === "NO"} className={`opt down ${hCall === "NO" ? "on" : ""}`} onClick={() => setHCall("NO")}>▼ Down</button>
+          <button role="radio" aria-checked={hCall === "LATER"} className={`opt ${hCall === "LATER" ? "on" : ""}`} onClick={() => setHCall("LATER")}>Decide later</button>
+        </div>
+        <p className={`jc-help call-help ${hCall ? "" : "need"}`} role="status">
+          {!hCall
+            ? `You take seat 1: pick UP if you think ${hAsset} finishes the round above its opening price, DOWN if below — or decide once trading opens.`
+            : hCall === "LATER"
+              ? `Your vault stays in cash. The round opens at ${hAsset}'s live price; you pick UP or DOWN once trading starts.`
+              : `Your whole ${usd2.format(Number(hVault) || 0)} vault goes on ${hCall === "YES" ? "UP" : "DOWN"} at ${hAsset}'s opening price when trading starts — each share pays $1 if ${hAsset} closes ${hCall === "YES" ? "higher" : "lower"}. You can switch any time during the round.`}
+        </p>
+      </div>
 
       <div className="gm-seg" role="radiogroup" aria-label="Start mode">
         <button role="radio" aria-checked={hMode === "quick"} className={`opt ${hMode === "quick" ? "on" : ""}`} onClick={() => setHMode("quick")}>Quick</button>
@@ -546,13 +568,6 @@ function HostPanel({
             ))}
           </div>
         </FieldRow>
-        <FieldRow label={`Your call on ${hAsset}`}>
-          <div className="gm-seg call-seg" role="radiogroup" aria-label="Your opening call">
-            <button role="radio" aria-checked={hCall === "YES"} className={`opt up ${hCall === "YES" ? "on" : ""}`} onClick={() => setHCall("YES")}>▲ Up</button>
-            <button role="radio" aria-checked={hCall === "NO"} className={`opt down ${hCall === "NO" ? "on" : ""}`} onClick={() => setHCall("NO")}>▼ Down</button>
-            <button role="radio" aria-checked={hCall === "LATER"} className={`opt ${hCall === "LATER" ? "on" : ""}`} onClick={() => setHCall("LATER")}>Later</button>
-          </div>
-        </FieldRow>
         {hFormat === "royale" && (
           <FieldRow label="Rounds">
             <div className="gm-seg">
@@ -583,18 +598,13 @@ function HostPanel({
         <div><span>Payout</span><b>{hCapacity <= 2 ? "Winner" : "Top 3"}</b></div>
       </div>
 
-      <p className="jc-help">
-        {hCall === "LATER"
-          ? `Every round opens at ${hAsset}'s live price. UP pays if it closes higher, DOWN if lower — you pick once trading opens.`
-          : `Your whole vault goes on ${hCall === "YES" ? "UP" : "DOWN"} at ${hAsset}'s opening price when trading starts. You can switch any time during the round.`}
-      </p>
 
       {inputError && <p className="jc-error" role="alert">{inputError}</p>}
       {escrowKnown && !escrowActive && (
         <p className="jc-note"><b>Practice mode.</b> Hosting works, but no USDC moves and your wallet won&apos;t be asked to sign.</p>
       )}
 
-      <button className="gm-host-cta" onClick={onSubmit} disabled={busy || !!inputError || needsWallet} aria-busy={busy}>
+      <button className="gm-host-cta" onClick={onSubmit} disabled={busy || !!inputError || needsWallet || (!!wallet && !hCall)} aria-busy={busy}>
         {label}
       </button>
     </div>

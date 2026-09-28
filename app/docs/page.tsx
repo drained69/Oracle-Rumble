@@ -174,7 +174,7 @@ withdraw  = remaining vault + prize share`}</pre>
 
           <Section id="recovery" title="Cancellations & recovery">
             <ul>
-              <li><b>Host doesn&apos;t fund seat #1</b> — if the host rejects the deposit, or no seat is confirmed within 3 minutes of opening, the arena closes before anyone else can join.</li>
+              <li><b>Host doesn&apos;t fund seat #1</b> — the host picks UP, DOWN or decide later and pays seat 1 like everyone else. If the host rejects the deposit, or no seat is confirmed within 3 minutes of opening, the arena closes before anyone else can join.</li>
               <li><b>Your seat follows your deposit</b> — the escrow vault is the source of truth. If your deposit confirms but the page loses its connection before the seat is registered, the arena seats you from your on-chain entry automatically (before it locks, with the username and call you chose). An arena that has received a deposit can&apos;t be cancelled as empty.</li>
               <li><b>Full refunds</b> — when an arena closes without starting, every wallet that deposited (including a deposit that confirmed after the close) is refunded its full seat. The refund opens about two minutes after the close; claim it from the arena page. A deposit that lands after the round has already started is refunded in full at settlement.</li>
               <li><b>Settlement never happens</b> — as a last resort, one hour after enrollment closes any depositor can call Recover directly on the escrow program and receive their full seat.</li>
@@ -266,7 +266,7 @@ net  = fair − fee   → credited to your vault`}</pre>
             <p>Phantom, Backpack and Solflare are supported. Set the wallet to Solana {CLUSTER}.</p>
             <ul>
               <li><b>Sign-in</b> — before your first seat or trade the wallet signs a free sign-in message (not a transaction). It proves the requests for your seat come from you; the session lasts a week on this browser and ends when you disconnect.</li>
-              <li><b>Escrow deposit, claim and recover</b> are legacy transactions built by the server and signed by you.</li>
+              <li><b>Escrow deposit, claim and recover</b> are legacy transactions built by the server and signed by you. The deposit carries a memo with the arena, the seat amount and your opening call (UP, DOWN or decide later), visible in your wallet and on the explorer.</li>
               <li><b>Panta orders and claims</b> are v0 transactions compiled in your browser from Panta&apos;s instructions.</li>
               <li>You pay the network fee for every transaction you sign. Private keys never leave your wallet.</li>
             </ul>

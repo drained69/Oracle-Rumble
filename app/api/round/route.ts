@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { STORE_ENABLED, withKeeperLock } from "@/lib/round-store";
 import { advanceToNext, bootstrapRound, livePricing, oraclePriceMap, pickMarket, tick, yesAfterTick, type Pricing } from "@/lib/round-keeper";
-import { PUBLIC_ARENA, cutLine, humanCount, newArenaCode, normalizeArenaCode, redactOpeningCalls, seatPlayer, standings, type Round } from "@/lib/royale";
+import { PUBLIC_ARENA, cutLine, humanCount, newArenaCode, normalizeArenaCode, redactOpeningCalls, seatPlayer, standings, type Round, logEvent } from "@/lib/royale";
 import { escrowReady, initArenaOnChain } from "@/lib/escrow-server";
 import { LOCK_HOLD_MAX_MS, unseatedDepositors, type SeatSync } from "@/lib/seat-sync";
 
@@ -171,7 +171,7 @@ export async function POST(request: Request) {
     });
     if (res.ok) {
       fresh.escrow = res.record;
-      fresh.history.push(`On-chain vault ✓ ${res.record.roundVault.slice(0, 8)}…`);
+      logEvent(fresh, `On-chain vault ✓ ${res.record.roundVault.slice(0, 8)}…`);
     } else {
       // Escrow init failed — refuse to open the arena rather than silently
       // running it ledger-only under a shareable code. The user can retry.
