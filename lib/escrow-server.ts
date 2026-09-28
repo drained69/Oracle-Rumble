@@ -18,8 +18,7 @@ import {
   Connection,
   Keypair,
   PublicKey,
-  Transaction,
-  sendAndConfirmTransaction
+  Transaction
 } from "@solana/web3.js";
 import {
   ESCROW_ACTIVE,
@@ -55,8 +54,49 @@ export function hostKeypair(): Keypair | null {
 }
 
 export function connection(): Connection {
-  if (!_g.__or_conn) _g.__or_conn = new Connection(RPC, "confirmed");
+  // Disable the WebSocket endpoint entirely — Railway's bundle drops the
+  // optional `bufferutil` dep, which makes `Connection.confirmTransaction`
+  // (WS-based) hang forever on `bufferUtil.mask is not a function`. Setting
+  // wsEndpoint to a bogus value that never opens keeps HTTP calls working
+  // while forcing us to poll via getSignatureStatus below.
+  if (!_g.__or_conn) {
+    _g.__or_conn = new Connection(RPC, { commitment: "confirmed", wsEndpoint: undefined });
+  }
   return _g.__or_conn;
+}
+
+const CONFIRM_TIMEOUT_MS = 60_000;
+const CONFIRM_POLL_MS = 1_500;
+
+/**
+ * Sign a legacy Transaction with `signers[0]` as fee payer, broadcast, then
+ * poll `getSignatureStatus` until confirmed. Never uses a WebSocket, so it
+ * works in bundled server builds that drop `bufferutil` (Railway/Vercel).
+ */
+async function signSendConfirm(tx: Transaction, signers: Keypair[]): Promise<string> {
+  const conn = connection();
+  const { blockhash, lastValidBlockHeight } = await conn.getLatestBlockhash("confirmed");
+  tx.recentBlockhash = blockhash;
+  tx.feePayer = signers[0].publicKey;
+  tx.sign(...signers);
+  const raw = tx.serialize();
+  const sig = await conn.sendRawTransaction(raw, { skipPreflight: false, preflightCommitment: "confirmed" });
+
+  // HTTP-only polling — never opens the WS.
+  const deadline = Date.now() + CONFIRM_TIMEOUT_MS;
+  while (Date.now() < deadline) {
+    const st = await conn.getSignatureStatus(sig, { searchTransactionHistory: true });
+    const s = st?.value?.confirmationStatus;
+    if (st?.value?.err) throw new Error(`tx ${sig} failed: ${JSON.stringify(st.value.err)}`);
+    if (s === "confirmed" || s === "finalized") return sig;
+    // If the blockhash expired without confirmation, bail out early.
+    const height = await conn.getBlockHeight("confirmed").catch(() => 0);
+    if (height && height > lastValidBlockHeight) {
+      throw new Error(`tx ${sig} blockhash expired before confirmation`);
+    }
+    await new Promise((r) => setTimeout(r, CONFIRM_POLL_MS));
+  }
+  throw new Error(`tx ${sig} not confirmed within ${CONFIRM_TIMEOUT_MS}ms`);
 }
 
 /** Fully-configured escrow: program id, USDC mint, and host key present. */
@@ -103,8 +143,7 @@ export async function initArenaOnChain(p: InitArenaParams): Promise<{ ok: true; 
     settleDeadline
   });
   try {
-    const tx = new Transaction().add(ix);
-    const sig = await sendAndConfirmTransaction(connection(), tx, [host], { commitment: "confirmed" });
+    const sig = await signSendConfirm(new Transaction().add(ix), [host]);
     return {
       ok: true,
       record: {
@@ -152,7 +191,6 @@ export type SettleEntry = { wallet: string; entitlementUsdc: number };
 export async function settleArenaOnChain(roundVaultPk: string, players: SettleEntry[]): Promise<{ ok: true; signatures: string[] } | { ok: false; error: string }> {
   const host = hostKeypair();
   if (!escrowReady() || !host) return { ok: false, error: "escrow inactive" };
-  const conn = connection();
   const roundVault = new PublicKey(roundVaultPk);
   const sigs: string[] = [];
   try {
@@ -160,11 +198,11 @@ export async function settleArenaOnChain(roundVaultPk: string, players: SettleEn
       const playerPk = new PublicKey(p.wallet);
       const [playerEntry] = playerEntryPda(roundVault, playerPk);
       const ix = ixSettlePlayer({ host: host.publicKey, roundVault, playerEntry, entitlementUsdc: p.entitlementUsdc });
-      const sig = await sendAndConfirmTransaction(conn, new Transaction().add(ix), [host], { commitment: "confirmed" });
+      const sig = await signSendConfirm(new Transaction().add(ix), [host]);
       sigs.push(sig);
     }
     const closeIx = ixCloseSettlement({ host: host.publicKey, roundVault });
-    const closeSig = await sendAndConfirmTransaction(conn, new Transaction().add(closeIx), [host], { commitment: "confirmed" });
+    const closeSig = await signSendConfirm(new Transaction().add(closeIx), [host]);
     sigs.push(closeSig);
     return { ok: true, signatures: sigs };
   } catch (err) {
