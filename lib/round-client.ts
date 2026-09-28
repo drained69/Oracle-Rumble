@@ -217,3 +217,16 @@ export async function newRound(config?: HostConfig): Promise<RoundView & { error
   });
   return res.json();
 }
+
+/**
+ * Cancel an arena that was just created but never funded — used when the
+ * host's seat-deposit signing fails so we don't leave an orphaned room.
+ */
+export async function cancelArena(arena: string, wallet?: string): Promise<{ ok?: boolean; error?: string }> {
+  const res = await fetch("/api/round/cancel", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ arena, wallet })
+  });
+  return res.json();
+}

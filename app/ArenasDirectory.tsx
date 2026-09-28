@@ -9,7 +9,7 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { connectSolanaWallet } from "@/lib/panta-client";
-import { enrollWithEscrow, newRound } from "@/lib/round-client";
+import { cancelArena, enrollWithEscrow, newRound } from "@/lib/round-client";
 import PantaGraduationBanner from "@/app/PantaGraduationBanner";
 
 const usd = new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 0 });
@@ -143,7 +143,16 @@ export default function ArenasDirectory() {
   const poolIfFull = (Number(hEntry) || 0) * hCapacity;
 
   const doHostAndJoin = useCallback(async () => {
+    // Real-mode guard: on-chain hosting requires a wallet signature for the
+    // host's own seat deposit. Refuse before we spend an on-chain InitRound
+    // tx on an arena the caller can't actually fund.
+    if (escrow?.active && !wallet) {
+      setToast("Connect a wallet first — hosting on-chain needs your seat deposit signature.");
+      return;
+    }
+
     setBusy(true);
+    let openedArena: string | null = null;
     try {
       const enrollmentSec = hMode === "scheduled" ? hStartInMin * 60 : undefined;
       const v = await newRound({
@@ -153,15 +162,38 @@ export default function ArenasDirectory() {
         enrollmentSec, host: wallet ?? ""
       });
       if (v.error || !v.arena) { setToast(v.error ?? "Host failed."); return; }
+      openedArena = v.arena;
       const url = `${window.location.origin}/a/${v.arena}`;
-      if (wallet) {
-        try {
-          const nick = shortPk(wallet).replace("…", "");
-          if (escrow?.active) setToast("Signing seat deposit…");
-          const r = await enrollWithEscrow(wallet, nick, v.arena);
-          if (r.error) setToast(`Hosted, seat #1 failed: ${r.error}`);
-        } catch { /* enroll fails are OK */ }
+
+      // Practice-mode fast path: no wallet, no deposit — arena is a walk-in.
+      if (!wallet) {
+        setInviteInfo({ code: v.arena, url });
+        refresh();
+        return;
       }
+
+      // Real-mode / practice-with-wallet: the host must sign the seat
+      // deposit BEFORE we show the invite screen. If signing fails or the
+      // wallet is dismissed, cancel the arena we just opened so the room
+      // doesn't linger as an unfunded orphan.
+      const nick = shortPk(wallet).replace("…", "");
+      if (escrow?.active) setToast("Sign the seat deposit in your wallet…");
+      let enrollError = "";
+      try {
+        const r = await enrollWithEscrow(wallet, nick, v.arena);
+        if (r.error) enrollError = r.error;
+      } catch (err) {
+        enrollError = err instanceof Error ? err.message : "wallet signing failed";
+      }
+
+      if (enrollError) {
+        // Roll the arena back — we never funded seat #1.
+        await cancelArena(v.arena, wallet).catch(() => { /* best effort */ });
+        openedArena = null;
+        setToast(`Host cancelled: ${enrollError}`);
+        return;
+      }
+
       setInviteInfo({ code: v.arena, url });
       refresh();
     } finally { setBusy(false); }

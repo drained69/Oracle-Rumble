@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { connectSolanaWallet } from "@/lib/panta-client";
-import { getRound, enrollWithEscrow, tradeRound, newRound, placeParlayApi, claimFromEscrow, serverSettleArena, type RoundView } from "@/lib/round-client";
+import { getRound, enrollWithEscrow, tradeRound, newRound, placeParlayApi, claimFromEscrow, serverSettleArena, cancelArena, type RoundView } from "@/lib/round-client";
 import type { Entrant, Round, ParlayTicket } from "@/lib/royale";
 import { PUBLIC_ARENA } from "@/lib/royale";
 import { markets as boardMarkets } from "@/lib/arena-data";
@@ -329,6 +329,13 @@ export default function ArenaView({ arenaCode }: { arenaCode: string }) {
   }, [wallet, enrolled, parlayLegs, parlayStake, arenaCode, refresh]);
 
   const doHost = useCallback(async () => {
+    // Real-mode guard: on-chain hosting requires the host to sign a seat
+    // deposit before the room is real.
+    if (escrow?.active && !wallet) {
+      setToast("Connect a wallet first — hosting on-chain needs your seat deposit signature.");
+      return;
+    }
+
     setBusy(true);
     try {
       const v = await newRound({
@@ -341,14 +348,39 @@ export default function ArenaView({ arenaCode }: { arenaCode: string }) {
         roundLimit: hFormat === "royale" ? hRounds : 1,
         host: wallet ?? ""
       });
-      if (v.error) { setToast(v.error); }
-      else if (v.arena) {
-        const url = `${window.location.origin}/a/${v.arena}`;
+      if (v.error || !v.arena) { setToast(v.error ?? "Host failed."); return; }
+      const url = `${window.location.origin}/a/${v.arena}`;
+
+      // No wallet → practice-mode arena, no seat deposit required.
+      if (!wallet) {
         setInviteInfo({ code: v.arena, url });
         setToast(`Arena ${v.arena} is open. Share the link.`);
+        return;
       }
+
+      // With wallet: the host must sign seat #1 deposit before the arena
+      // is announced. If signing is dismissed or fails, roll back so the
+      // room doesn't linger as an unfunded orphan.
+      const nick = shortPk(wallet).replace("…", "");
+      if (escrow?.active) setToast("Sign the seat deposit in your wallet…");
+      let enrollError = "";
+      try {
+        const r = await enrollWithEscrow(wallet, nick, v.arena);
+        if (r.error) enrollError = r.error;
+      } catch (err) {
+        enrollError = err instanceof Error ? err.message : "wallet signing failed";
+      }
+
+      if (enrollError) {
+        await cancelArena(v.arena, wallet).catch(() => { /* best effort */ });
+        setToast(`Host cancelled: ${enrollError}`);
+        return;
+      }
+
+      setInviteInfo({ code: v.arena, url });
+      setToast(`Arena ${v.arena} is open. Share the link.`);
     } finally { setBusy(false); }
-  }, [hAsset, hHorizon, hFormat, hEntry, hVault, hCapacity, hRounds, wallet]);
+  }, [hAsset, hHorizon, hFormat, hEntry, hVault, hCapacity, hRounds, wallet, escrow]);
 
   const doCopyInvite = useCallback(async (url?: string) => {
     const link = url ?? currentInviteUrl;
