@@ -32,7 +32,7 @@ export function pickAvatar(wallet: string): { face: number; palette: typeof PALE
   const h = hash(wallet || "anon");
   return {
     face: h % 6,             // 6 face variants
-    palette: PALETTES[(h >> 8) % PALETTES.length]
+    palette: PALETTES[(h >>> 8) % PALETTES.length] // unsigned shift — `>>` can go negative
   };
 }
 

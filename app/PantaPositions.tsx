@@ -76,8 +76,8 @@ export default function PantaPositions({ wallet }: { wallet: string | null }) {
           <b className="mono small">{wallet ? `${wallet.slice(0, 4)}…${wallet.slice(-4)}` : "—"}</b>
         </div>
         <div>
-          <span>Source</span>
-          <b className={source === "panta" ? "state-live" : source === "mock" ? "state-demo" : ""}>{source === "panta" ? "LIVE" : source === "mock" ? "DEMO" : "…"}</b>
+          <span>Data</span>
+          <b className={source === "panta" ? "state-live" : source === "mock" ? "state-demo" : ""}>{source === "panta" ? "Panta live" : source === "mock" ? "Sample" : "…"}</b>
         </div>
         <div>
           <span>Open</span>

@@ -1,0 +1,42 @@
+import { useId } from "react";
+
+/**
+ * Oracle Rumble mark — an all-seeing eye inside a segmented compass ring.
+ * Single source for every header, the favicon mirrors this geometry.
+ */
+export function BrandMark({ size = 34, className = "mark" }: { size?: number; className?: string }) {
+  const gid = useId().replace(/:/g, "");
+  return (
+    <svg className={className} width={size} height={size} viewBox="0 0 64 64" aria-hidden="true">
+      <defs>
+        <linearGradient id={`or-ring-${gid}`} x1="8" y1="8" x2="56" y2="56" gradientUnits="userSpaceOnUse">
+          <stop offset="0" stopColor="#d8b4fe" />
+          <stop offset="1" stopColor="#67e8f9" />
+        </linearGradient>
+      </defs>
+      <rect x="1" y="1" width="62" height="62" rx="15" fill="#0b0e17" stroke="#262b40" />
+      <g fill="none" stroke={`url(#or-ring-${gid})`} strokeWidth="3" strokeLinecap="round">
+        <path d="M 14.2 25.1 A 19 19 0 0 1 25.1 14.2" />
+        <path d="M 38.9 14.2 A 19 19 0 0 1 49.8 25.1" />
+        <path d="M 49.8 38.9 A 19 19 0 0 1 38.9 49.8" />
+        <path d="M 25.1 49.8 A 19 19 0 0 1 14.2 38.9" />
+      </g>
+      <path d="M 32 6 L 34.6 17 L 32 20 L 29.4 17 Z" fill="#edf0f6" />
+      <path d="M 32 58 L 34.6 47 L 32 44 L 29.4 47 Z" fill="#edf0f6" />
+      <path d="M 7 32 H 12 M 52 32 H 57" stroke="#edf0f6" strokeWidth="2.6" strokeLinecap="round" />
+      <path d="M 15 32 C 21 23.5 26.5 21 32 21 C 37.5 21 43 23.5 49 32 C 43 40.5 37.5 43 32 43 C 26.5 43 21 40.5 15 32 Z" fill="#edf0f6" />
+      <circle cx="32" cy="32" r="6.6" fill="#0b0e17" />
+      <circle cx="32" cy="32" r="3" fill={`url(#or-ring-${gid})`} />
+    </svg>
+  );
+}
+
+/** Two-tone wordmark next to the mark. */
+export function Wordmark() {
+  return (
+    <span className="wordmark">
+      <span className="wm-a">ORACLE</span>
+      <span className="wm-b">RUMBLE</span>
+    </span>
+  );
+}

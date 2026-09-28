@@ -1,28 +1,21 @@
 "use client";
 
 /**
- * Arenas directory — Jumper-style single-viewport widget.
- * No scrolling on the main entry: a centered card with two clickable tabs
- * (Play, Host). Long-form content lives on /docs. Deep views like
- * /positions live on their own routes reached from the header.
+ * Home — a single-viewport lobby. Left: what Oracle Rumble is. Right: a
+ * card with two tabs, Join (live arenas) and Host (open a new arena).
+ * Positions and Docs are their own routes, reached from the header.
  */
 
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { connectSolanaWallet } from "@/lib/panta-client";
-import { cancelArena, enrollWithEscrow, newRound } from "@/lib/round-client";
-import {
-  getStoredUsername,
-  saveStoredUsername,
-  validateUsername,
-  USERNAME_MAX
-} from "@/lib/username";
+import { cancelArena, checkSeatFunds, enrollWithEscrow, newRound } from "@/lib/round-client";
+import { shortPk } from "@/lib/username";
+import { useEscrowStatus, useWalletIdentity } from "@/lib/use-wallet";
+import SiteHeader from "@/app/SiteHeader";
+import CallsignModal from "@/app/CallsignModal";
 import PantaGraduationBanner from "@/app/PantaGraduationBanner";
 
 const usd = new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 0 });
 const usd2 = new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 2 });
-
-const WALLET_KEY = "oracle-rumble/wallet/v1";
-const CLUSTER = (process.env.NEXT_PUBLIC_SOLANA_CLUSTER ?? "devnet").toLowerCase();
 
 type ArenaItem = {
   arenaCode: string;
@@ -46,11 +39,6 @@ type ArenaItem = {
   liveDeadline: number;
 };
 
-function shortPk(pk: string) {
-  if (!pk) return "";
-  if (pk.length <= 10) return pk;
-  return `${pk.slice(0, 4)}…${pk.slice(-4)}`;
-}
 function fmtClock(ms: number) {
   if (ms <= 0) return "0:00";
   const s = Math.floor(ms / 1000);
@@ -70,15 +58,18 @@ const STATUS_LABEL: Record<string, string> = {
 };
 
 type Tab = "play" | "host";
+type HostStep = "" | "checking" | "opening" | "signing";
 
 export default function ArenasDirectory() {
-  const [wallet, setWallet] = useState<string | null>(null);
+  const { wallet, callsign, toggleConnect, saveCallsign } = useWalletIdentity();
+  const escrow = useEscrowStatus();
   const [arenas, setArenas] = useState<ArenaItem[]>([]);
+  const [loaded, setLoaded] = useState(false);
   const [now, setNow] = useState(0);
-  const [busy, setBusy] = useState(false);
+  const [hostStep, setHostStep] = useState<HostStep>("");
   const [toast, setToast] = useState("");
-  const [escrow, setEscrow] = useState<{ active: boolean; reason?: string | null } | null>(null);
   const [tab, setTab] = useState<Tab>("play");
+  const [showCallsign, setShowCallsign] = useState(false);
 
   const [hMode, setHMode] = useState<"quick" | "scheduled">("quick");
   const [hAsset, setHAsset] = useState<"BTC" | "ETH" | "SOL">("SOL");
@@ -90,29 +81,12 @@ export default function ArenasDirectory() {
   const [hVault, setHVault] = useState("10");
   const [hStartInMin, setHStartInMin] = useState(15);
   const [inviteInfo, setInviteInfo] = useState<{ code: string; url: string } | null>(null);
-  const [callsign, setCallsign] = useState<string>("");
-  const [showCallsign, setShowCallsign] = useState(false);
-  const [csDraft, setCsDraft] = useState("");
 
   useEffect(() => {
-    document.body.classList.add("game-mode");
-    document.body.classList.add("no-scroll");
-    return () => {
-      document.body.classList.remove("game-mode");
-      document.body.classList.remove("no-scroll");
-    };
-  }, []);
-
-  useEffect(() => {
-    try {
-      const w = localStorage.getItem(WALLET_KEY);
-      if (w) {
-        setWallet(w);
-        const u = getStoredUsername(w);
-        setCallsign(u);
-      }
-    } catch { /* ignore */ }
-    fetch("/api/escrow/status", { cache: "no-store" }).then((r) => r.json()).then(setEscrow).catch(() => setEscrow({ active: false, reason: "unreachable" }));
+    document.body.classList.add("game-mode", "no-scroll");
+    // Deep link from other pages' "Host" nav item.
+    if (new URLSearchParams(window.location.search).get("tab") === "host") setTab("host");
+    return () => { document.body.classList.remove("game-mode", "no-scroll"); };
   }, []);
 
   const refresh = useCallback(async () => {
@@ -120,6 +94,7 @@ export default function ArenasDirectory() {
       const aRes = await fetch("/api/arenas", { cache: "no-store" }).then((r) => r.json());
       setArenas(aRes.items ?? []);
     } catch { /* transient */ }
+    finally { setLoaded(true); }
   }, []);
 
   useEffect(() => {
@@ -136,124 +111,98 @@ export default function ArenasDirectory() {
 
   useEffect(() => {
     if (!toast) return;
-    const id = window.setTimeout(() => setToast(""), 4000);
+    const id = window.setTimeout(() => setToast(""), 5000);
     return () => window.clearTimeout(id);
   }, [toast]);
 
   const connect = useCallback(async () => {
-    if (wallet) {
-      setWallet(null);
-      setCallsign("");
-      try { localStorage.removeItem(WALLET_KEY); } catch { /* ignore */ }
-      setToast("Wallet disconnected.");
-      return;
-    }
-    const real = await connectSolanaWallet();
-    if (real) {
-      setWallet(real);
-      try { localStorage.setItem(WALLET_KEY, real); } catch { /* ignore */ }
-      const stored = getStoredUsername(real);
-      setCallsign(stored);
-      if (stored) {
-        setToast(`Connected as ${stored}.`);
-      } else {
-        // First time this wallet appears — prompt for a callsign right away.
-        setCsDraft("");
-        setShowCallsign(true);
-        setToast(`Connected · ${shortPk(real)} · pick a callsign.`);
-      }
-    } else setToast("No Solana wallet found. Install Phantom, Backpack or Solflare.");
-  }, [wallet]);
+    const r = await toggleConnect();
+    setToast(r.message);
+    if (r.needsCallsign) setShowCallsign(true);
+  }, [toggleConnect]);
 
-  const saveCallsign = useCallback(() => {
-    if (!wallet) { setToast("Connect a wallet first."); return; }
-    const v = validateUsername(csDraft);
-    if (!v.ok) { setToast(v.reason); return; }
-    saveStoredUsername(wallet, v.value);
-    setCallsign(v.value);
-    setShowCallsign(false);
-    setToast(`Callsign set to ${v.value}.`);
-  }, [wallet, csDraft]);
-
-  const hostSeat = (Number(hEntry) || 0) + (Number(hVault) || 0);
-  const poolIfFull = (Number(hEntry) || 0) * hCapacity;
+  const entryNum = Number(hEntry) || 0;
+  const vaultNum = Number(hVault) || 0;
+  const hostSeat = entryNum + vaultNum;
+  const poolIfFull = entryNum * hCapacity;
+  const hostInputError =
+    entryNum <= 0 ? "Entry must be greater than 0." :
+    vaultNum <= 0 ? "Vault must be greater than 0." : "";
 
   const doHostAndJoin = useCallback(async () => {
-    // Real-mode guard: on-chain hosting requires a wallet signature for the
-    // host's own seat deposit. Refuse before we spend an on-chain InitRound
-    // tx on an arena the caller can't actually fund.
+    if (hostInputError) { setToast(hostInputError); return; }
+    // On-chain hosting needs the host's own seat deposit signature.
     if (escrow?.active && !wallet) {
-      setToast("Connect a wallet first — hosting on-chain needs your seat deposit signature.");
+      setToast("Connect a wallet first — hosting on-chain needs your seat deposit.");
       return;
     }
-    // Callsign is required for the host — it shows on every arena screen.
     if (wallet && !callsign) {
-      setCsDraft("");
       setShowCallsign(true);
-      setToast("Pick a callsign before hosting your arena.");
+      setToast("Choose a callsign before hosting.");
       return;
     }
 
-    setBusy(true);
-    let openedArena: string | null = null;
     try {
+      // Check funds BEFORE the operator pays for an on-chain InitRound.
+      if (wallet && escrow?.active) {
+        setHostStep("checking");
+        const short = await checkSeatFunds(wallet, hostSeat);
+        if (short) { setToast(short); return; }
+      }
+
+      setHostStep("opening");
       const enrollmentSec = hMode === "scheduled" ? hStartInMin * 60 : undefined;
       const v = await newRound({
         asset: hAsset, horizon: hHorizon, format: hFormat,
-        entryUsdc: Number(hEntry) || 1, startingBankroll: Number(hVault) || 5,
+        entryUsdc: entryNum, startingBankroll: vaultNum,
         capacity: hCapacity, roundLimit: hFormat === "royale" ? hRounds : 1,
         enrollmentSec, host: wallet ?? ""
       });
-      if (v.error || !v.arena) { setToast(v.error ?? "Host failed."); return; }
-      openedArena = v.arena;
+      if (v.error || !v.arena) { setToast(v.error ?? "Could not open the arena."); return; }
       const url = `${window.location.origin}/a/${v.arena}`;
 
-      // Practice-mode fast path: no wallet, no deposit — arena is a walk-in.
       if (!wallet) {
         setInviteInfo({ code: v.arena, url });
         refresh();
         return;
       }
 
-      // Real-mode / practice-with-wallet: the host must sign the seat
-      // deposit BEFORE we show the invite screen. If signing fails or the
-      // wallet is dismissed, cancel the arena we just opened so the room
-      // doesn't linger as an unfunded orphan.
-      const nick = callsign || getStoredUsername(wallet) || shortPk(wallet).replace("…", "");
-      if (escrow?.active) setToast("Sign the seat deposit in your wallet…");
+      // The host takes seat #1. If that deposit isn't signed, roll the
+      // arena back so no unfunded room is left behind.
+      setHostStep("signing");
+      if (escrow?.active) setToast("Approve the seat deposit in your wallet…");
       let enrollError = "";
       try {
-        const r = await enrollWithEscrow(wallet, nick, v.arena);
+        const r = await enrollWithEscrow(wallet, callsign || shortPk(wallet).replace("…", ""), v.arena);
         if (r.error) enrollError = r.error;
       } catch (err) {
         enrollError = err instanceof Error ? err.message : "wallet signing failed";
       }
-
       if (enrollError) {
-        // Roll the arena back — we never funded seat #1.
         await cancelArena(v.arena, wallet).catch(() => { /* best effort */ });
-        openedArena = null;
-        setToast(`Host cancelled: ${enrollError}`);
+        setToast(`Arena not opened — ${enrollError}`);
         return;
       }
 
       setInviteInfo({ code: v.arena, url });
       refresh();
-    } finally { setBusy(false); }
-  }, [hMode, hStartInMin, hAsset, hHorizon, hFormat, hEntry, hVault, hCapacity, hRounds, wallet, escrow, refresh, callsign]);
+    } finally { setHostStep(""); }
+  }, [hostInputError, escrow, wallet, callsign, hostSeat, hMode, hStartInMin, hAsset, hHorizon, hFormat, entryNum, vaultNum, hCapacity, hRounds, refresh]);
 
   const doCopy = useCallback(async (url: string) => {
     try { await navigator.clipboard.writeText(url); setToast("Invite link copied."); }
-    catch { setToast("Copy failed."); }
+    catch { setToast("Copy failed — select the link and copy it manually."); }
   }, []);
 
   const goTo = useCallback((slug: string) => { window.location.href = slug; }, []);
 
-  const active = arenas.filter((a) => !a.isPublic && ["enrolling", "live", "settling", "advancing"].includes(a.status));
-  const liveOnly = active.filter((a) => a.status === "live" || a.status === "enrolling");
-  const featured = liveOnly.find((a) => a.status === "live")
-    ?? liveOnly.find((a) => a.status === "enrolling")
-    ?? liveOnly[0]
+  const active = useMemo(
+    () => arenas.filter((a) => !a.isPublic && ["enrolling", "live", "settling", "advancing"].includes(a.status)),
+    [arenas]
+  );
+  const featured = active.find((a) => a.status === "live")
+    ?? active.find((a) => a.status === "enrolling")
+    ?? active[0]
     ?? null;
   const others = active.filter((a) => a.arenaCode !== featured?.arenaCode);
 
@@ -268,88 +217,65 @@ export default function ArenasDirectory() {
       <div className="game-grid-bg" aria-hidden="true" />
       <div className="game-scanlines" aria-hidden="true" />
 
-      {/* Floating pixel tabbar (unchanged) */}
-      <nav className="hud-bar game-hud">
-        <div className="tabbar-inner">
-          <a href="/" className="brand" aria-label="Oracle Rumble">
-            <BrandMark />
-            ORACLE RUMBLE
-          </a>
-          <div className="hud-nav">
-            <button className={`nav-link ${tab === "play" ? "active" : ""}`} onClick={() => setTab("play")}>Play</button>
-            <button className={`nav-link ${tab === "host" ? "active" : ""}`} onClick={() => setTab("host")}>Host</button>
-            <a href="/positions">Positions</a>
-            <a href="/docs">Docs</a>
-          </div>
-          <div className="hud-right">
-            <span
-              className={`system-chip ${escrow?.active ? "on" : "off"}`}
-              title={`Solana ${CLUSTER} · ${escrow?.active ? "on-chain escrow" : `practice mode (${escrow?.reason ?? "escrow off"})`}`}
-            >
-              <span className="dot" />
-              {CLUSTER}
-            </span>
-            {wallet && (
-              <button
-                className="callsign-chip"
-                onClick={() => { setCsDraft(callsign); setShowCallsign(true); }}
-                title="Edit your callsign"
-              >
-                {callsign || "set callsign"}
-              </button>
-            )}
-            <button className={wallet ? "wallet game connected" : "wallet game"} onClick={connect}>
-              <span className="avatar">{wallet ? (callsign || wallet).slice(0, 2).toUpperCase() : "?"}</span>
-              {wallet ? (callsign || shortPk(wallet)) : "Connect"}
-            </button>
-          </div>
-        </div>
-      </nav>
+      <SiteHeader
+        active={tab === "play" ? "arenas" : "host"}
+        wallet={wallet}
+        callsign={callsign}
+        escrow={escrow}
+        onConnect={connect}
+        onEditCallsign={() => setShowCallsign(true)}
+        onNav={(k) => setTab(k === "arenas" ? "play" : "host")}
+      />
 
       <section className="jumper-stage">
-        <aside className="jumper-tagline">
-          <h1 className="game-title">
-            <span className="lash">Call it.</span><br />
-            <span className="kill">Outplay</span>{" "}the room.
+        <div className="jumper-tagline">
+          <p className="jt-eyebrow">Prediction-market battle royale · Solana</p>
+          <h1>
+            <span className="hl-a">Call it.</span><br />
+            <span className="hl-b">Outplay</span> the room.
           </h1>
-          <p>
-            A battle-royale prediction market on live BTC, ETH and SOL. Same seat, same market,
-            same rules — only the survivors keep the pool.
+          <p className="jt-lead">
+            Everyone pays the same seat, trades the same live market, and is ranked by vault
+            value. The bottom half is cut each round — the survivors split the pool.
           </p>
-          <div className="jumper-stats">
-            <div>
-              <span>Prize pool</span>
-              <b className="plasma">{usd.format(totals.pool)}</b>
-            </div>
-            <div>
-              <span>Alive</span>
-              <b className="neon">{totals.alive}</b>
-            </div>
-            <div>
-              <span>Live now</span>
-              <b className="gold">{totals.live}</b>
-            </div>
+
+          <ol className="jt-steps">
+            <li><b>01</b><span>Take a seat — entry funds the pool, the vault is your bankroll.</span></li>
+            <li><b>02</b><span>Trade UP or DOWN on the same Panta market as everyone else.</span></li>
+            <li><b>03</b><span>Survive the cut. Top finishers claim the pool to their wallet.</span></li>
+          </ol>
+
+          <div className="jumper-stats" aria-live="polite">
+            <div><span>In prize pools</span><b className="plasma">{usd.format(totals.pool)}</b></div>
+            <div><span>Players alive</span><b className="neon">{totals.alive}</b></div>
+            <div><span>Live rounds</span><b className="gold">{totals.live}</b></div>
           </div>
-        </aside>
+
+          <ul className="jt-trust">
+            <li>Non-custodial USDC escrow</li>
+            <li>Markets by Panta</li>
+            <li>No house cut</li>
+          </ul>
+        </div>
 
         <div className="jumper-card">
-          <header className="jc-tabs">
-            <button className={`jc-tab ${tab === "play" ? "on" : ""}`} onClick={() => setTab("play")}>
-              <span className="dot" /> Play
+          <div className="jc-tabs" role="tablist" aria-label="Arena actions">
+            <button role="tab" aria-selected={tab === "play"} className={`jc-tab ${tab === "play" ? "on" : ""}`} onClick={() => setTab("play")}>
+              <span className="dot" aria-hidden="true" /> Join
             </button>
-            <button className={`jc-tab ${tab === "host" ? "on" : ""}`} onClick={() => setTab("host")}>
-              <span className="dot" /> Host
+            <button role="tab" aria-selected={tab === "host"} className={`jc-tab ${tab === "host" ? "on" : ""}`} onClick={() => setTab("host")}>
+              <span className="dot" aria-hidden="true" /> Host
             </button>
-          </header>
+          </div>
 
-          <div className="jc-body">
+          <div className="jc-body" role="tabpanel">
             {tab === "play" ? (
               <PlayPanel
+                loaded={loaded}
                 featured={featured}
                 others={others}
                 now={now}
-                onJoin={(slug) => goTo(slug)}
-                onCopy={(url) => doCopy(url)}
+                onJoin={goTo}
                 onSwitchToHost={() => setTab("host")}
               />
             ) : inviteInfo ? (
@@ -371,63 +297,28 @@ export default function ArenasDirectory() {
                 hEntry={hEntry} setHEntry={setHEntry}
                 hVault={hVault} setHVault={setHVault}
                 hostSeat={hostSeat} poolIfFull={poolIfFull}
-                wallet={wallet} escrow={escrow}
-                busy={busy} onSubmit={doHostAndJoin}
+                inputError={hostInputError}
+                wallet={wallet} escrowActive={!!escrow?.active} escrowKnown={escrow != null}
+                step={hostStep} onSubmit={doHostAndJoin}
               />
             )}
           </div>
         </div>
       </section>
 
-      {toast && <div className="toast" role="status"><span>{toast}</span><button onClick={() => setToast("")} aria-label="Dismiss">×</button></div>}
+      {toast && (
+        <div className="toast" role="status">
+          <span>{toast}</span>
+          <button onClick={() => setToast("")} aria-label="Dismiss">×</button>
+        </div>
+      )}
 
       {showCallsign && (
-        <div className="modal-backdrop" onClick={() => setShowCallsign(false)}>
-          <div className="modal" onClick={(e) => e.stopPropagation()}>
-            <button className="close" onClick={() => setShowCallsign(false)} aria-label="Close">×</button>
-            <h2>Set your callsign</h2>
-            <p className="sub">
-              Shown in the arena stage, standings, activity feed, and champion screen.
-              Stored locally on this device per wallet.
-            </p>
-            <label>
-              Callsign
-              <input
-                value={csDraft}
-                onChange={(e) => setCsDraft(e.target.value)}
-                placeholder="e.g. nova_9"
-                maxLength={USERNAME_MAX}
-                autoFocus
-                aria-invalid={csDraft.length > 0 && !validateUsername(csDraft).ok}
-              />
-            </label>
-            {(() => {
-              const v = validateUsername(csDraft);
-              const hint = csDraft.length === 0
-                ? "3–16 characters: letters, numbers, underscore."
-                : !v.ok
-                ? v.reason
-                : "Looks good — this callsign will show on every screen.";
-              const ok = csDraft.length > 0 && v.ok;
-              return (
-                <p
-                  className={`disclaimer callsign-hint ${csDraft.length === 0 ? "" : ok ? "ok" : "bad"}`}
-                  style={{ marginTop: 6, textAlign: "left" }}
-                >
-                  {hint}
-                </p>
-              );
-            })()}
-            <button
-              className="btn primary full"
-              onClick={saveCallsign}
-              disabled={!validateUsername(csDraft).ok || !wallet}
-              style={{ marginTop: 8 }}
-            >
-              Save callsign
-            </button>
-          </div>
-        </div>
+        <CallsignModal
+          initial={callsign}
+          onSave={(v) => { const r = saveCallsign(v); if (r.ok) setToast(r.message); return r; }}
+          onClose={() => setShowCallsign(false)}
+        />
       )}
 
       <PantaGraduationBanner />
@@ -435,44 +326,27 @@ export default function ArenasDirectory() {
   );
 }
 
-/* ── The eye/compass brand mark ─────────────────────────────────── */
-function BrandMark() {
-  return (
-    <svg className="mark" viewBox="0 0 64 64" aria-hidden="true">
-      <g fill="none" stroke="#edf0f6" strokeWidth="3.2" strokeLinecap="round">
-        <path d="M 12 24 A 22 22 0 0 1 24 12" />
-        <path d="M 40 12 A 22 22 0 0 1 52 24" />
-        <path d="M 52 40 A 22 22 0 0 1 40 52" />
-        <path d="M 24 52 A 22 22 0 0 1 12 40" />
-      </g>
-      <path d="M 4 32 L 11 32 M 53 32 L 60 32" stroke="#edf0f6" strokeWidth="3" strokeLinecap="round" />
-      <path d="M 32 2 L 36 18 L 32 23 L 28 18 Z" fill="#edf0f6" />
-      <path d="M 32 62 L 36 46 L 32 41 L 28 46 Z" fill="#edf0f6" />
-      <path d="M 10 32 C 18 20, 26 18, 32 18 C 38 18, 46 20, 54 32 C 46 44, 38 46, 32 46 C 26 46, 18 44, 10 32 Z" fill="#edf0f6" />
-      <circle cx="32" cy="32" r="7" fill="#0a0d13" />
-      <circle cx="32" cy="32" r="3.3" fill="#edf0f6" />
-    </svg>
-  );
-}
-
-/* ── Play panel — featured + short list of others ───────────────── */
+/* ── Join panel ──────────────────────────────────────────────────── */
 function PlayPanel({
-  featured, others, now, onJoin, onCopy, onSwitchToHost
+  loaded, featured, others, now, onJoin, onSwitchToHost
 }: {
+  loaded: boolean;
   featured: ArenaItem | null;
   others: ArenaItem[];
   now: number;
   onJoin: (slug: string) => void;
-  onCopy: (url: string) => void;
   onSwitchToHost: () => void;
 }) {
+  if (!loaded) {
+    return <div className="jc-empty" role="status"><p>Loading arenas…</p></div>;
+  }
   if (!featured) {
     return (
       <div className="jc-empty">
-        <div className="jc-empty-icon">◆</div>
-        <h3>No live rumbles</h3>
-        <p>The cabinet is quiet. Open the first arena — invite goes out in one click.</p>
-        <button className="btn-fight" onClick={onSwitchToHost}>Host the first fight ▶</button>
+        <div className="jc-empty-icon" aria-hidden="true">◆</div>
+        <h3>No arenas open</h3>
+        <p>Open one in under a minute, then share the invite link with the players you want in the room.</p>
+        <button className="btn-cta" onClick={onSwitchToHost}>Host an arena</button>
       </div>
     );
   }
@@ -480,47 +354,46 @@ function PlayPanel({
   const deadline = featured.status === "enrolling" ? featured.enrollDeadline : featured.status === "live" ? featured.liveDeadline : 0;
   const timeLeft = deadline ? Math.max(0, deadline - now) : 0;
   const tier = tierFor(featured.prizePoolUsdc);
+  const seats = `${featured.humans}/${featured.capacity}`;
 
   return (
     <div className="jc-play">
       <div className="jc-featured">
         <div className="jc-featured-top">
           <span className={`gm-boss-tag ${featured.status === "live" ? "live" : "enrolling"}`}>
-            <span className="pulse" />
-            {featured.status === "live" ? "Live fight" : STATUS_LABEL[featured.status]}
+            <span className="pulse" aria-hidden="true" />
+            {featured.status === "live" ? "Live" : STATUS_LABEL[featured.status]}
           </span>
           <span className="jc-code">
-            {featured.isPublic ? "PUBLIC" : featured.arenaCode} · R{featured.roundNumber}/{featured.roundLimit}
+            {featured.arenaCode} · Round {featured.roundNumber}/{featured.roundLimit}
           </span>
         </div>
         <div className="jc-featured-q">{featured.marketQuestion}</div>
         <div className="jc-featured-meta">
-          <div><span>Pool</span><b className="plasma">{usd.format(featured.prizePoolUsdc)}</b></div>
+          <div><span>Pool</span><b className="plasma">{usd2.format(featured.prizePoolUsdc)}</b></div>
           <div><span>Seat</span><b>{usd2.format(featured.entryUsdc + featured.startingBankroll)}</b></div>
-          <div><span>Alive</span><b>{featured.alive}<em>/{featured.capacity}</em></b></div>
-          <div><span>{featured.status === "enrolling" ? "Locks" : "Ends"}</span><b className="neon">{deadline ? fmtClock(timeLeft) : "—"}</b></div>
+          <div><span>Players</span><b>{seats}</b></div>
+          <div><span>{featured.status === "enrolling" ? "Locks in" : "Ends in"}</span><b className="neon">{deadline ? fmtClock(timeLeft) : "—"}</b></div>
           <div><span>Tier</span><b className={tier === "S" ? "gold" : tier === "A" ? "neon" : ""}>{tier}</b></div>
         </div>
-        <button className="btn-fight full" onClick={() => onJoin(featured.inviteSlug)}>
-          {featured.status === "live" ? "Jump in mid-fight" : "Enter arena"} ▶
+        <button className="btn-cta full" onClick={() => onJoin(featured.inviteSlug)}>
+          {featured.status === "live" ? "Watch live" : "Take a seat"}
         </button>
       </div>
 
       {others.length > 0 && (
         <div className="jc-others">
-          <div className="jc-others-head">Also live · {others.length}</div>
+          <div className="jc-others-head">More arenas · {others.length}</div>
           {others.slice(0, 4).map((a) => {
             const t = tierFor(a.prizePoolUsdc);
             const d = a.status === "enrolling" ? a.enrollDeadline : a.status === "live" ? a.liveDeadline : 0;
             const tl = d ? Math.max(0, d - now) : 0;
             return (
-              <button key={a.arenaCode} className="gm-mini-arena" onClick={() => onJoin(a.inviteSlug)}
-                onContextMenu={(e) => { e.preventDefault(); onCopy(`${window.location.origin}/a/${a.arenaCode}`); }}
-              >
-                <span className={`rank-badge ${t.toLowerCase()}`}>{t}</span>
+              <button key={a.arenaCode} className="gm-mini-arena" onClick={() => onJoin(a.inviteSlug)}>
+                <span className={`rank-badge ${t.toLowerCase()}`} aria-label={`Tier ${t}`}>{t}</span>
                 <span className="mid">
                   <span className="q">{a.asset} · {a.marketQuestion}</span>
-                  <span className="meta">{a.humans}/{a.capacity} · {STATUS_LABEL[a.status]}{d ? ` · ${fmtClock(tl)}` : ""}</span>
+                  <span className="meta">{a.humans}/{a.capacity} players · {STATUS_LABEL[a.status]}{d ? ` · ${fmtClock(tl)}` : ""}</span>
                 </span>
                 <span className="prize">{usd.format(a.prizePoolUsdc)}</span>
               </button>
@@ -532,13 +405,13 @@ function PlayPanel({
   );
 }
 
-/* ── Host panel — compact form ──────────────────────────────────── */
+/* ── Host panel ──────────────────────────────────────────────────── */
 function HostPanel({
   hMode, setHMode, hStartInMin, setHStartInMin,
   hAsset, setHAsset, hHorizon, setHHorizon,
   hFormat, setHFormat, hRounds, setHRounds,
   hCapacity, setHCapacity, hEntry, setHEntry, hVault, setHVault,
-  hostSeat, poolIfFull, wallet, escrow, busy, onSubmit
+  hostSeat, poolIfFull, inputError, wallet, escrowActive, escrowKnown, step, onSubmit
 }: {
   hMode: "quick" | "scheduled"; setHMode: (v: "quick" | "scheduled") => void;
   hStartInMin: number; setHStartInMin: (v: number) => void;
@@ -549,16 +422,29 @@ function HostPanel({
   hCapacity: number; setHCapacity: (v: number) => void;
   hEntry: string; setHEntry: (v: string) => void;
   hVault: string; setHVault: (v: string) => void;
-  hostSeat: number; poolIfFull: number;
-  wallet: string | null; escrow: { active: boolean; reason?: string | null } | null;
-  busy: boolean; onSubmit: () => void;
+  hostSeat: number; poolIfFull: number; inputError: string;
+  wallet: string | null; escrowActive: boolean; escrowKnown: boolean;
+  step: HostStep; onSubmit: () => void;
 }) {
+  const busy = step !== "";
+  const label =
+    step === "checking" ? "Checking balance…" :
+    step === "opening" ? "Opening arena…" :
+    step === "signing" ? "Confirm in your wallet…" :
+    escrowActive ? (wallet ? "Host & take seat 1" : "Connect wallet to host") :
+    (wallet ? "Host & take seat 1 · practice" : "Host practice arena");
+
   return (
     <div className="jc-host">
-      <div className="gm-seg" style={{ marginBottom: 12 }}>
-        <button className={`opt ${hMode === "quick" ? "on" : ""}`} onClick={() => setHMode("quick")}>Quick</button>
-        <button className={`opt ${hMode === "scheduled" ? "on" : ""}`} onClick={() => setHMode("scheduled")}>Scheduled</button>
+      <div className="gm-seg" role="radiogroup" aria-label="Start mode">
+        <button role="radio" aria-checked={hMode === "quick"} className={`opt ${hMode === "quick" ? "on" : ""}`} onClick={() => setHMode("quick")}>Quick</button>
+        <button role="radio" aria-checked={hMode === "scheduled"} className={`opt ${hMode === "scheduled" ? "on" : ""}`} onClick={() => setHMode("scheduled")}>Scheduled</button>
       </div>
+      <p className="jc-help">
+        {hMode === "quick"
+          ? "Enrollment opens now and locks after 30 seconds — best when your players are ready."
+          : "Enrollment stays open for the window you pick, then the round starts."}
+      </p>
 
       {hMode === "scheduled" && (
         <FieldRow label="Enrollment window">
@@ -593,7 +479,7 @@ function HostPanel({
             <button className={`opt ${hFormat === "royale" ? "on" : ""}`} onClick={() => setHFormat("royale")}>Royale</button>
           </div>
         </FieldRow>
-        <FieldRow label="Capacity">
+        <FieldRow label="Players">
           <div className="gm-seg">
             {[2, 4, 8, 12, 16].map((n) => (
               <button key={n} className={`opt ${hCapacity === n ? "on" : ""}`} onClick={() => setHCapacity(n)}>{n}</button>
@@ -614,28 +500,29 @@ function HostPanel({
       <div className="jc-host-inputs">
         <label className="gm-num">
           <span>Entry (USDC)</span>
-          <input value={hEntry} onChange={(e) => setHEntry(e.target.value.replace(/[^0-9.]/g, ""))} inputMode="decimal" />
+          <input value={hEntry} onChange={(e) => setHEntry(e.target.value.replace(/[^0-9.]/g, ""))} inputMode="decimal" aria-describedby="entry-help" />
+          <em id="entry-help">Goes into the shared prize pool</em>
         </label>
         <label className="gm-num">
           <span>Vault (USDC)</span>
-          <input value={hVault} onChange={(e) => setHVault(e.target.value.replace(/[^0-9.]/g, ""))} inputMode="decimal" />
+          <input value={hVault} onChange={(e) => setHVault(e.target.value.replace(/[^0-9.]/g, ""))} inputMode="decimal" aria-describedby="vault-help" />
+          <em id="vault-help">Your trading bankroll — withdrawable</em>
         </label>
       </div>
 
       <div className="jc-host-preview">
-        <div><span>Seat</span><b>{usd2.format(hostSeat)}</b></div>
-        <div><span>Pool full</span><b className="plasma">{usd2.format(poolIfFull)}</b></div>
-        <div><span>Format</span><b>{hFormat === "single" ? "1 rnd" : `${hRounds} rds`}</b></div>
+        <div><span>Seat cost</span><b>{usd2.format(hostSeat)}</b></div>
+        <div><span>Pool if full</span><b className="plasma">{usd2.format(poolIfFull)}</b></div>
+        <div><span>Payout</span><b>{hCapacity <= 2 ? "Winner" : "Top 3"}</b></div>
       </div>
 
-      {escrow && !escrow.active && (
-        <div className="gm-host-warn" style={{ margin: "8px 0" }}>
-          <b>Practice mode.</b> Hosting works; wallet won&apos;t be asked to sign.
-        </div>
+      {inputError && <p className="jc-error" role="alert">{inputError}</p>}
+      {escrowKnown && !escrowActive && (
+        <p className="jc-note"><b>Practice mode.</b> Hosting works, but no USDC moves and your wallet won&apos;t be asked to sign.</p>
       )}
 
-      <button className="gm-host-cta" onClick={onSubmit} disabled={busy}>
-        {busy ? "Opening…" : escrow?.active ? (wallet ? "Host & Join · sign deposit" : "Host arena") : (wallet ? "Host & Join · practice" : "Host practice arena")}
+      <button className="gm-host-cta" onClick={onSubmit} disabled={busy || !!inputError} aria-busy={busy}>
+        {label}
       </button>
     </div>
   );
@@ -650,28 +537,26 @@ function FieldRow({ label, children }: { label: string; children: React.ReactNod
   );
 }
 
-/* ── Invite result — appears after Host & Join ──────────────────── */
+/* ── Invite result ───────────────────────────────────────────────── */
 function InviteResult({
   info, onCopy, onOpen, onReset
 }: { info: { code: string; url: string }; onCopy: (url: string) => void; onOpen: () => void; onReset: () => void }) {
+  const text = `Join my Oracle Rumble arena · ${info.url}`;
   return (
     <div className="jc-invite">
-      <p className="jc-invite-lead">Arena is live — send the code.</p>
-      <div className="gm-invite-code">{info.code}</div>
+      <p className="jc-invite-lead">Your arena is open. Share the code or link.</p>
+      <div className="gm-invite-code" aria-label={`Arena code ${info.code}`}>{info.code}</div>
       <div className="gm-invite-url">
-        <input readOnly value={info.url} onFocus={(e) => e.currentTarget.select()} />
+        <input readOnly value={info.url} onFocus={(e) => e.currentTarget.select()} aria-label="Invite link" />
         <button className="btn-host" style={{ height: 42, padding: "0 16px", fontSize: 11 }} onClick={() => onCopy(info.url)}>Copy</button>
       </div>
-      <div style={{ display: "flex", gap: 8, justifyContent: "center", flexWrap: "wrap", marginBottom: 12 }}>
-        <a className="btn ghost sm" target="_blank" rel="noopener noreferrer"
-           href={`https://twitter.com/intent/tweet?text=${encodeURIComponent(`Join my Oracle Rumble arena · ${info.url}`)}`}>Share on X</a>
-        <a className="btn ghost sm" target="_blank" rel="noopener noreferrer"
-           href={`https://t.me/share/url?url=${encodeURIComponent(info.url)}&text=${encodeURIComponent("Join my Oracle Rumble arena")}`}>Telegram</a>
-        <a className="btn ghost sm" target="_blank" rel="noopener noreferrer"
-           href={`https://wa.me/?text=${encodeURIComponent(`Join my Oracle Rumble arena · ${info.url}`)}`}>WhatsApp</a>
+      <div className="jc-share">
+        <a className="btn ghost sm" target="_blank" rel="noopener noreferrer" href={`https://twitter.com/intent/tweet?text=${encodeURIComponent(text)}`}>Share on X</a>
+        <a className="btn ghost sm" target="_blank" rel="noopener noreferrer" href={`https://t.me/share/url?url=${encodeURIComponent(info.url)}&text=${encodeURIComponent("Join my Oracle Rumble arena")}`}>Telegram</a>
+        <a className="btn ghost sm" target="_blank" rel="noopener noreferrer" href={`https://wa.me/?text=${encodeURIComponent(text)}`}>WhatsApp</a>
       </div>
-      <button className="gm-host-cta" onClick={onOpen}>Enter {info.code} ▶</button>
-      <button className="link-btn" onClick={onReset} style={{ marginTop: 10 }}>Host another</button>
+      <button className="gm-host-cta" onClick={onOpen}>Enter arena {info.code}</button>
+      <button className="link-btn" onClick={onReset} style={{ marginTop: 10 }}>Host another arena</button>
     </div>
   );
 }

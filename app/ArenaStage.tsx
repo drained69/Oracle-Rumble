@@ -1,22 +1,15 @@
 "use client";
 
 /**
- * ArenaStage — the "Market Royale" spectator dashboard.
+ * ArenaStage — the Market Royale spectator view.
  *
- * Rendered above the trade controls inside ArenaView. Reads the LIVE
- * round state (entrants, standings, market, prize pool, cut line, status)
- * and turns it into a visual battle royale: player pods orbiting a central
- * market orb, animating only from real state deltas.
+ * Everything shown is server state (RoundView polled by ArenaView): ranks,
+ * bankrolls, positions, eliminations, champion, market price, cut line.
+ * Animations and feed lines are produced by diffing the previous snapshot
+ * against the new one — they decide WHEN to animate, never WHAT happened.
  *
- * What is real vs. what is animation:
- *   - Bankrolls, P&L, ranks, alive/eliminated, market price, prize pool,
- *     champion, elimination line → all come from server state (RoundView).
- *   - Animations (rank-move highlight, buy pulse, elimination sweep,
- *     champion spotlight, activity feed lines) are triggered by DIFFING
- *     the last-seen state against the new state. Nothing is fabricated.
- *
- * Accessibility: every color state carries a text label; motion is gated
- * on prefers-reduced-motion.
+ * Cut line: `survivors` is how many alive players survive this round
+ * (top N by vault value). Players ranked below it are in the danger zone.
  */
 
 import { useEffect, useMemo, useRef, useState } from "react";
@@ -27,351 +20,269 @@ import { displayName } from "@/lib/username";
 type Props = {
   round: Round;
   standings: Entrant[];
-  cut: number;
+  survivors: number;
   yesPrice: number;
   wallet: string | null;
 };
 
-// A local event surfaced in the activity feed. Derived from real state.
-type FeedEvent = {
-  id: string;    // stable key
-  at: number;    // ms
-  text: string;
-  kind: "trade" | "rank" | "cutline" | "round" | "champion" | "elim" | "info";
+type FeedKind = "trade" | "rank" | "cutline" | "round" | "champion" | "elim" | "info";
+type FeedEvent = { id: string; at: number; text: string; kind: FeedKind };
+type PodState = "winner" | "eliminated" | "below" | "line" | "safe";
+
+type Snapshot = {
+  roundId: string;
+  roundNo: number;
+  historyLen: number;
+  survivors: number;
+  ranks: Map<string, number>;
+  eliminated: Set<string>;
+  below: Set<string>;
+  pos: Map<string, { shares: number; side: string | null; parlays: number; cashedOut: number }>;
+  championAnnounced: boolean;
 };
 
-const CUT_DANGER_ABS = 2;        // within $2 of the cut line → danger
-const RANK_HIGHLIGHT_MS = 1600;   // rank-move highlight duration
-const BUY_PULSE_MS = 1200;
-const MAX_FEED_ITEMS = 40;
+const HIGHLIGHT_MS = 1600;
+const MAX_FEED = 40;
+const MAX_PODS = 16;
 
-export default function ArenaStage({ round, standings, cut, yesPrice, wallet }: Props) {
-  const alive = useMemo(() => standings.filter((e) => e.eliminatedRound === null), [standings]);
-  const dead = useMemo(() => standings.filter((e) => e.eliminatedRound !== null), [standings]);
-  const totalCount = standings.length;
+const STATE_LABEL: Record<PodState, string> = {
+  winner: "Winner",
+  eliminated: "Eliminated",
+  below: "Below cut",
+  line: "On the line",
+  safe: "Safe"
+};
+
+export default function ArenaStage({ round, standings, survivors, yesPrice, wallet }: Props) {
+  const isLive = round.status === "live";
   const isComplete = round.status === "complete";
   const isCancelled = round.status === "cancelled";
-  const isLive = round.status === "live";
 
-  // Champion = server-declared (round.championId) or top rank at complete.
-  const champion = useMemo(() => {
-    if (!isComplete) return null;
-    return standings.find((e) => e.id === round.championId) ?? standings[0] ?? null;
-  }, [isComplete, standings, round.championId]);
+  const alive = useMemo(() => standings.filter((e) => e.eliminatedRound === null), [standings]);
+  const champion = useMemo(
+    () => (isComplete ? standings.find((e) => e.id === round.championId) ?? standings[0] ?? null : null),
+    [isComplete, standings, round.championId]
+  );
+  // The cut only means something while a live round has more players than survivor slots.
+  const cutActive = isLive && alive.length > survivors;
+  const lineBankroll = cutActive ? alive[survivors - 1]?.bankroll ?? null : null;
 
-  // ── event diff → activity feed ────────────────────────────────────
-  // Track prior view so we can emit derived events (rank moves, buys,
-  // eliminations). server-side round.history entries are also mirrored.
-  const prevRef = useRef<{
-    ranks: Map<string, number>;
-    bankrolls: Map<string, number>;
-    eliminated: Set<string>;
-    historyLen: number;
-    cut: number;
-    roundNo: number;
-  } | null>(null);
+  const stateOf = (e: Entrant, aliveIdx: number): PodState => {
+    if (champion?.id === e.id) return "winner";
+    if (e.eliminatedRound !== null) return "eliminated";
+    if (!cutActive) return "safe";
+    if (aliveIdx >= survivors) return "below";
+    if (aliveIdx === survivors - 1) return "line";
+    return "safe";
+  };
 
+  // ── snapshot diff → highlights + feed ──────────────────────────────
+  const prev = useRef<Snapshot | null>(null);
   const [feed, setFeed] = useState<FeedEvent[]>([]);
-  const [rankHighlights, setRankHighlights] = useState<Map<string, "up" | "down">>(new Map());
-  const [buyPulses, setBuyPulses] = useState<Set<string>>(new Set());
+  const [rankMove, setRankMove] = useState<Record<string, "up" | "down">>({});
+  const [tradePulse, setTradePulse] = useState<Record<string, "up" | "down">>({});
 
   useEffect(() => {
-    const prev = prevRef.current;
-    const currentRanks = new Map<string, number>();
-    // Rank is standings order for live/enrolling; for complete it's e.rank.
-    standings.forEach((e, i) => currentRanks.set(e.id, isComplete ? (e.rank ?? i + 1) : i + 1));
+    const ranks = new Map<string, number>();
+    standings.forEach((e, i) => ranks.set(e.id, i + 1));
+    const eliminated = new Set(standings.filter((e) => e.eliminatedRound !== null).map((e) => e.id));
+    const below = new Set(cutActive ? alive.slice(survivors).map((e) => e.id) : []);
+    const pos = new Map(standings.map((e) => [e.id, {
+      shares: e.shares,
+      side: e.side,
+      parlays: e.parlays.length,
+      cashedOut: e.parlays.filter((p) => p.status === "cashed_out").length
+    }] as const));
+    const byId = new Map(standings.map((e) => [e.id, e] as const));
+    const name = (id: string) => { const e = byId.get(id); return e ? displayName(e) : "A player"; };
 
-    const currentBankrolls = new Map(standings.map((e) => [e.id, e.bankroll] as const));
-    const currentEliminated = new Set(dead.map((e) => e.id));
+    const p = prev.current;
+    const events: FeedEvent[] = [];
+    const t = Date.now();
+    const push = (id: string, text: string, kind: FeedKind) => events.push({ id, at: t, text, kind });
+    const nextRank: Record<string, "up" | "down"> = {};
+    const nextPulse: Record<string, "up" | "down"> = {};
 
-    const newEvents: FeedEvent[] = [];
+    if (!p || p.roundId !== round.id) {
+      // First view of this round: seed the feed from recent server history.
+      round.history.slice(-6).forEach((line, i, arr) =>
+        push(`h-${round.id}-${round.history.length - arr.length + i}`, line, kindOf(line)));
+    } else {
+      round.history.slice(p.historyLen).forEach((line, i) =>
+        push(`h-${round.id}-${p.historyLen + i}`, line, kindOf(line)));
 
-    // Mirror any new server-emitted history entries.
-    if (prev && round.history.length > prev.historyLen) {
-      const fresh = round.history.slice(prev.historyLen);
-      fresh.forEach((line, i) =>
-        newEvents.push({
-          id: `h-${round.id}-${prev.historyLen + i}`,
-          at: Date.now(),
-          text: line,
-          kind: "info"
-        })
-      );
+      if (round.roundNumber !== p.roundNo) push(`round-${round.id}-${round.roundNumber}`, `Round ${round.roundNumber} begins`, "round");
+      if (cutActive && survivors !== p.survivors) push(`cut-${round.id}-${survivors}-${t}`, `Top ${survivors} survive this round`, "cutline");
+
+      eliminated.forEach((id) => { if (!p.eliminated.has(id)) push(`elim-${round.id}-${id}`, `${name(id)} was eliminated`, "elim"); });
+      below.forEach((id) => { if (!p.below.has(id) && !eliminated.has(id)) push(`below-${id}-${t}`, `${name(id)} dropped below the cut`, "cutline"); });
+      p.below.forEach((id) => { if (!below.has(id) && !eliminated.has(id) && ranks.has(id)) push(`above-${id}-${t}`, `${name(id)} climbed above the cut`, "rank"); });
+
+      ranks.forEach((r, id) => {
+        const before = p.ranks.get(id);
+        if (!before || before === r) return;
+        nextRank[id] = r < before ? "up" : "down";
+        if (r === 1) push(`rank1-${id}-${t}`, `${name(id)} moved to rank #1`, "rank");
+      });
+
+      // Trades pulse the trader's pod. Keyed on position changes, not bankroll
+      // (bankroll also moves with price). The feed line comes from the
+      // server's own history entry, so nothing is duplicated here.
+      pos.forEach((now, id) => {
+        const was = p.pos.get(id);
+        if (!was) return;
+        const bought = now.shares > was.shares + 1e-9 && now.side;
+        const parlay = now.parlays > was.parlays || now.cashedOut > was.cashedOut;
+        if (bought) nextPulse[id] = now.side === "YES" ? "up" : "down";
+        else if (parlay) nextPulse[id] = "up";
+      });
     }
 
-    if (prev) {
-      // Round bumped?
-      if (round.roundNumber !== prev.roundNo) {
-        newEvents.push({
-          id: `round-${round.id}-${round.roundNumber}`,
-          at: Date.now(),
-          text: `Round ${round.roundNumber} begins`,
-          kind: "round"
-        });
-      }
-      // Cut line moved?
-      if (cut && cut !== prev.cut) {
-        newEvents.push({
-          id: `cut-${round.id}-${cut.toFixed(2)}`,
-          at: Date.now(),
-          text: `Elimination line moved to $${cut.toFixed(2)}`,
-          kind: "cutline"
-        });
-      }
-      // New eliminations?
-      currentEliminated.forEach((id) => {
-        if (!prev.eliminated.has(id)) {
-          const e = standings.find((x) => x.id === id);
-          if (e) {
-            newEvents.push({
-              id: `elim-${round.id}-${e.id}`,
-              at: Date.now(),
-              text: `${displayName(e)} eliminated`,
-              kind: "elim"
-            });
-          }
-        }
-      });
-      // Rank changes → highlight per-entrant + feed for #1 moves.
-      const nextHighlights = new Map<string, "up" | "down">();
-      currentRanks.forEach((r, id) => {
-        const before = prev.ranks.get(id);
-        if (before && before !== r) {
-          nextHighlights.set(id, r < before ? "up" : "down");
-          if (r === 1 && before !== 1) {
-            const e = standings.find((x) => x.id === id);
-            if (e) newEvents.push({
-              id: `rank1-${round.id}-${e.id}-${Date.now()}`,
-              at: Date.now(),
-              text: `${displayName(e)} moved to rank #1`,
-              kind: "rank"
-            });
-          }
-        }
-      });
-      if (nextHighlights.size > 0) {
-        setRankHighlights(nextHighlights);
-        const t = window.setTimeout(() => setRankHighlights(new Map()), RANK_HIGHLIGHT_MS);
-        // best-effort cleanup on next diff
-        return () => window.clearTimeout(t);
-      }
-      // Buy detection: bankroll delta + side set + non-eliminated.
-      const nextPulses = new Set<string>();
-      currentBankrolls.forEach((br, id) => {
-        const before = prev.bankrolls.get(id);
-        const e = standings.find((x) => x.id === id);
-        if (!e || e.eliminatedRound !== null) return;
-        if (before === undefined) return;
-        // Trade emits a bankroll change (mark-to-market + fees) — use a
-        // sensible threshold so pure MtM ticks don't fire pulses.
-        if (Math.abs(br - before) >= 0.25 && e.side) {
-          nextPulses.add(id);
-          newEvents.push({
-            id: `buy-${round.id}-${e.id}-${Date.now()}`,
-            at: Date.now(),
-            text: `${displayName(e)} bought ${e.side}`,
-            kind: "trade"
-          });
-        }
-      });
-      if (nextPulses.size > 0) {
-        setBuyPulses(nextPulses);
-        window.setTimeout(() => setBuyPulses(new Set()), BUY_PULSE_MS);
-      }
-      // Champion announcement (only once per round transition).
-      if (isComplete && !prev) {
-        // handled below in the "no prev" branch
-      } else if (isComplete && champion && !prev.ranks.has(champion.id)) {
-        // shouldn't happen; ignore
-      }
-      if (isComplete && champion) {
-        const alreadyLogged = feed.some((f) => f.id === `champ-${round.id}`);
-        if (!alreadyLogged) {
-          newEvents.push({
-            id: `champ-${round.id}`,
-            at: Date.now(),
-            text: `${displayName(champion)} wins the arena`,
-            kind: "champion"
-          });
-        }
-      }
-    }
+    const announce = isComplete && champion && !(p?.roundId === round.id && p.championAnnounced);
+    if (announce && champion) push(`champ-${round.id}`, `${displayName(champion)} wins the arena`, "champion");
 
-    if (newEvents.length > 0) {
+    if (events.length) {
       setFeed((f) => {
         const seen = new Set(f.map((x) => x.id));
-        const merged = [...f];
-        for (const ev of newEvents) if (!seen.has(ev.id)) merged.unshift(ev);
-        return merged.slice(0, MAX_FEED_ITEMS);
+        const fresh = events.filter((ev) => !seen.has(ev.id)).reverse();
+        return [...fresh, ...f].slice(0, MAX_FEED);
       });
     }
+    if (Object.keys(nextRank).length) setRankMove(nextRank);
+    if (Object.keys(nextPulse).length) setTradePulse(nextPulse);
 
-    prevRef.current = {
-      ranks: currentRanks,
-      bankrolls: currentBankrolls,
-      eliminated: currentEliminated,
+    prev.current = {
+      roundId: round.id,
+      roundNo: round.roundNumber,
       historyLen: round.history.length,
-      cut,
-      roundNo: round.roundNumber
+      survivors,
+      ranks, eliminated, below, pos,
+      championAnnounced: !!(announce || (p?.roundId === round.id && p.championAnnounced))
     };
-    // We intentionally exclude `feed` from deps — it's a sink, not a source.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [standings, round.history.length, round.roundNumber, round.status, cut, isComplete, champion?.id, round.id, dead]);
+  }, [standings, round, survivors, cutActive, alive, isComplete, champion]);
 
-  // ── layout ─────────────────────────────────────────────────────────
-  // Show up to 16 pods around the orb. If more, alive first, then the
-  // most recently eliminated. Everything is deterministic based on rank.
-  const displayEntrants = useMemo(() => {
-    const list = isComplete ? standings : [...alive, ...dead.slice(0, Math.max(0, 16 - alive.length))];
-    return list.slice(0, 16);
-  }, [alive, dead, standings, isComplete]);
+  // Clear transient highlights after they've played.
+  useEffect(() => {
+    if (!Object.keys(rankMove).length) return;
+    const id = window.setTimeout(() => setRankMove({}), HIGHLIGHT_MS);
+    return () => window.clearTimeout(id);
+  }, [rankMove]);
+  useEffect(() => {
+    if (!Object.keys(tradePulse).length) return;
+    const id = window.setTimeout(() => setTradePulse({}), HIGHLIGHT_MS);
+    return () => window.clearTimeout(id);
+  }, [tradePulse]);
+
+  const pods = standings.slice(0, MAX_PODS);
+  const hidden = standings.length - pods.length;
+  const aliveIndex = new Map(alive.map((e, i) => [e.id, i] as const));
+  // Radial marker between the last survivor slot and the first slot below it.
+  const cutAngle = cutActive ? -90 + ((survivors - 0.5) / pods.length) * 360 : null;
 
   return (
     <section className="mr-stage" aria-label="Arena stage">
-      {/* Status strip: round · timer · market · price · pool · alive */}
-      <div className="mr-strip">
-        <div>
-          <span className="k">Round</span>
-          <span className="v">
-            {round.roundNumber}<em>/{round.config.roundLimit}</em>
-          </span>
-        </div>
-        <div>
-          <span className="k">Status</span>
-          <span className={`v status ${round.status}`}>{stateLabel(round.status)}</span>
-        </div>
-        <div>
-          <span className="k">Prize pool</span>
-          <span className="v plasma">${round.prizePoolUsdc.toFixed(2)}</span>
-        </div>
-        <div>
-          <span className="k">Alive</span>
-          <span className="v">
-            {alive.length}<em>/{totalCount}</em>
-          </span>
-        </div>
-        <div>
-          <span className="k">Cut line</span>
-          <span className="v danger">
-            {cut > 0 ? `$${cut.toFixed(2)}` : "—"}
-          </span>
-        </div>
-        <div className="grow">
-          <span className="k">Market · {round.config.asset}</span>
-          <span className="v market">{round.config.marketQuestion}</span>
-        </div>
-      </div>
-
       <div className="mr-stage-body">
-        <div className="mr-arena" role="group" aria-label="Player pods">
-          {/* Central market orb */}
-          <div
-            className={`mr-orb ${yesPrice >= 50 ? "up" : "down"} ${isLive ? "live" : ""}`}
-            aria-label={`Market YES ${yesPrice} cents, NO ${100 - yesPrice} cents`}
-          >
-            <div className="mr-orb-ring" aria-hidden="true" />
-            <div className="mr-orb-core">
-              <span className="mr-orb-side">{yesPrice >= 50 ? "▲ YES" : "▼ NO"}</span>
-              <span className="mr-orb-price">{yesPrice}<em>¢</em></span>
-              <span className="mr-orb-side-alt">{yesPrice >= 50 ? `NO ${100 - yesPrice}¢` : `YES ${yesPrice}¢`}</span>
-            </div>
-          </div>
-
-          {/* Player pods, positioned around the orb */}
-          <div className="mr-pods">
-            {displayEntrants.map((e, i) => {
-              const rank = isComplete ? (e.rank ?? i + 1) : i + 1;
-              const isMe = e.wallet === wallet;
-              const isDead = e.eliminatedRound !== null;
-              const isWinner = isComplete && champion?.id === e.id;
-              const isDanger = !isDead && !isWinner && cut > 0 && e.bankroll <= cut + CUT_DANGER_ABS;
-              const pulse = buyPulses.has(e.id);
-              const rankHi = rankHighlights.get(e.id) ?? null;
-              const pnl = e.bankroll - (round.config.startingBankroll ?? 0);
-
-              const stateLabelText = isWinner
-                ? "Winner"
-                : isDead
-                ? `Eliminated R${e.eliminatedRound}`
-                : isDanger
-                ? "Danger"
-                : "Alive";
-
-              return (
-                <div
-                  key={e.id}
-                  className={[
-                    "mr-pod",
-                    isMe ? "me" : "",
-                    isDead ? "dead" : "",
-                    isDanger ? "danger" : "",
-                    isWinner ? "winner" : "",
-                    pulse ? `pulse-${e.side === "YES" ? "up" : "down"}` : "",
-                    rankHi ? `rank-${rankHi}` : ""
-                  ].filter(Boolean).join(" ")}
-                  style={pinFor(i, displayEntrants.length)}
-                  aria-label={`${displayName(e)}, rank ${rank}, ${stateLabelText}, bankroll $${e.bankroll.toFixed(2)}`}
-                >
-                  <div className="mr-pod-rank">#{rank}</div>
-                  <img
-                    className="mr-pod-avatar"
-                    src={avatarDataUrl(e.id)}
-                    alt=""
-                    width={44}
-                    height={44}
-                  />
-                  <div className="mr-pod-name">
-                    {displayName(e)}
-                    {isMe && <em>you</em>}
-                  </div>
-                  <div className="mr-pod-bank">${e.bankroll.toFixed(2)}</div>
-                  <div className={`mr-pod-pnl ${pnl >= 0 ? "up" : "down"}`}>
-                    {pnl >= 0 ? "+" : ""}${pnl.toFixed(2)}
-                  </div>
-                  <div className={`mr-pod-state ${isWinner ? "winner" : isDead ? "dead" : isDanger ? "danger" : "alive"}`}>
-                    {stateLabelText}
-                  </div>
-                </div>
-              );
-            })}
-            {displayEntrants.length === 0 && (
-              <div className="mr-empty" role="status">
-                Waiting for the first player to sit down…
-              </div>
+        <div className="mr-arena">
+          <div className="mr-legend" aria-hidden={!cutActive && !isComplete}>
+            {cutActive ? (
+              <span className="mr-legend-cut">
+                Top {survivors} of {alive.length} survive
+                {lineBankroll != null && <> · line <b>${lineBankroll.toFixed(2)}</b></>}
+              </span>
+            ) : (
+              <span className="mr-legend-cut muted">
+                {round.status === "enrolling" ? `${standings.length}/${round.config.capacity} seats taken` :
+                  isComplete ? "Final standings" : isCancelled ? "Round cancelled" : `${alive.length} alive`}
+              </span>
             )}
           </div>
 
-          {/* Elimination line — a visual marker between "safe" and "danger" */}
-          {isLive && cut > 0 && (
-            <div className="mr-cutline" aria-hidden="true">
-              <span>CUT ${cut.toFixed(2)}</span>
+          <div
+            className={`mr-orb ${yesPrice >= 50 ? "up" : "down"} ${isLive ? "live" : ""}`}
+            role="img"
+            aria-label={`Market price: YES ${yesPrice} cents, NO ${100 - yesPrice} cents`}
+          >
+            <div className="mr-orb-ring" aria-hidden="true" />
+            <div className="mr-orb-core">
+              <span className="mr-orb-q">{round.config.asset}</span>
+              <span className="mr-orb-price">{yesPrice}<em>¢</em></span>
+              <span className="mr-orb-sides">
+                <span className="y">YES {yesPrice}¢</span>
+                <span className="n">NO {100 - yesPrice}¢</span>
+              </span>
+            </div>
+          </div>
+
+          {cutAngle != null && (
+            <div className="mr-cut-ray" style={{ transform: `rotate(${cutAngle}deg)` }} aria-hidden="true">
+              <span style={{ transform: `rotate(${-cutAngle}deg)` }}>CUT</span>
             </div>
           )}
 
-          {/* Champion spotlight */}
+          <ol className="mr-pods" aria-label="Players by rank">
+            {pods.map((e, i) => {
+              const aIdx = aliveIndex.get(e.id) ?? -1;
+              const state = stateOf(e, aIdx);
+              const isMe = !!wallet && e.wallet === wallet;
+              const pnl = e.bankroll - round.config.startingBankroll;
+              const rank = i + 1;
+              const cls = [
+                "mr-pod", `s-${state}`, isMe ? "me" : "",
+                rankMove[e.id] ? `rank-${rankMove[e.id]}` : "",
+                tradePulse[e.id] ? `pulse-${tradePulse[e.id]}` : ""
+              ].filter(Boolean).join(" ");
+              return (
+                <li
+                  key={e.id}
+                  className={cls}
+                  style={pinFor(i, pods.length)}
+                  aria-label={`Rank ${rank}, ${displayName(e)}${isMe ? " (you)" : ""}, ${STATE_LABEL[state]}, vault $${e.bankroll.toFixed(2)}, P&L ${pnl >= 0 ? "+" : "-"}$${Math.abs(pnl).toFixed(2)}${e.side ? `, holding ${e.side}` : ""}`}
+                >
+                  <span className="mr-pod-rank">{state === "eliminated" ? "OUT" : `#${rank}`}</span>
+                  {/* eslint-disable-next-line @next/next/no-img-element */}
+                  <img className="mr-pod-avatar" src={avatarDataUrl(e.wallet, 40)} alt="" width={40} height={40} />
+                  <span className="mr-pod-name">
+                    {displayName(e)}
+                    {isMe && <em>you</em>}
+                    {e.isBot && <em className="bot">bot</em>}
+                  </span>
+                  <span className="mr-pod-bank">${e.bankroll.toFixed(2)}</span>
+                  <span className={`mr-pod-pnl ${pnl >= 0 ? "up" : "down"}`}>{pnl >= 0 ? "+" : "−"}${Math.abs(pnl).toFixed(2)}</span>
+                  {e.side && state !== "eliminated" && (
+                    <span className={`mr-pod-side ${e.side === "YES" ? "yes" : "no"}`}>{e.side === "YES" ? "▲ YES" : "▼ NO"}</span>
+                  )}
+                  <span className={`mr-pod-state s-${state}`}>{STATE_LABEL[state]}</span>
+                </li>
+              );
+            })}
+          </ol>
+
+          {pods.length === 0 && (
+            <p className="mr-empty" role="status">No players yet — the first seat is open.</p>
+          )}
+          {hidden > 0 && <p className="mr-more">+{hidden} more in standings</p>}
+
           {isComplete && champion && (
-            <div className="mr-champ-spot" role="status" aria-label={`${displayName(champion)} wins`}>
-              <div className="mr-champ-title">CHAMPION</div>
+            <div className="mr-champ-spot" role="status">
+              <div className="mr-champ-title">Champion</div>
               <div className="mr-champ-name">{displayName(champion)}</div>
-              <div className="mr-champ-prize">${champion.prizeUsdc.toFixed(2)}</div>
+              <div className="mr-champ-prize">{champion.prizeUsdc > 0 ? `+$${champion.prizeUsdc.toFixed(2)} prize` : "Last trader standing"}</div>
             </div>
           )}
-
           {isCancelled && (
-            <div className="mr-cancelled" role="status">Rumble cancelled — recoveries open</div>
+            <div className="mr-cancelled" role="status">Round cancelled — depositors can recover their seat</div>
           )}
         </div>
 
-        {/* Activity feed — real events, freshest at the top */}
-        <aside className="mr-feed" aria-label="Activity">
+        <aside className="mr-feed" aria-label="Arena activity">
           <div className="mr-feed-head">Activity</div>
-          <ul className="mr-feed-list">
-            {feed.length === 0 && <li className="empty">Waiting for the first move…</li>}
+          <ul className="mr-feed-list" aria-live="polite">
+            {feed.length === 0 && <li className="empty">Activity appears here as players trade.</li>}
             {feed.map((ev) => (
               <li key={ev.id} className={`fe fe-${ev.kind}`}>
                 <span className="fe-dot" aria-hidden="true" />
                 <span className="fe-text">{ev.text}</span>
-                <span className="fe-time" aria-hidden="true">{ago(ev.at)}</span>
+                <span className="fe-time">{ago(ev.at)}</span>
               </li>
             ))}
           </ul>
@@ -381,45 +292,26 @@ export default function ArenaStage({ round, standings, cut, yesPrice, wallet }: 
   );
 }
 
-// ── helpers ────────────────────────────────────────────────────────
-
-function stateLabel(s: Round["status"]): string {
-  switch (s) {
-    case "enrolling": return "Enrolling";
-    case "live":      return "Live";
-    case "settling":  return "Settling";
-    case "advancing": return "Advancing";
-    case "complete":  return "Complete";
-    case "cancelled": return "Cancelled";
-  }
+/** Classify a server history line so the feed can color it. */
+function kindOf(line: string): FeedKind {
+  if (/bought|liquidated|parlay|cashed out/i.test(line)) return "trade";
+  if (/cancelled|eliminated/i.test(line)) return "elim";
+  if (/takes .* USDC/i.test(line)) return "champion";
+  if (/settled|locked|opened/i.test(line)) return "round";
+  return "info";
 }
 
 function ago(t: number): string {
   const s = Math.max(0, Math.floor((Date.now() - t) / 1000));
   if (s < 5) return "now";
   if (s < 60) return `${s}s`;
-  const m = Math.floor(s / 60);
-  return `${m}m`;
+  return `${Math.floor(s / 60)}m`;
 }
 
-/**
- * Compute a pod's absolute position around the market orb. Even distribution
- * on a circle whose radius scales with pod count. Purely visual — index i
- * comes from the standings order so a rank move looks like the pod
- * traveling to its new spot.
- */
+/** Even spacing on a circle, rank #1 at 12 o'clock, clockwise by rank. */
 function pinFor(i: number, total: number): React.CSSProperties {
-  const n = Math.max(1, total);
-  // Start at the top and go clockwise so rank #1 sits at 12 o'clock.
-  const angle = -Math.PI / 2 + (i / n) * Math.PI * 2;
-  // Radius in % so it scales with container. Two rings if too many pods.
-  const ring = i >= 12 ? 1 : 0;
-  const r = ring === 0 ? 38 : 46;
-  const x = 50 + Math.cos(angle) * r;
-  const y = 50 + Math.sin(angle) * r;
-  return {
-    left: `${x}%`,
-    top: `${y}%`,
-    transform: "translate(-50%, -50%)"
-  };
+  const angle = -Math.PI / 2 + (i / Math.max(1, total)) * Math.PI * 2;
+  // Flatter vertically so pods at 12 and 6 o'clock stay inside the stage.
+  const rx = 40, ry = 33;
+  return { left: `${50 + Math.cos(angle) * rx}%`, top: `${50 + Math.sin(angle) * ry}%` };
 }

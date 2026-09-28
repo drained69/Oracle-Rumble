@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { PublicKey } from "@solana/web3.js";
-import { buildDepositTx, buildWithdrawTx, escrowReady, verifyPlayerDeposited } from "@/lib/escrow-server";
+import { buildDepositTx, buildWithdrawTx, escrowReady, playerBalances, verifyPlayerDeposited } from "@/lib/escrow-server";
 import { getActiveRound, getLatestRound } from "@/lib/round-store";
 import { normalizeArenaCode } from "@/lib/royale";
 
@@ -59,6 +59,22 @@ export async function POST(request: Request) {
       }
       if (round.entrants.filter((e) => !e.isBot).length >= round.config.capacity) {
         return NextResponse.json({ error: "arena is full" }, { status: 409 });
+      }
+      // Funds check: without it the wallet shows a red "failed to simulate"
+      // warning instead of telling the player they're short on USDC/SOL.
+      const seat = round.config.entryUsdc + round.config.startingBankroll;
+      const bal = await playerBalances(wallet);
+      if (bal.usdc + 1e-9 < seat) {
+        return NextResponse.json({
+          error: `Not enough devnet USDC: this seat costs ${seat.toFixed(2)} USDC and your wallet holds ${bal.usdc.toFixed(2)}. Get test USDC at faucet.circle.com (Solana Devnet).`,
+          insufficient: "usdc", needUsdc: seat, haveUsdc: bal.usdc
+        }, { status: 402 });
+      }
+      if (bal.sol < 0.005) {
+        return NextResponse.json({
+          error: `Not enough devnet SOL for fees: you hold ${bal.sol.toFixed(4)} SOL, need about 0.005. Get some at faucet.solana.com.`,
+          insufficient: "sol", haveSol: bal.sol
+        }, { status: 402 });
       }
     }
     if (body.action === "claim") {

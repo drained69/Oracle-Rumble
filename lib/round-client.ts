@@ -219,6 +219,26 @@ export async function newRound(config?: HostConfig): Promise<RoundView & { error
 }
 
 /**
+ * Check a wallet can afford a seat before any on-chain work happens.
+ * Returns null when affordable (or escrow is off), otherwise a user-facing reason.
+ */
+export async function checkSeatFunds(wallet: string, seatUsdc: number): Promise<string | null> {
+  try {
+    const r = await fetch(`/api/escrow/balance?wallet=${encodeURIComponent(wallet)}`, { cache: "no-store" }).then((x) => x.json());
+    if (r.escrow !== "active" || r.usdc == null) return null;
+    if (r.usdc + 1e-9 < seatUsdc) {
+      return `This seat costs ${seatUsdc.toFixed(2)} USDC but your wallet holds ${Number(r.usdc).toFixed(2)} devnet USDC. Get test USDC at faucet.circle.com (Solana Devnet).`;
+    }
+    if (r.sol < 0.005) {
+      return `You need about 0.005 devnet SOL for fees (you hold ${Number(r.sol).toFixed(4)}). Get some at faucet.solana.com.`;
+    }
+    return null;
+  } catch {
+    return null; // the deposit route re-checks server-side
+  }
+}
+
+/**
  * Cancel an arena that was just created but never funded — used when the
  * host's seat-deposit signing fails so we don't leave an orphaned room.
  */

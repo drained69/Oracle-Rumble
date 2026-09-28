@@ -1,8 +1,10 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { connectSolanaWallet } from "@/lib/panta-client";
-import { getRound, enrollWithEscrow, tradeRound, newRound, placeParlayApi, claimFromEscrow, serverSettleArena, cancelArena, type RoundView } from "@/lib/round-client";
+import { getRound, enrollWithEscrow, tradeRound, newRound, placeParlayApi, claimFromEscrow, serverSettleArena, cancelArena, checkSeatFunds, type RoundView } from "@/lib/round-client";
+import { useEscrowStatus, useWalletIdentity } from "@/lib/use-wallet";
+import SiteHeader from "@/app/SiteHeader";
+import CallsignModal from "@/app/CallsignModal";
 import type { Entrant, Round, ParlayTicket } from "@/lib/royale";
 import { PUBLIC_ARENA } from "@/lib/royale";
 import { markets as boardMarkets } from "@/lib/arena-data";
@@ -10,9 +12,8 @@ import { quoteParlay, PARLAY_MAX_LEGS, type ParlayLeg } from "@/lib/parlay";
 import { avatarDataUrl } from "@/lib/avatars";
 import {
   displayName,
-  getStoredUsername,
   isUsernameFreeInArena,
-  saveStoredUsername,
+  shortPk,
   validateUsername,
   USERNAME_MAX
 } from "@/lib/username";
@@ -26,26 +27,10 @@ import PantaCashOutModal from "@/app/PantaCashOutModal";
 import { executePantaOrder, type LifecycleUpdate } from "@/lib/panta-order";
 import { looksLikePantaMarketId } from "@/lib/tracked-markets";
 
-type EscrowStatus = { active: boolean; reason?: string | null };
-
 const usd = new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 0 });
 const usd2 = new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 2 });
 
-const WALLET_KEY = "oracle-rumble/wallet/v1";
 const CLUSTER = (process.env.NEXT_PUBLIC_SOLANA_CLUSTER ?? "devnet").toLowerCase();
-
-function shortPk(pk: string) {
-  if (!pk) return "";
-  if (pk.startsWith("bot:")) return pk.slice(4).toUpperCase();
-  if (pk.length <= 10) return pk;
-  return `${pk.slice(0, 4)}…${pk.slice(-4)}`;
-}
-
-/** Best-effort wallet-only display name: prefers stored username, else short pk. */
-function displayForWallet(pk: string): string {
-  const u = getStoredUsername(pk);
-  return u || shortPk(pk);
-}
 
 function fmtClock(ms: number) {
   if (ms <= 0) return "0:00";
@@ -66,7 +51,9 @@ const STATUS_LABEL: Record<string, string> = {
 
 export default function ArenaView({ arenaCode }: { arenaCode: string }) {
   const isPublic = arenaCode === PUBLIC_ARENA;
-  const [wallet, setWallet] = useState<string | null>(null);
+  const { wallet, callsign, toggleConnect, saveCallsign } = useWalletIdentity();
+  const escrow = useEscrowStatus();
+  const [showCallsign, setShowCallsign] = useState(false);
   const [nickname, setNickname] = useState("");
   const [view, setView] = useState<RoundView | null>(null);
   const [now, setNow] = useState(() => Date.now());
@@ -89,7 +76,6 @@ export default function ArenaView({ arenaCode }: { arenaCode: string }) {
   // When a host call succeeds we mint a fresh arena code; this state drives
   // the "share your invite link" screen inside the host modal.
   const [inviteInfo, setInviteInfo] = useState<{ code: string; url: string } | null>(null);
-  const [escrow, setEscrow] = useState<EscrowStatus | null>(null);
   // Real Panta order lifecycle — opt-in, disabled when market is a
   // synthetic direction-board id or no wallet is connected. When on,
   // `doBuy` also drives quote → build → sign → submit → verify → report
@@ -106,19 +92,8 @@ export default function ArenaView({ arenaCode }: { arenaCode: string }) {
     return `${window.location.origin}/a/${arenaCode}`;
   }, [arenaCode, isPublic]);
 
-  // ── boot ──────────────────────────────────────────────────────────
-  useEffect(() => {
-    try {
-      const w = localStorage.getItem(WALLET_KEY);
-      if (w) {
-        setWallet(w);
-        const stored = getStoredUsername(w);
-        if (stored) setNickname(stored);
-      }
-    } catch { /* ignore */ }
-    // Fetch escrow status ONCE — the server's config doesn't change per request.
-    fetch("/api/escrow/status", { cache: "no-store" }).then((r) => r.json()).then(setEscrow).catch(() => setEscrow({ active: false, reason: "unreachable" }));
-  }, []);
+  // Prefill the seat form with the wallet's saved callsign.
+  useEffect(() => { if (callsign) setNickname(callsign); }, [callsign]);
 
   // Enable arcade palette / background across the arena view.
   useEffect(() => {
@@ -180,31 +155,10 @@ export default function ArenaView({ arenaCode }: { arenaCode: string }) {
 
   // ── wallet ────────────────────────────────────────────────────────
   const connect = useCallback(async () => {
-    if (wallet) {
-      setWallet(null);
-      try { localStorage.removeItem(WALLET_KEY); } catch { /* ignore */ }
-      setToast("Wallet disconnected.");
-      return;
-    }
-    const real = await connectSolanaWallet();
-    if (real) {
-      setWallet(real);
-      try { localStorage.setItem(WALLET_KEY, real); } catch { /* ignore */ }
-      const stored = getStoredUsername(real);
-      if (stored) {
-        setNickname(stored);
-        setToast(`Connected as ${stored}.`);
-      } else {
-        setNickname("");
-        // First time this wallet appears — prompt for a callsign right away
-        // so the user has a username before any arena needs one.
-        setShowEnroll(true);
-        setToast(`Connected · ${shortPk(real)} · pick a callsign.`);
-      }
-    } else {
-      setToast("No Solana wallet found. Install Phantom, Backpack, or Solflare and reload.");
-    }
-  }, [wallet]);
+    const r = await toggleConnect();
+    setToast(r.message);
+    if (r.needsCallsign) setShowCallsign(true);
+  }, [toggleConnect]);
 
   // ── actions (all arena-scoped) ────────────────────────────────────
   const doEnroll = useCallback(async () => {
@@ -219,9 +173,8 @@ export default function ArenaView({ arenaCode }: { arenaCode: string }) {
 
     setBusy(true);
     try {
-      // Persist the chosen username FIRST — so even if enrollWithEscrow
-      // fails (wallet cancel, tx error) the next arena reuses this handle.
-      saveStoredUsername(wallet, nick);
+      // Persist the callsign first so it survives a cancelled wallet prompt.
+      saveCallsign(nick);
 
       // enrollWithEscrow: if arena is on-chain, wallet signs a Deposit tx
       // (real USDC on devnet) before the ledger enrolls. Ledger-only arenas
@@ -237,7 +190,7 @@ export default function ArenaView({ arenaCode }: { arenaCode: string }) {
         await refresh();
       }
     } finally { setBusy(false); }
-  }, [wallet, nickname, arenaCode, refresh, round]);
+  }, [wallet, nickname, arenaCode, refresh, round, saveCallsign]);
 
   // ── settlement + claim ────────────────────────────────────────────
   // When a hosted arena's round hits `complete` and has an on-chain vault,
@@ -375,9 +328,19 @@ export default function ArenaView({ arenaCode }: { arenaCode: string }) {
       setToast("Connect a wallet first — hosting on-chain needs your seat deposit signature.");
       return;
     }
+    if (wallet && !callsign) {
+      setShowCallsign(true);
+      setToast("Choose a callsign before hosting.");
+      return;
+    }
 
     setBusy(true);
     try {
+      // Check funds before the operator pays for an on-chain InitRound.
+      if (wallet && escrow?.active) {
+        const short = await checkSeatFunds(wallet, (Number(hEntry) || 1) + (Number(hVault) || 5));
+        if (short) { setToast(short); return; }
+      }
       const v = await newRound({
         asset: hAsset,
         horizon: hHorizon,
@@ -401,8 +364,8 @@ export default function ArenaView({ arenaCode }: { arenaCode: string }) {
       // With wallet: the host must sign seat #1 deposit before the arena
       // is announced. If signing is dismissed or fails, roll back so the
       // room doesn't linger as an unfunded orphan.
-      const nick = getStoredUsername(wallet) || shortPk(wallet).replace("…", "");
-      if (escrow?.active) setToast("Sign the seat deposit in your wallet…");
+      const nick = callsign || shortPk(wallet).replace("…", "");
+      if (escrow?.active) setToast("Approve the seat deposit in your wallet…");
       let enrollError = "";
       try {
         const r = await enrollWithEscrow(wallet, nick, v.arena);
@@ -413,14 +376,14 @@ export default function ArenaView({ arenaCode }: { arenaCode: string }) {
 
       if (enrollError) {
         await cancelArena(v.arena, wallet).catch(() => { /* best effort */ });
-        setToast(`Host cancelled: ${enrollError}`);
+        setToast(`Arena not opened — ${enrollError}`);
         return;
       }
 
       setInviteInfo({ code: v.arena, url });
       setToast(`Arena ${v.arena} is open. Share the link.`);
     } finally { setBusy(false); }
-  }, [hAsset, hHorizon, hFormat, hEntry, hVault, hCapacity, hRounds, wallet, escrow]);
+  }, [hAsset, hHorizon, hFormat, hEntry, hVault, hCapacity, hRounds, wallet, escrow, callsign]);
 
   const doCopyInvite = useCallback(async (url?: string) => {
     const link = url ?? currentInviteUrl;
@@ -449,53 +412,21 @@ export default function ArenaView({ arenaCode }: { arenaCode: string }) {
       <div className="game-grid-bg" aria-hidden="true" />
       <div className="game-scanlines" aria-hidden="true" />
 
-      {/* ── HUD ─────────────────────────────────────────────── */}
-      <nav className="hud-bar game-hud">
-        <div className="tabbar-inner">
-          <a href="/" className="brand" aria-label="Oracle Rumble">
-            <svg className="mark" viewBox="0 0 64 64" aria-hidden="true">
-              <g fill="none" stroke="#edf0f6" strokeWidth="3.2" strokeLinecap="round">
-                <path d="M 12 24 A 22 22 0 0 1 24 12" />
-                <path d="M 40 12 A 22 22 0 0 1 52 24" />
-                <path d="M 52 40 A 22 22 0 0 1 40 52" />
-                <path d="M 24 52 A 22 22 0 0 1 12 40" />
-              </g>
-              <path d="M 4 32 L 11 32 M 53 32 L 60 32" stroke="#edf0f6" strokeWidth="3" strokeLinecap="round" />
-              <path d="M 32 2 L 36 18 L 32 23 L 28 18 Z" fill="#edf0f6" />
-              <path d="M 32 62 L 36 46 L 32 41 L 28 46 Z" fill="#edf0f6" />
-              <path d="M 10 32 C 18 20, 26 18, 32 18 C 38 18, 46 20, 54 32 C 46 44, 38 46, 32 46 C 26 46, 18 44, 10 32 Z" fill="#edf0f6" />
-              <circle cx="32" cy="32" r="7" fill="#0a0d13" />
-              <circle cx="32" cy="32" r="3.3" fill="#edf0f6" />
-            </svg>
-            ORACLE RUMBLE
-          </a>
-          <div className="hud-nav">
-            <a href="/">Arenas</a>
-            <a href="#arena" className="active">Room</a>
-            <a href="/positions">Positions</a>
-            <a href="/docs">Docs</a>
-          </div>
-          <div className="hud-right">
-            <span
-              className={`system-chip ${escrow?.active ? "on" : "off"}`}
-              title={`Solana ${CLUSTER} · ${escrow?.active ? "on-chain escrow" : `practice mode (${escrow?.reason ?? "escrow off"})`}`}
-            >
-              <span className="dot" />
-              {CLUSTER}
-            </span>
-            {!isPublic && (
-              <button className="arena-chip private" onClick={() => doCopyInvite()} title="Copy invite link">
-                {arenaCode}
-                <span className="copy-hint">⧉</span>
-              </button>
-            )}
-            <button className={wallet ? "wallet game connected" : "wallet game"} onClick={connect}>
-              <span className="avatar">{wallet ? (getStoredUsername(wallet) || wallet).slice(0, 2).toUpperCase() : "?"}</span>
-              {wallet ? displayForWallet(wallet) : "Connect"}
-            </button>
-          </div>
-        </div>
-      </nav>
+      <SiteHeader
+        active="arenas"
+        wallet={wallet}
+        callsign={callsign}
+        escrow={escrow}
+        onConnect={connect}
+        onEditCallsign={() => setShowCallsign(true)}
+        extra={!isPublic ? (
+          <button className="arena-chip private" onClick={() => doCopyInvite()} title="Copy invite link">
+            {arenaCode}
+            <span className="copy-hint" aria-hidden="true">⧉</span>
+            <span className="sr-only">Copy invite link</span>
+          </button>
+        ) : undefined}
+      />
 
       {/* ── ROUND BAR ───────────────────────────────────────── */}
       <div className="roundbar" id="top">
@@ -509,10 +440,12 @@ export default function ArenaView({ arenaCode }: { arenaCode: string }) {
               <span className="rb-k">Status</span>
               <span className={`rb-v status ${round.status}`}>{STATUS_LABEL[round.status]}</span>
             </div>
-            <div className="rb-cell">
-              <span className="rb-k">{round.status === "enrolling" ? "Locks in" : round.status === "live" ? "Settles in" : "Window"}</span>
-              <span className="rb-v mono">{deadline ? fmtClock(timeLeft) : "—"}</span>
-            </div>
+            {deadline > 0 && (
+              <div className="rb-cell">
+                <span className="rb-k">{round.status === "enrolling" ? "Locks in" : "Settles in"}</span>
+                <span className="rb-v mono">{fmtClock(timeLeft)}</span>
+              </div>
+            )}
             <div className="rb-cell">
               <span className="rb-k">Prize pool</span>
               <span className="rb-v accent">{usd.format(round.prizePoolUsdc)}</span>
@@ -521,23 +454,28 @@ export default function ArenaView({ arenaCode }: { arenaCode: string }) {
               <span className="rb-k">Alive</span>
               <span className="rb-v">{aliveCount} <em>/ {standings.length}</em></span>
             </div>
+            {round.status === "live" && aliveCount > cut && (
+              <div className="rb-cell">
+                <span className="rb-k">Survive</span>
+                <span className="rb-v danger">Top {cut}</span>
+              </div>
+            )}
             <div className="rb-cell grow">
               <span className="rb-k">Market · {round.config.asset}</span>
               <span className="rb-v market">{round.config.marketQuestion}</span>
             </div>
             <div className="rb-cell">
-              <span className="rb-k">YES</span>
-              <span className="rb-v accent">{yesPrice}¢</span>
+              <span className="rb-k">YES / NO</span>
+              <span className="rb-v"><span className="yes">{yesPrice}¢</span> <em>/</em> <span className="no">{100 - yesPrice}¢</span></span>
             </div>
             {round.escrow && (
               <div className="rb-cell">
-                <span className="rb-k">Vault</span>
+                <span className="rb-k">Escrow vault</span>
                 <a
-                  className="rb-v mono"
-                  style={{ color: "var(--up)", textDecoration: "none", fontSize: 11 }}
+                  className="rb-v mono vault-link"
                   href={`https://explorer.solana.com/address/${round.escrow.roundVault}${CLUSTER === "mainnet-beta" ? "" : `?cluster=${CLUSTER}`}`}
                   target="_blank" rel="noopener noreferrer"
-                  title={`On-chain vault: ${round.escrow.roundVault}`}
+                  title={`View the on-chain vault ${round.escrow.roundVault} on Solana Explorer`}
                 >
                   {round.escrow.roundVault.slice(0, 4)}…{round.escrow.roundVault.slice(-4)} ↗
                 </a>
@@ -546,13 +484,18 @@ export default function ArenaView({ arenaCode }: { arenaCode: string }) {
           </>
         ) : (
           <div className="rb-cell grow">
-            <span className="rb-v">
-              {isPublic ? "Opening the arena…" : `Arena ${arenaCode} has no live rumble. `}
-              {!isPublic && <a className="link" href="/">Jump to the public arena →</a>}
+            <span className="rb-v market">
+              {isPublic ? "Opening the arena…" : `Arena ${arenaCode} has no active round. `}
+              {!isPublic && <a className="link" href="/">Browse open arenas →</a>}
             </span>
           </div>
         )}
       </div>
+
+      {/* ── ARENA STAGE (every round state) ─────────────────── */}
+      {round && (
+        <ArenaStage round={round} standings={standings} survivors={cut} yesPrice={yesPrice} wallet={wallet} />
+      )}
 
       {/* ── ARENA ───────────────────────────────────────────── */}
       <section className="arena-shell" id="arena">
@@ -657,16 +600,6 @@ export default function ArenaView({ arenaCode }: { arenaCode: string }) {
           </div>
         ) : (
           <>
-            {/* Market Royale stage — real-state visual dashboard */}
-            {round && (
-              <ArenaStage
-                round={round}
-                standings={standings}
-                cut={cut}
-                yesPrice={yesPrice}
-                wallet={wallet}
-              />
-            )}
           <div className="cockpit">
             {/* trading */}
             <div className="trade-col">
@@ -837,7 +770,9 @@ export default function ArenaView({ arenaCode }: { arenaCode: string }) {
             <aside className="roster">
               <div className="roster-head">
                 <span>Standings</span>
-                <span className="cut">cut ↓ bottom {standings.filter(e => e.eliminatedRound === null).length - cut}</span>
+                {round?.status === "live" && aliveCount > cut && (
+                  <span className="cut">Top {cut} survive · {aliveCount - cut} cut</span>
+                )}
               </div>
               <ul>
                 {standings.map((e, i) => {
@@ -920,89 +855,64 @@ export default function ArenaView({ arenaCode }: { arenaCode: string }) {
         />
       )}
 
-      {showEnroll && (
-        <div className="modal-backdrop" onClick={() => setShowEnroll(false)}>
-          <div className="modal" onClick={(e) => e.stopPropagation()}>
-            <button className="close" onClick={() => setShowEnroll(false)} aria-label="Close">×</button>
-            <h2>{round ? "Take your seat" : "Set your callsign"}</h2>
-            <p className="sub">
-              {round
-                ? <>Arena <b>{arenaCode}</b> · {usd.format(round.config.entryUsdc)} entry → pool &nbsp;+&nbsp; {usd.format(round.config.startingBankroll)} vault → yours to trade &nbsp;=&nbsp; <b>{usd.format(round.config.entryUsdc + round.config.startingBankroll)} total</b></>
-                : <>Pick a handle to show in the arena stage, standings, and activity feed. You can change it before joining any arena.</>}
-            </p>
-            <label>
-              Callsign
-              <input
-                value={nickname}
-                onChange={(e) => setNickname(e.target.value)}
-                placeholder="e.g. nova_9"
-                maxLength={USERNAME_MAX}
-                autoFocus
-                aria-invalid={nickname.length > 0 && !validateUsername(nickname).ok}
-                aria-describedby="callsign-hint"
-              />
-            </label>
-            {(() => {
-              const v = validateUsername(nickname);
-              const arenaClash = round && v.ok && !isUsernameFreeInArena(v.value, round.entrants, wallet ?? undefined);
-              const hint = nickname.length === 0
-                ? "3–16 characters: letters, numbers, underscore."
-                : !v.ok
-                ? v.reason
-                : arenaClash
-                ? `"${v.value}" is taken in this arena.`
-                : "Looks good — this callsign will show on every screen.";
-              const ok = nickname.length > 0 && v.ok && !arenaClash;
-              return (
-                <p
-                  id="callsign-hint"
-                  className={`disclaimer callsign-hint ${nickname.length === 0 ? "" : ok ? "ok" : "bad"}`}
-                  style={{ marginTop: 6, textAlign: "left" }}
-                >
-                  {hint}
-                </p>
-              );
-            })()}
-            {round ? (
-              (() => {
-                const v = validateUsername(nickname);
-                const arenaClash = v.ok && !isUsernameFreeInArena(v.value, round.entrants, wallet ?? undefined);
-                const disabled = busy || !v.ok || !!arenaClash || !wallet;
-                return (
-                  <button className="btn primary full" onClick={doEnroll} disabled={disabled} style={{ marginTop: 8 }}>
-                    {busy ? "Entering…" : wallet ? `Lock in ${usd.format(round.config.entryUsdc + round.config.startingBankroll)}` : "Connect wallet first"}
-                  </button>
-                );
-              })()
-            ) : (
-              (() => {
-                const v = validateUsername(nickname);
-                const disabled = !v.ok || !wallet;
-                return (
-                  <button
-                    className="btn primary full"
-                    disabled={disabled}
-                    style={{ marginTop: 8 }}
-                    onClick={() => {
-                      if (!wallet || !v.ok) return;
-                      saveStoredUsername(wallet, v.value);
-                      setToast(`Callsign set to ${v.value}.`);
-                      setShowEnroll(false);
-                    }}
-                  >
-                    Save callsign
-                  </button>
-                );
-              })()
-            )}
-            <p className="disclaimer" style={{ marginTop: 12 }}>
-              {round
-                ? <>Entry funds the pool; the vault stays yours to trade and withdraw. Funds are held in a non-custodial escrow program on {CLUSTER}.</>
-                : <>Stored locally by wallet address on this device.</>}
-            </p>
-          </div>
-        </div>
+      {showCallsign && (
+        <CallsignModal
+          initial={callsign}
+          onSave={(v) => { const r = saveCallsign(v); if (r.ok) setToast(r.message); return r; }}
+          onClose={() => setShowCallsign(false)}
+        />
       )}
+
+      {showEnroll && round && (() => {
+        const v = validateUsername(nickname);
+        const clash = v.ok && !isUsernameFreeInArena(v.value, round.entrants, wallet ?? undefined);
+        const ok = v.ok && !clash;
+        const hint = nickname.length === 0
+          ? "3–16 characters: letters, numbers and underscores."
+          : !v.ok ? v.reason
+          : clash ? `"${v.value}" is already taken in this arena.`
+          : "Available — shown on the arena stage, standings and results.";
+        const seat = round.config.entryUsdc + round.config.startingBankroll;
+        return (
+          <div className="modal-backdrop" onClick={() => setShowEnroll(false)}>
+            <div className="modal" role="dialog" aria-modal="true" aria-labelledby="seat-title" onClick={(e) => e.stopPropagation()}>
+              <button className="close" onClick={() => setShowEnroll(false)} aria-label="Close">×</button>
+              <h2 id="seat-title">Take your seat</h2>
+              <p className="sub">Arena <b>{arenaCode}</b> · {round.config.marketQuestion}</p>
+              <dl className="seat-breakdown">
+                <div><dt>Entry → shared prize pool</dt><dd>{usd2.format(round.config.entryUsdc)}</dd></div>
+                <div><dt>Vault → your trading bankroll</dt><dd>{usd2.format(round.config.startingBankroll)}</dd></div>
+                <div className="total"><dt>Total deposit</dt><dd>{usd2.format(seat)} USDC</dd></div>
+              </dl>
+              <form onSubmit={(e) => { e.preventDefault(); if (ok && !busy && wallet) doEnroll(); }}>
+                <label>
+                  Callsign
+                  <input
+                    value={nickname}
+                    onChange={(e) => setNickname(e.target.value)}
+                    placeholder="e.g. nova_9"
+                    maxLength={USERNAME_MAX}
+                    autoFocus
+                    autoComplete="off"
+                    spellCheck={false}
+                    aria-invalid={nickname.length > 0 && !ok}
+                    aria-describedby="seat-hint"
+                  />
+                </label>
+                <p id="seat-hint" className={`callsign-hint ${nickname.length === 0 ? "" : ok ? "ok" : "bad"}`} role="status">{hint}</p>
+                <button type="submit" className="btn primary full" disabled={busy || !ok || !wallet} style={{ marginTop: 10 }}>
+                  {busy ? "Confirm in your wallet…" : wallet ? `Deposit ${usd2.format(seat)} & join` : "Connect a wallet first"}
+                </button>
+              </form>
+              <p className="disclaimer" style={{ marginTop: 12 }}>
+                {escrow?.active
+                  ? <>Held in a non-custodial escrow program on Solana {CLUSTER}. You withdraw your remaining vault plus any prize after settlement.</>
+                  : <>Practice mode — no USDC moves.</>}
+              </p>
+            </div>
+          </div>
+        );
+      })()}
 
       {showHost && (
         <div className="modal-backdrop" onClick={closeHostModal}>

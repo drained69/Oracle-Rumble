@@ -161,6 +161,19 @@ export async function initArenaOnChain(p: InitArenaParams): Promise<{ ok: true; 
   }
 }
 
+/** Player's devnet USDC + SOL balances, for a friendly pre-sign funds check. */
+export async function playerBalances(owner: PublicKey): Promise<{ usdc: number; sol: number }> {
+  const conn = connection();
+  const lamports = await conn.getBalance(owner, "confirmed").catch(() => 0);
+  let usdc = 0;
+  if (USDC_MINT) {
+    const ata = associatedTokenAddress(owner, USDC_MINT);
+    const bal = await conn.getTokenAccountBalance(ata, "confirmed").catch(() => null);
+    usdc = bal?.value.uiAmount ?? 0;
+  }
+  return { usdc, sol: lamports / 1e9 };
+}
+
 // ── CLIENT-SIGNED TX BUILDERS ────────────────────────────────────────────
 /** Wrap instructions into a legacy Transaction; return base64 for wallet signing. */
 async function buildTx(ixs: Awaited<ReturnType<typeof ixDeposit>>[], feePayer: PublicKey): Promise<string> {
