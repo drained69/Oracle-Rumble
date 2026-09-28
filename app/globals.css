@@ -2319,6 +2319,244 @@ main.game-main { position: relative; z-index: 2; }
 }
 
 /* ── Responsive ─────────────────────────────────────────────────────── */
+/* ═══════════════════════════════════════════════════════════════════════
+ * JUMPER-STYLE SINGLE-VIEWPORT LAYOUT — no scrolling on the entry page.
+ * A centered card widget with clickable tabs (Play, Host).
+ * Long-form content lives on /docs and /positions as separate routes.
+ * ═══════════════════════════════════════════════════════════════════ */
+
+body.no-scroll { overflow: hidden; }
+
+.game-main.jumper {
+  height: 100vh; height: 100dvh;
+  display: flex; flex-direction: column;
+  overflow: hidden;
+}
+
+.jumper-stage {
+  flex: 1; min-height: 0;
+  display: grid; grid-template-columns: 1fr 560px;
+  gap: 40px;
+  max-width: 1240px; width: 100%;
+  margin: 0 auto;
+  padding: 24px clamp(16px, 4vw, 32px);
+  align-items: center;
+  position: relative; z-index: 2;
+}
+
+.jumper-tagline { max-width: 460px; }
+.jumper-tagline h1 {
+  font-family: 'Orbitron', 'Space Grotesk', sans-serif;
+  font-size: clamp(34px, 5vw, 60px);
+  font-weight: 900; line-height: 0.95; letter-spacing: -0.02em;
+  color: var(--text); margin: 0;
+  text-transform: uppercase;
+}
+.jumper-tagline p {
+  color: var(--text-2); font-family: 'Space Grotesk', sans-serif;
+  font-size: 15px; line-height: 1.6; margin: 18px 0 26px; max-width: 420px;
+}
+.jumper-stats {
+  display: grid; grid-template-columns: repeat(3, auto); gap: 30px;
+}
+.jumper-stats > div { display: flex; flex-direction: column; gap: 4px; }
+.jumper-stats span {
+  font-family: 'JetBrains Mono', monospace; font-size: 10px;
+  color: var(--text-3); text-transform: uppercase; letter-spacing: 1.4px;
+}
+.jumper-stats b {
+  font-family: 'Orbitron', sans-serif; font-size: 24px; font-weight: 800;
+  color: var(--text); letter-spacing: -0.01em;
+}
+.jumper-stats b.plasma { color: var(--plasma); text-shadow: 0 0 14px rgba(34, 211, 238, 0.4); }
+.jumper-stats b.neon { color: var(--neon); text-shadow: 0 0 14px rgba(192, 132, 252, 0.4); }
+.jumper-stats b.gold { color: var(--gold); text-shadow: 0 0 14px rgba(252, 211, 77, 0.4); }
+
+/* ── The centered card ─────────────────────────────────────────────── */
+.jumper-card {
+  background:
+    radial-gradient(500px 250px at 50% 0%, rgba(192, 132, 252, 0.14), transparent 60%),
+    linear-gradient(180deg, #131824 0%, #0d1017 100%);
+  border: 1px solid rgba(192, 132, 252, 0.22);
+  border-radius: 20px;
+  box-shadow:
+    0 30px 80px rgba(0, 0, 0, 0.55),
+    inset 0 1px 0 rgba(255, 255, 255, 0.04);
+  display: flex; flex-direction: column;
+  max-height: min(720px, calc(100vh - 140px));
+  overflow: hidden;
+}
+
+.jc-tabs {
+  display: flex; padding: 12px 12px 0; gap: 4px;
+  border-bottom: 1px solid var(--border);
+}
+.jc-tab {
+  flex: 1; padding: 12px 10px 14px;
+  background: transparent; border: 0; cursor: pointer;
+  font-family: 'Orbitron', sans-serif; font-size: 12px; font-weight: 800;
+  letter-spacing: 2.2px; text-transform: uppercase;
+  color: var(--text-3);
+  border-bottom: 2px solid transparent;
+  transition: color .12s, border-color .12s;
+  display: inline-flex; align-items: center; justify-content: center; gap: 8px;
+}
+.jc-tab .dot {
+  width: 6px; height: 6px; border-radius: 50%;
+  background: currentColor; opacity: 0.5;
+}
+.jc-tab:hover { color: var(--text); }
+.jc-tab.on {
+  color: var(--neon);
+  border-bottom-color: var(--neon);
+}
+.jc-tab.on .dot {
+  opacity: 1;
+  animation: neonPulse 1.6s ease-in-out infinite;
+  box-shadow: 0 0 0 3px currentColor;
+}
+
+.jc-body {
+  flex: 1; min-height: 0;
+  overflow-y: auto;
+  padding: 22px 22px 24px;
+}
+.jc-body::-webkit-scrollbar { width: 8px; }
+.jc-body::-webkit-scrollbar-track { background: transparent; }
+.jc-body::-webkit-scrollbar-thumb { background: rgba(192, 132, 252, 0.18); border-radius: 4px; }
+.jc-body::-webkit-scrollbar-thumb:hover { background: rgba(192, 132, 252, 0.35); }
+
+/* ── Play panel ────────────────────────────────────────────────────── */
+.jc-play { display: flex; flex-direction: column; gap: 16px; }
+
+.jc-featured {
+  padding: 16px 18px;
+  background: linear-gradient(180deg, rgba(15, 19, 27, 0.7), rgba(10, 13, 19, 0.4));
+  border: 1px solid var(--border);
+  border-radius: 12px;
+}
+.jc-featured-top {
+  display: flex; align-items: center; justify-content: space-between; gap: 10px;
+  margin-bottom: 10px;
+}
+.jc-code {
+  font-family: 'JetBrains Mono', monospace; font-size: 10.5px; letter-spacing: 1.4px;
+  color: var(--text-3); text-transform: uppercase; font-weight: 700;
+}
+.jc-featured-q {
+  font-family: 'Space Grotesk', sans-serif; font-size: 18px; font-weight: 700;
+  color: var(--text); line-height: 1.3; letter-spacing: -0.01em;
+  margin-bottom: 14px;
+}
+.jc-featured-meta {
+  display: grid; grid-template-columns: repeat(5, 1fr); gap: 6px;
+  padding: 10px 0; margin-bottom: 14px;
+  border-top: 1px solid var(--border); border-bottom: 1px solid var(--border);
+}
+.jc-featured-meta > div { display: flex; flex-direction: column; gap: 3px; padding: 0 6px; border-right: 1px solid var(--border); }
+.jc-featured-meta > div:last-child { border-right: 0; }
+.jc-featured-meta span {
+  font-family: 'JetBrains Mono', monospace; font-size: 9px; letter-spacing: 1.2px;
+  color: var(--text-3); text-transform: uppercase;
+}
+.jc-featured-meta b {
+  font-family: 'Orbitron', sans-serif; font-size: 14px; font-weight: 800; color: var(--text);
+}
+.jc-featured-meta b.plasma { color: var(--plasma); }
+.jc-featured-meta b.neon { color: var(--neon); }
+.jc-featured-meta b.gold { color: var(--gold); }
+.jc-featured-meta b em { color: var(--text-3); font-style: normal; font-size: 11px; font-weight: 600; }
+
+.btn-fight.full { width: 100%; height: 46px; font-size: 12.5px; letter-spacing: 2.4px; }
+
+.jc-others {
+  display: flex; flex-direction: column; gap: 6px;
+}
+.jc-others-head {
+  font-family: 'JetBrains Mono', monospace; font-size: 10px; letter-spacing: 1.6px;
+  color: var(--text-3); text-transform: uppercase; margin-bottom: 4px;
+}
+
+.jc-empty {
+  padding: 40px 20px 30px; text-align: center;
+  display: flex; flex-direction: column; align-items: center; gap: 12px;
+}
+.jc-empty-icon {
+  font-size: 36px; color: var(--neon);
+  text-shadow: 0 0 20px rgba(192, 132, 252, 0.5);
+  animation: neonPulse 2s ease-in-out infinite;
+}
+.jc-empty h3 {
+  font-family: 'Orbitron', sans-serif; font-size: 18px; font-weight: 800;
+  color: var(--text); letter-spacing: 1.5px; text-transform: uppercase;
+  margin: 0;
+}
+.jc-empty p { color: var(--text-2); font-size: 13.5px; margin: 0 0 8px; max-width: 320px; }
+
+/* ── Host panel ────────────────────────────────────────────────────── */
+.jc-host { display: flex; flex-direction: column; }
+.jc-host-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 10px; }
+
+.jc-field { display: flex; flex-direction: column; gap: 6px; }
+.jc-field-label {
+  font-family: 'JetBrains Mono', monospace; font-size: 9.5px; letter-spacing: 1.4px;
+  color: var(--text-3); text-transform: uppercase; font-weight: 700;
+}
+.jc-field .gm-seg { padding: 3px; }
+.jc-field .gm-seg .opt { padding: 6px 8px; font-size: 10px; letter-spacing: 1.2px; }
+
+.jc-host-inputs { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin: 10px 0; }
+.jc-host-inputs .gm-num span {
+  font-family: 'JetBrains Mono', monospace; font-size: 9.5px; letter-spacing: 1.4px;
+  color: var(--text-3); text-transform: uppercase; font-weight: 700;
+}
+.jc-host-inputs .gm-num input { height: 40px; font-size: 14px; }
+
+.jc-host-preview {
+  display: grid; grid-template-columns: repeat(3, 1fr); gap: 4px;
+  padding: 12px 0; margin: 8px 0 12px;
+  background: rgba(34, 211, 238, 0.04);
+  border: 1px solid rgba(34, 211, 238, 0.2);
+  border-radius: 10px;
+}
+.jc-host-preview > div { display: flex; flex-direction: column; gap: 3px; padding: 0 12px; border-right: 1px solid var(--border); }
+.jc-host-preview > div:last-child { border-right: 0; }
+.jc-host-preview span {
+  font-family: 'JetBrains Mono', monospace; font-size: 9.5px; letter-spacing: 1.4px;
+  color: var(--text-3); text-transform: uppercase;
+}
+.jc-host-preview b {
+  font-family: 'Orbitron', sans-serif; font-size: 16px; font-weight: 800; color: var(--text);
+}
+.jc-host-preview b.plasma { color: var(--plasma); text-shadow: 0 0 10px rgba(34, 211, 238, 0.3); }
+
+.jc-invite { text-align: center; padding: 4px 0; }
+.jc-invite-lead {
+  color: var(--text-2); font-family: 'Space Grotesk', sans-serif;
+  font-size: 14px; margin-bottom: 12px;
+}
+
+/* Header hud nav — style buttons the same as anchor links inside the tabbar */
+.hud-bar.game-hud .hud-nav button.nav-link.active { color: var(--neon); background: rgba(192, 132, 252, 0.08); text-shadow: 0 0 10px rgba(192, 132, 252, 0.5); }
+
+/* Small-screen: stack tagline above the card, keep single-viewport feel */
+@media (max-width: 1000px) {
+  .jumper-stage { grid-template-columns: 1fr; gap: 18px; padding-top: 18px; }
+  .jumper-tagline { max-width: 640px; margin: 0 auto; text-align: center; }
+  .jumper-tagline p { margin-left: auto; margin-right: auto; }
+  .jumper-stats { justify-content: center; }
+}
+@media (max-width: 640px) {
+  .jumper-stage { padding: 12px 14px; }
+  .jumper-tagline h1 { font-size: 32px; }
+  .jumper-tagline p { font-size: 13.5px; margin: 12px 0 16px; }
+  .jumper-stats { gap: 18px; }
+  .jumper-stats b { font-size: 18px; }
+  .jumper-card { max-height: calc(100vh - 240px); }
+  .jc-featured-meta { grid-template-columns: repeat(3, 1fr); }
+  .jc-featured-meta > div:nth-child(3) { border-right: 0; }
+}
+
 /* ── DOCS PAGE ─────────────────────────────────────────────────────── */
 .docs-hero {
   max-width: 1240px; margin: 0 auto; padding: 44px clamp(16px, 4vw, 32px) 8px;
@@ -2542,6 +2780,15 @@ main.game-main { position: relative; z-index: 2; }
 }
 .docs-foot a { color: var(--text-2); }
 .docs-foot a:hover { color: var(--neon); }
+
+.docs-foot-links { display: flex; align-items: center; gap: 14px; }
+
+.gh-link {
+  display: inline-flex; align-items: center; justify-content: center;
+  color: var(--text-3); transition: color .15s ease, transform .15s ease;
+}
+.gh-link:hover { color: var(--text-1); transform: translateY(-1px); }
+.gh-link svg { display: block; }
 
 @media (max-width: 1000px) {
   .gm-hero-inner { grid-template-columns: 1fr; }

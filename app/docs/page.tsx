@@ -8,6 +8,7 @@
  */
 
 import { useEffect } from "react";
+import GitHubLink from "@/app/GitHubLink";
 
 const CLUSTER = (process.env.NEXT_PUBLIC_SOLANA_CLUSTER ?? "devnet").toLowerCase();
 
@@ -455,7 +456,10 @@ CASHOUT_FEE_CAP_USDC   = 1.50  (hard cap)`}
 
           <footer className="docs-foot">
             <div>Oracle Rumble · Solana {CLUSTER} · Non-custodial escrow · Built on Panta.</div>
-            <div><a href="/">← Back to arenas</a></div>
+            <div className="docs-foot-links">
+              <GitHubLink />
+              <a href="/">← Back to arenas</a>
+            </div>
           </footer>
         </article>
       </div>

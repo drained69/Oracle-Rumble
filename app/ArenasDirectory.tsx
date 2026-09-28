@@ -1,10 +1,10 @@
 "use client";
 
 /**
- * Arenas directory — GAME MODE.
- * Arcade-cabinet + battle-royale rebuild: neon boss card, fighter grid,
- * level-based how-it-works, arcade host cabinet, ticker markets strip.
- * Data flow unchanged from prior directory — every feature is preserved.
+ * Arenas directory — Jumper-style single-viewport widget.
+ * No scrolling on the main entry: a centered card with two clickable tabs
+ * (Play, Host). Long-form content lives on /docs. Deep views like
+ * /positions live on their own routes reached from the header.
  */
 
 import { useCallback, useEffect, useMemo, useState } from "react";
@@ -63,14 +63,16 @@ const STATUS_LABEL: Record<string, string> = {
   advancing: "Advancing", complete: "Complete", cancelled: "Cancelled"
 };
 
+type Tab = "play" | "host";
+
 export default function ArenasDirectory() {
   const [wallet, setWallet] = useState<string | null>(null);
   const [arenas, setArenas] = useState<ArenaItem[]>([]);
-  // now starts at 0 so SSR + first client render match; useEffect fills it in.
   const [now, setNow] = useState(0);
   const [busy, setBusy] = useState(false);
   const [toast, setToast] = useState("");
   const [escrow, setEscrow] = useState<{ active: boolean; reason?: string | null } | null>(null);
+  const [tab, setTab] = useState<Tab>("play");
 
   const [hMode, setHMode] = useState<"quick" | "scheduled">("quick");
   const [hAsset, setHAsset] = useState<"BTC" | "ETH" | "SOL">("SOL");
@@ -83,10 +85,13 @@ export default function ArenasDirectory() {
   const [hStartInMin, setHStartInMin] = useState(15);
   const [inviteInfo, setInviteInfo] = useState<{ code: string; url: string } | null>(null);
 
-  // Toggle body.game-mode so the background layers render correctly.
   useEffect(() => {
     document.body.classList.add("game-mode");
-    return () => { document.body.classList.remove("game-mode"); };
+    document.body.classList.add("no-scroll");
+    return () => {
+      document.body.classList.remove("game-mode");
+      document.body.classList.remove("no-scroll");
+    };
   }, []);
 
   useEffect(() => {
@@ -175,53 +180,29 @@ export default function ArenasDirectory() {
     ?? liveOnly.find((a) => a.status === "enrolling")
     ?? liveOnly[0]
     ?? null;
-  const supporting = active.filter((a) => a.arenaCode !== featured?.arenaCode).slice(0, 4);
+  const others = active.filter((a) => a.arenaCode !== featured?.arenaCode);
 
-  // Aggregate stats for the hero HUD strip.
-  const stats = useMemo(() => {
-    const totalPool = active.reduce((s, a) => s + a.prizePoolUsdc, 0);
-    const totalAlive = active.reduce((s, a) => s + a.alive, 0);
-    const liveCount = active.filter((a) => a.status === "live").length;
-    return { totalPool, totalAlive, liveCount };
-  }, [active]);
-
-  const topChampion = useMemo(() => {
-    return [...active].sort((a, b) => b.prizePoolUsdc - a.prizePoolUsdc)[0] ?? null;
-  }, [active]);
-
-  const scrollToId = (id: string) => {
-    const el = document.getElementById(id);
-    if (el) el.scrollIntoView({ behavior: "smooth", block: "start" });
-  };
+  const totals = useMemo(() => ({
+    pool: active.reduce((s, a) => s + a.prizePoolUsdc, 0),
+    alive: active.reduce((s, a) => s + a.alive, 0),
+    live: active.filter((a) => a.status === "live").length
+  }), [active]);
 
   return (
-    <main className="game-main">
+    <main className="game-main jumper">
       <div className="game-grid-bg" aria-hidden="true" />
       <div className="game-scanlines" aria-hidden="true" />
 
-      {/* ═════════ HEADER — floating pixel tabbar ═════════ */}
+      {/* Floating pixel tabbar (unchanged) */}
       <nav className="hud-bar game-hud">
         <div className="tabbar-inner">
           <a href="/" className="brand" aria-label="Oracle Rumble">
-            <svg className="mark" viewBox="0 0 64 64" aria-hidden="true">
-              <g fill="none" stroke="#edf0f6" strokeWidth="3.2" strokeLinecap="round">
-                <path d="M 12 24 A 22 22 0 0 1 24 12" />
-                <path d="M 40 12 A 22 22 0 0 1 52 24" />
-                <path d="M 52 40 A 22 22 0 0 1 40 52" />
-                <path d="M 24 52 A 22 22 0 0 1 12 40" />
-              </g>
-              <path d="M 4 32 L 11 32 M 53 32 L 60 32" stroke="#edf0f6" strokeWidth="3" strokeLinecap="round" />
-              <path d="M 32 2 L 36 18 L 32 23 L 28 18 Z" fill="#edf0f6" />
-              <path d="M 32 62 L 36 46 L 32 41 L 28 46 Z" fill="#edf0f6" />
-              <path d="M 10 32 C 18 20, 26 18, 32 18 C 38 18, 46 20, 54 32 C 46 44, 38 46, 32 46 C 26 46, 18 44, 10 32 Z" fill="#edf0f6" />
-              <circle cx="32" cy="32" r="7" fill="#0a0d13" />
-              <circle cx="32" cy="32" r="3.3" fill="#edf0f6" />
-            </svg>
+            <BrandMark />
             ORACLE RUMBLE
           </a>
           <div className="hud-nav">
-            <a href="#arenas" onClick={(e) => { e.preventDefault(); scrollToId("arenas"); }}>Arenas</a>
-            <a href="#host" onClick={(e) => { e.preventDefault(); scrollToId("host"); }}>Host</a>
+            <button className={`nav-link ${tab === "play" ? "active" : ""}`} onClick={() => setTab("play")}>Play</button>
+            <button className={`nav-link ${tab === "host" ? "active" : ""}`} onClick={() => setTab("host")}>Host</button>
             <a href="/positions">Positions</a>
             <a href="/docs">Docs</a>
           </div>
@@ -241,472 +222,323 @@ export default function ArenasDirectory() {
         </div>
       </nav>
 
-      {/* ═════════ HERO ═════════ */}
-      <section className="gm-hero">
-        <div className="gm-hero-inner">
-          <div>
-            <h1 className="game-title">
-              <span className="lash">Call it.</span><br />
-              <span className="kill">Outplay</span> the room.
-            </h1>
-            <p className="sublead">
-              A battle-royale prediction market on live BTC, ETH and SOL. Every entrant pays the same
-              seat, trades the same market, and <b>only the survivors keep the pool</b>.
-            </p>
-            <div className="gm-cta-row">
-              <button className="btn-play" onClick={() => scrollToId("arenas")}>
-                Enter arena <span className="arrow">▶</span>
-              </button>
-              <button className="btn-host" onClick={() => scrollToId("host")}>
-                Host battle
-              </button>
+      <section className="jumper-stage">
+        <aside className="jumper-tagline">
+          <h1 className="game-title">
+            <span className="lash">Call it.</span><br />
+            <span className="kill">Outplay</span>{" "}the room.
+          </h1>
+          <p>
+            A battle-royale prediction market on live BTC, ETH and SOL. Same seat, same market,
+            same rules — only the survivors keep the pool.
+          </p>
+          <div className="jumper-stats">
+            <div>
+              <span>Prize pool</span>
+              <b className="plasma">{usd.format(totals.pool)}</b>
+            </div>
+            <div>
+              <span>Alive</span>
+              <b className="neon">{totals.alive}</b>
+            </div>
+            <div>
+              <span>Live now</span>
+              <b className="gold">{totals.live}</b>
             </div>
           </div>
+        </aside>
 
-          {active.length > 0 && (
-            <div className="gm-hero-side">
-              <div className="gm-stat-tiles">
-                <div className="gm-stat">
-                  <div className="k">Prize Pool</div>
-                  <div className="v plasma">{usd.format(stats.totalPool)}</div>
-                  <div className="sub">across {active.length} arenas</div>
-                </div>
-                <div className="gm-stat">
-                  <div className="k">Alive</div>
-                  <div className="v neon">{stats.totalAlive}</div>
-                  <div className="sub">fighters live</div>
-                </div>
-                <div className="gm-stat">
-                  <div className="k">Live now</div>
-                  <div className="v gold">{stats.liveCount}</div>
-                  <div className="sub">rounds in play</div>
-                </div>
-              </div>
-              {topChampion && topChampion.prizePoolUsdc > 0 && (
-                <div className="gm-champion">
-                  <div className="crown">S</div>
-                  <div className="mid">
-                    <span className="k">Biggest prize live</span>
-                    <span className="who">{topChampion.asset} · {topChampion.marketQuestion}</span>
-                  </div>
-                  <span className="prize">{usd.format(topChampion.prizePoolUsdc)}</span>
-                </div>
-              )}
-            </div>
-          )}
-        </div>
-      </section>
+        <div className="jumper-card">
+          <header className="jc-tabs">
+            <button className={`jc-tab ${tab === "play" ? "on" : ""}`} onClick={() => setTab("play")}>
+              <span className="dot" /> Play
+            </button>
+            <button className={`jc-tab ${tab === "host" ? "on" : ""}`} onClick={() => setTab("host")}>
+              <span className="dot" /> Host
+            </button>
+          </header>
 
-      {/* ═════════ BOSS BATTLE ═════════ */}
-      {featured && (
-        <section className="gm-boss-shell" id="arenas">
-          <div className="gm-section-head">
-            <span className="title">Boss Battle</span>
-            <button className="cta" onClick={() => scrollToId("all")}>All arenas ▸</button>
-          </div>
-          <BossCard
-            arena={featured}
-            supporting={supporting}
-            now={now}
-            onJoin={() => goTo(featured.inviteSlug)}
-            onOpenSupporting={(a) => goTo(a.inviteSlug)}
-          />
-        </section>
-      )}
-
-      {/* ═════════ FIGHTER GRID ═════════ */}
-      <section className="gm-grid-shell" id="all">
-        <div className="gm-section-head">
-          <span className="title">Fighter Grid <span style={{ color: "var(--text-3)", fontWeight: 500 }}>· {active.length} live</span></span>
-          <button className="cta" onClick={() => scrollToId("host")}>+ Host arena</button>
-        </div>
-
-        {active.length === 0 ? (
-          <div className="gm-empty">
-            <h4>No live rumbles</h4>
-            <p>The cabinet is quiet. Slam the coin slot and open the first arena — invite goes out in one click.</p>
-            <button className="btn-play" onClick={() => scrollToId("host")}>Host the first fight ▶</button>
-          </div>
-        ) : (
-          <div className="gm-grid">
-            {active.map((a) => (
-              <FighterCard
-                key={a.arenaCode}
-                arena={a}
+          <div className="jc-body">
+            {tab === "play" ? (
+              <PlayPanel
+                featured={featured}
+                others={others}
                 now={now}
-                onJoin={() => goTo(a.inviteSlug)}
-                onCopy={() => doCopy(`${window.location.origin}/a/${a.arenaCode}`)}
+                onJoin={(slug) => goTo(slug)}
+                onCopy={(url) => doCopy(url)}
+                onSwitchToHost={() => setTab("host")}
               />
-            ))}
-          </div>
-        )}
-      </section>
-
-      {/* ═════════ LEVEL FLOW ═════════ */}
-      <section className="gm-flow-shell">
-        <div className="gm-flow">
-          <div className="gm-flow-head">
-            <h2>How to <span className="accent">win</span></h2>
-            <p>Four levels. Same seat, same market, same rules. Only the survivors split the pool.</p>
-          </div>
-          <div className="gm-levels">
-            <div className="gm-level">
-              <span className="lvl">Level 01</span>
-              <div className="icon">🎟️</div>
-              <h3>Enter</h3>
-              <p>Pay the seat: entry into the shared pool + a starting vault you trade with. Non-custodial escrow.</p>
-            </div>
-            <div className="gm-level">
-              <span className="lvl">Level 02</span>
-              <div className="icon">⚡</div>
-              <h3>Trade</h3>
-              <p>Buy UP, DOWN, or stack a parlay across BTC / ETH / SOL. Your vault is your leaderboard score.</p>
-            </div>
-            <div className="gm-level">
-              <span className="lvl">Level 03</span>
-              <div className="icon">🗡️</div>
-              <h3>Survive</h3>
-              <p>The oracle settles. The bottom half is cut. Survivors advance — winners double down on the next round.</p>
-            </div>
-            <div className="gm-level">
-              <span className="lvl">Final</span>
-              <div className="icon">👑</div>
-              <h3>Claim</h3>
-              <p>Prize splits go straight to your wallet on-chain. Recovery clause if the round is ever cancelled.</p>
-            </div>
-          </div>
-        </div>
-      </section>
-
-      {/* ═════════ HOST CABINET ═════════ */}
-      <section className="gm-host-shell" id="host">
-        <div className="gm-host">
-          <div className="gm-host-left">
-            <h2>Host a <span className="accent">rumble</span></h2>
-            <p>
-              Pick a market, set the seat, choose the format. You get a shareable code — the game starts the
-              moment enrollment locks, however many joined.
-            </p>
-            <ul className="gm-host-features">
-              <li>Non-custodial escrow on Solana {CLUSTER}</li>
-              <li>Same seat for every player, enforced on-chain</li>
-              <li>Automatic settlement + one-click claim to wallet</li>
-              <li>Recovery clause if a round is ever cancelled</li>
-            </ul>
-          </div>
-
-          <div>
-            {inviteInfo ? (
-              <div className="gm-invite">
-                <p className="gm-invite-lead">Arena is live — send the code.</p>
-                <div className="gm-invite-code">{inviteInfo.code}</div>
-                <div className="gm-invite-url">
-                  <input readOnly value={inviteInfo.url} onFocus={(e) => e.currentTarget.select()} />
-                  <button className="btn-host" style={{ height: 42, padding: "0 16px", fontSize: 11 }} onClick={() => doCopy(inviteInfo.url)}>Copy</button>
-                </div>
-                <div style={{ display: "flex", gap: 8, justifyContent: "center", flexWrap: "wrap", marginBottom: 14 }}>
-                  <a className="btn ghost sm" target="_blank" rel="noopener noreferrer"
-                     href={`https://twitter.com/intent/tweet?text=${encodeURIComponent(`Join my Oracle Rumble arena · ${inviteInfo.url}`)}`}>Share on X</a>
-                  <a className="btn ghost sm" target="_blank" rel="noopener noreferrer"
-                     href={`https://t.me/share/url?url=${encodeURIComponent(inviteInfo.url)}&text=${encodeURIComponent("Join my Oracle Rumble arena")}`}>Telegram</a>
-                  <a className="btn ghost sm" target="_blank" rel="noopener noreferrer"
-                     href={`https://wa.me/?text=${encodeURIComponent(`Join my Oracle Rumble arena · ${inviteInfo.url}`)}`}>WhatsApp</a>
-                </div>
-                <button className="gm-host-cta" onClick={() => goTo(`/a/${inviteInfo.code}`)}>
-                  Enter {inviteInfo.code} ▶
-                </button>
-                <button className="link-btn" onClick={() => setInviteInfo(null)} style={{ marginTop: 10 }}>
-                  Host another
-                </button>
-              </div>
+            ) : inviteInfo ? (
+              <InviteResult
+                info={inviteInfo}
+                onCopy={doCopy}
+                onOpen={() => goTo(`/a/${inviteInfo.code}`)}
+                onReset={() => setInviteInfo(null)}
+              />
             ) : (
-              <>
-                <div className="gm-seg" style={{ marginBottom: 14 }}>
-                  <button className={`opt ${hMode === "quick" ? "on" : ""}`} onClick={() => setHMode("quick")}>Quick match</button>
-                  <button className={`opt ${hMode === "scheduled" ? "on" : ""}`} onClick={() => setHMode("scheduled")}>Scheduled</button>
-                </div>
-
-                {hMode === "scheduled" && (
-                  <div className="gm-host-cell" style={{ marginBottom: 14 }}>
-                    <label style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 10, fontWeight: 700, letterSpacing: 1.4, color: "var(--text-3)", textTransform: "uppercase" }}>Enrollment window</label>
-                    <div className="gm-seg">
-                      {[5, 15, 30, 60, 180].map((m) => (
-                        <button key={m} className={`opt ${hStartInMin === m ? "on" : ""}`} onClick={() => setHStartInMin(m)}>
-                          {m < 60 ? `${m}m` : `${m / 60}h`}
-                        </button>
-                      ))}
-                    </div>
-                  </div>
-                )}
-
-                <div className="gm-host-grid">
-                  <div className="gm-host-cell">
-                    <label style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 10, fontWeight: 700, letterSpacing: 1.4, color: "var(--text-3)", textTransform: "uppercase" }}>Market</label>
-                    <div className="gm-seg">
-                      {(["BTC", "ETH", "SOL"] as const).map((a) => (
-                        <button key={a} className={`opt ${hAsset === a ? "on" : ""}`} onClick={() => setHAsset(a)}>{a}</button>
-                      ))}
-                    </div>
-                  </div>
-                  <div className="gm-host-cell">
-                    <label style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 10, fontWeight: 700, letterSpacing: 1.4, color: "var(--text-3)", textTransform: "uppercase" }}>Timeframe</label>
-                    <div className="gm-seg">
-                      {(["MIN5", "MIN15", "HOUR", "DAY"] as const).map((h) => (
-                        <button key={h} className={`opt ${hHorizon === h ? "on" : ""}`} onClick={() => setHHorizon(h)}>{HORIZON_LABEL[h]}</button>
-                      ))}
-                    </div>
-                  </div>
-                  <div className="gm-host-cell">
-                    <label style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 10, fontWeight: 700, letterSpacing: 1.4, color: "var(--text-3)", textTransform: "uppercase" }}>Format</label>
-                    <div className="gm-seg">
-                      <button className={`opt ${hFormat === "single" ? "on" : ""}`} onClick={() => setHFormat("single")}>Single</button>
-                      <button className={`opt ${hFormat === "royale" ? "on" : ""}`} onClick={() => setHFormat("royale")}>Royale</button>
-                    </div>
-                  </div>
-                  {hFormat === "royale" && (
-                    <div className="gm-host-cell">
-                      <label style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 10, fontWeight: 700, letterSpacing: 1.4, color: "var(--text-3)", textTransform: "uppercase" }}>Rounds</label>
-                      <div className="gm-seg">
-                        {[2, 3, 4].map((n) => (
-                          <button key={n} className={`opt ${hRounds === n ? "on" : ""}`} onClick={() => setHRounds(n)}>{n}</button>
-                        ))}
-                      </div>
-                    </div>
-                  )}
-                  <div className="gm-host-cell">
-                    <label style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 10, fontWeight: 700, letterSpacing: 1.4, color: "var(--text-3)", textTransform: "uppercase" }}>Capacity</label>
-                    <div className="gm-seg">
-                      {[2, 4, 8, 12, 16].map((n) => (
-                        <button key={n} className={`opt ${hCapacity === n ? "on" : ""}`} onClick={() => setHCapacity(n)}>{n}</button>
-                      ))}
-                    </div>
-                  </div>
-
-                  <div className="gm-num">
-                    <label>Entry (USDC)</label>
-                    <input value={hEntry} onChange={(e) => setHEntry(e.target.value.replace(/[^0-9.]/g, ""))} inputMode="decimal" />
-                    <em>Goes to prize pool</em>
-                  </div>
-                  <div className="gm-num">
-                    <label>Vault (USDC)</label>
-                    <input value={hVault} onChange={(e) => setHVault(e.target.value.replace(/[^0-9.]/g, ""))} inputMode="decimal" />
-                    <em>Yours to trade</em>
-                  </div>
-                </div>
-
-                <div className="gm-prize-preview">
-                  <div>
-                    <span>Seat</span>
-                    <b>{usd2.format(hostSeat)}</b>
-                  </div>
-                  <div>
-                    <span>Pool full</span>
-                    <b className="plasma">{usd2.format(poolIfFull)}</b>
-                  </div>
-                  <div>
-                    <span>Format</span>
-                    <b>{hFormat === "single" ? "1 rnd" : `${hRounds} rds`}</b>
-                  </div>
-                </div>
-
-                {escrow && !escrow.active && (
-                  <div className="gm-host-warn">
-                    <b>Practice mode is on</b> — {escrow.reason ?? "escrow not configured"}. Hosting works,
-                    wallet will not be asked to sign. Set <code>ESCROW_HOST_SECRET_KEY</code> to go live.
-                  </div>
-                )}
-
-                <button className="gm-host-cta" onClick={doHostAndJoin} disabled={busy}>
-                  {busy ? "Opening arena…" : escrow?.active
-                    ? (wallet ? "Host & Join · sign deposit" : "Host arena")
-                    : (wallet ? "Host & Join · practice" : "Host practice arena")}
-                </button>
-              </>
+              <HostPanel
+                hMode={hMode} setHMode={setHMode}
+                hStartInMin={hStartInMin} setHStartInMin={setHStartInMin}
+                hAsset={hAsset} setHAsset={setHAsset}
+                hHorizon={hHorizon} setHHorizon={setHHorizon}
+                hFormat={hFormat} setHFormat={setHFormat}
+                hRounds={hRounds} setHRounds={setHRounds}
+                hCapacity={hCapacity} setHCapacity={setHCapacity}
+                hEntry={hEntry} setHEntry={setHEntry}
+                hVault={hVault} setHVault={setHVault}
+                hostSeat={hostSeat} poolIfFull={poolIfFull}
+                wallet={wallet} escrow={escrow}
+                busy={busy} onSubmit={doHostAndJoin}
+              />
             )}
           </div>
         </div>
       </section>
 
-      {/* Footer */}
-      <footer className="footer" style={{ position: "relative", zIndex: 2 }}>
-        <span>Oracle Rumble · Solana {CLUSTER}</span>
-        <span><a href="/docs">Docs</a> · Built on Panta</span>
-      </footer>
-
       {toast && <div className="toast" role="status"><span>{toast}</span><button onClick={() => setToast("")} aria-label="Dismiss">×</button></div>}
-
 
       <PantaGraduationBanner />
     </main>
   );
 }
 
-/* ── Boss card — featured live arena ─────────────────────────────── */
-function BossCard({
-  arena, supporting, now, onJoin, onOpenSupporting
+/* ── The eye/compass brand mark ─────────────────────────────────── */
+function BrandMark() {
+  return (
+    <svg className="mark" viewBox="0 0 64 64" aria-hidden="true">
+      <g fill="none" stroke="#edf0f6" strokeWidth="3.2" strokeLinecap="round">
+        <path d="M 12 24 A 22 22 0 0 1 24 12" />
+        <path d="M 40 12 A 22 22 0 0 1 52 24" />
+        <path d="M 52 40 A 22 22 0 0 1 40 52" />
+        <path d="M 24 52 A 22 22 0 0 1 12 40" />
+      </g>
+      <path d="M 4 32 L 11 32 M 53 32 L 60 32" stroke="#edf0f6" strokeWidth="3" strokeLinecap="round" />
+      <path d="M 32 2 L 36 18 L 32 23 L 28 18 Z" fill="#edf0f6" />
+      <path d="M 32 62 L 36 46 L 32 41 L 28 46 Z" fill="#edf0f6" />
+      <path d="M 10 32 C 18 20, 26 18, 32 18 C 38 18, 46 20, 54 32 C 46 44, 38 46, 32 46 C 26 46, 18 44, 10 32 Z" fill="#edf0f6" />
+      <circle cx="32" cy="32" r="7" fill="#0a0d13" />
+      <circle cx="32" cy="32" r="3.3" fill="#edf0f6" />
+    </svg>
+  );
+}
+
+/* ── Play panel — featured + short list of others ───────────────── */
+function PlayPanel({
+  featured, others, now, onJoin, onCopy, onSwitchToHost
 }: {
-  arena: ArenaItem;
-  supporting: ArenaItem[];
+  featured: ArenaItem | null;
+  others: ArenaItem[];
   now: number;
-  onJoin: () => void;
-  onOpenSupporting: (a: ArenaItem) => void;
+  onJoin: (slug: string) => void;
+  onCopy: (url: string) => void;
+  onSwitchToHost: () => void;
 }) {
-  const deadline = arena.status === "enrolling" ? arena.enrollDeadline : arena.status === "live" ? arena.liveDeadline : 0;
+  if (!featured) {
+    return (
+      <div className="jc-empty">
+        <div className="jc-empty-icon">◆</div>
+        <h3>No live rumbles</h3>
+        <p>The cabinet is quiet. Open the first arena — invite goes out in one click.</p>
+        <button className="btn-fight" onClick={onSwitchToHost}>Host the first fight ▶</button>
+      </div>
+    );
+  }
+
+  const deadline = featured.status === "enrolling" ? featured.enrollDeadline : featured.status === "live" ? featured.liveDeadline : 0;
   const timeLeft = deadline ? Math.max(0, deadline - now) : 0;
-  const isLive = arena.status === "live";
-  const isEnroll = arena.status === "enrolling";
-  const seatUsd = arena.entryUsdc + arena.startingBankroll;
-  const upPct = 50;
-  const downPct = 50;
-  const tier = tierFor(arena.prizePoolUsdc);
+  const tier = tierFor(featured.prizePoolUsdc);
 
   return (
-    <div className="gm-boss">
-      <div className="gm-boss-inner">
-        <div className="gm-boss-left">
-          <div style={{ display: "flex", alignItems: "center", flexWrap: "wrap", gap: 4 }}>
-            <span className={`gm-boss-tag ${isLive ? "live" : "enrolling"}`}>
-              <span className="pulse" />
-              {isLive ? "LIVE FIGHT" : isEnroll ? "ENROLLING" : STATUS_LABEL[arena.status]}
-            </span>
-            <span className="gm-boss-code">
-              {arena.isPublic ? "PUBLIC" : arena.arenaCode} · Round {arena.roundNumber}/{arena.roundLimit}
-            </span>
-          </div>
-
-          <div style={{ display: "flex", alignItems: "center", gap: 10, margin: "16px 0 8px" }}>
-            <span className="gm-boss-sym">{arena.asset}/USD</span>
-            <span style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 11, color: "var(--text-3)", letterSpacing: 1.2, textTransform: "uppercase" }}>
-              {arena.format === "single" ? "Single round" : `Royale · ${arena.roundLimit} rounds`}
-            </span>
-          </div>
-
-          <h3 className="gm-boss-title">{arena.marketQuestion}</h3>
-
-          <div className="gm-hbars">
-            <div className="gm-hbar up">
-              <div className="row1">
-                <span className="side">▲ UP</span>
-                <span className="pct">{upPct}%</span>
-              </div>
-              <div className="bar"><div className="fill" style={{ width: `${upPct}%` }} /></div>
-            </div>
-            <div className="gm-hbar down">
-              <div className="row1">
-                <span className="side">▼ DOWN</span>
-                <span className="pct">{downPct}%</span>
-              </div>
-              <div className="bar"><div className="fill" style={{ width: `${downPct}%` }} /></div>
-            </div>
-          </div>
-
-          <div className="gm-boss-meta">
-            <div className="cell">
-              <span className="k">Prize Pool</span>
-              <span className="v plasma">{usd.format(arena.prizePoolUsdc)}</span>
-            </div>
-            <div className="cell">
-              <span className="k">Seat</span>
-              <span className="v">{usd2.format(seatUsd)}</span>
-            </div>
-            <div className="cell">
-              <span className="k">Alive</span>
-              <span className="v gold">{arena.alive}<span style={{ color: "var(--text-3)", fontSize: 14 }}>/{arena.capacity}</span></span>
-            </div>
-            <div className="cell">
-              <span className="k">Tier</span>
-              <span className={`v ${tier === "S" ? "gold" : tier === "A" ? "neon" : ""}`}>{tier}</span>
-            </div>
-          </div>
-
-          <button className="gm-boss-cta" onClick={onJoin}>
-            {isLive ? "Jump in mid-fight" : "Enter the arena"}
-          </button>
+    <div className="jc-play">
+      <div className="jc-featured">
+        <div className="jc-featured-top">
+          <span className={`gm-boss-tag ${featured.status === "live" ? "live" : "enrolling"}`}>
+            <span className="pulse" />
+            {featured.status === "live" ? "Live fight" : STATUS_LABEL[featured.status]}
+          </span>
+          <span className="jc-code">
+            {featured.isPublic ? "PUBLIC" : featured.arenaCode} · R{featured.roundNumber}/{featured.roundLimit}
+          </span>
         </div>
-
-        <div className="gm-boss-right">
-          <div className="gm-boss-clock">
-            <div className="k">{isEnroll ? "Locks in" : isLive ? "Settles in" : "—"}</div>
-            <div className="clock">{deadline ? fmtClock(timeLeft) : "—:—"}</div>
-            <div className="sub">{isEnroll ? "Get your seat before the door closes" : isLive ? "Every second counts" : "Between rounds"}</div>
-          </div>
-
-          <div className="also">Also Live</div>
-          {supporting.length === 0
-            ? <div className="empty-mini">No other arenas — host one and it lands here.</div>
-            : supporting.map((a) => {
-                const t = tierFor(a.prizePoolUsdc);
-                return (
-                  <button key={a.arenaCode} className="gm-mini-arena" onClick={() => onOpenSupporting(a)}>
-                    <span className={`rank-badge ${t.toLowerCase()}`}>{t}</span>
-                    <span className="mid">
-                      <span className="q">{a.asset} · {a.marketQuestion}</span>
-                      <span className="meta">{a.humans}/{a.capacity} · {STATUS_LABEL[a.status]}</span>
-                    </span>
-                    <span className="prize">{usd.format(a.prizePoolUsdc)}</span>
-                  </button>
-                );
-              })
-          }
+        <div className="jc-featured-q">{featured.marketQuestion}</div>
+        <div className="jc-featured-meta">
+          <div><span>Pool</span><b className="plasma">{usd.format(featured.prizePoolUsdc)}</b></div>
+          <div><span>Seat</span><b>{usd2.format(featured.entryUsdc + featured.startingBankroll)}</b></div>
+          <div><span>Alive</span><b>{featured.alive}<em>/{featured.capacity}</em></b></div>
+          <div><span>{featured.status === "enrolling" ? "Locks" : "Ends"}</span><b className="neon">{deadline ? fmtClock(timeLeft) : "—"}</b></div>
+          <div><span>Tier</span><b className={tier === "S" ? "gold" : tier === "A" ? "neon" : ""}>{tier}</b></div>
         </div>
+        <button className="btn-fight full" onClick={() => onJoin(featured.inviteSlug)}>
+          {featured.status === "live" ? "Jump in mid-fight" : "Enter arena"} ▶
+        </button>
       </div>
+
+      {others.length > 0 && (
+        <div className="jc-others">
+          <div className="jc-others-head">Also live · {others.length}</div>
+          {others.slice(0, 4).map((a) => {
+            const t = tierFor(a.prizePoolUsdc);
+            const d = a.status === "enrolling" ? a.enrollDeadline : a.status === "live" ? a.liveDeadline : 0;
+            const tl = d ? Math.max(0, d - now) : 0;
+            return (
+              <button key={a.arenaCode} className="gm-mini-arena" onClick={() => onJoin(a.inviteSlug)}
+                onContextMenu={(e) => { e.preventDefault(); onCopy(`${window.location.origin}/a/${a.arenaCode}`); }}
+              >
+                <span className={`rank-badge ${t.toLowerCase()}`}>{t}</span>
+                <span className="mid">
+                  <span className="q">{a.asset} · {a.marketQuestion}</span>
+                  <span className="meta">{a.humans}/{a.capacity} · {STATUS_LABEL[a.status]}{d ? ` · ${fmtClock(tl)}` : ""}</span>
+                </span>
+                <span className="prize">{usd.format(a.prizePoolUsdc)}</span>
+              </button>
+            );
+          })}
+        </div>
+      )}
     </div>
   );
 }
 
-/* ── Fighter card — grid entry ───────────────────────────────────── */
-function FighterCard({
-  arena, now, onJoin, onCopy
-}: { arena: ArenaItem; now: number; onJoin: () => void; onCopy: () => void }) {
-  const deadline = arena.status === "enrolling" ? arena.enrollDeadline : arena.status === "live" ? arena.liveDeadline : 0;
-  const timeLeft = deadline ? Math.max(0, deadline - now) : 0;
-  const isLive = arena.status === "live";
-  const tier = tierFor(arena.prizePoolUsdc);
-
+/* ── Host panel — compact form ──────────────────────────────────── */
+function HostPanel({
+  hMode, setHMode, hStartInMin, setHStartInMin,
+  hAsset, setHAsset, hHorizon, setHHorizon,
+  hFormat, setHFormat, hRounds, setHRounds,
+  hCapacity, setHCapacity, hEntry, setHEntry, hVault, setHVault,
+  hostSeat, poolIfFull, wallet, escrow, busy, onSubmit
+}: {
+  hMode: "quick" | "scheduled"; setHMode: (v: "quick" | "scheduled") => void;
+  hStartInMin: number; setHStartInMin: (v: number) => void;
+  hAsset: "BTC" | "ETH" | "SOL"; setHAsset: (v: "BTC" | "ETH" | "SOL") => void;
+  hHorizon: "MIN5" | "MIN15" | "HOUR" | "DAY"; setHHorizon: (v: "MIN5" | "MIN15" | "HOUR" | "DAY") => void;
+  hFormat: "single" | "royale"; setHFormat: (v: "single" | "royale") => void;
+  hRounds: number; setHRounds: (v: number) => void;
+  hCapacity: number; setHCapacity: (v: number) => void;
+  hEntry: string; setHEntry: (v: string) => void;
+  hVault: string; setHVault: (v: string) => void;
+  hostSeat: number; poolIfFull: number;
+  wallet: string | null; escrow: { active: boolean; reason?: string | null } | null;
+  busy: boolean; onSubmit: () => void;
+}) {
   return (
-    <div className={`gm-fcard ${isLive ? "live" : ""}`}>
-      <div className="gm-fcard-row1">
-        <span className="gm-tier">
-          <span className={`badge ${tier.toLowerCase()}`}>{tier}</span>
-          <span className="lab">{arena.isPublic ? "PUBLIC" : arena.arenaCode}</span>
-        </span>
-        <span className={`gm-status ${arena.status}`}>
-          <span className="dot" />
-          {STATUS_LABEL[arena.status]}
-        </span>
+    <div className="jc-host">
+      <div className="gm-seg" style={{ marginBottom: 12 }}>
+        <button className={`opt ${hMode === "quick" ? "on" : ""}`} onClick={() => setHMode("quick")}>Quick</button>
+        <button className={`opt ${hMode === "scheduled" ? "on" : ""}`} onClick={() => setHMode("scheduled")}>Scheduled</button>
       </div>
 
-      <div className="gm-fcard-mkt">
-        <span className="gm-fcard-asset">{arena.asset} · {arena.format === "single" ? "Single" : `Royale ${arena.roundLimit}`}</span>
-        <span className="gm-fcard-q">{arena.marketQuestion}</span>
-      </div>
+      {hMode === "scheduled" && (
+        <FieldRow label="Enrollment window">
+          <div className="gm-seg">
+            {[5, 15, 30, 60, 180].map((m) => (
+              <button key={m} className={`opt ${hStartInMin === m ? "on" : ""}`} onClick={() => setHStartInMin(m)}>
+                {m < 60 ? `${m}m` : `${m / 60}h`}
+              </button>
+            ))}
+          </div>
+        </FieldRow>
+      )}
 
-      <div className="gm-fcard-hbars">
-        <div className="gm-fcard-hbar up"><span className="lab">▲ UP</span><span className="val">50¢</span></div>
-        <div className="gm-fcard-hbar down"><span className="lab">▼ DOWN</span><span className="val">50¢</span></div>
-      </div>
-
-      <div className="gm-fcard-meta">
-        <div className="cell">
-          <span className="k">Pool</span>
-          <span className="v plasma">{usd.format(arena.prizePoolUsdc)}</span>
-        </div>
-        <div className="cell">
-          <span className="k">Fighters</span>
-          <span className="v">{arena.humans}/{arena.capacity}</span>
-        </div>
-        <div className="cell">
-          <span className="k">{arena.status === "enrolling" ? "Locks" : "Ends"}</span>
-          <span className="v neon">{deadline ? fmtClock(timeLeft) : "—"}</span>
-        </div>
-      </div>
-
-      <div className="gm-fcard-actions">
-        <button className="btn-fight" onClick={onJoin}>Fight ▶</button>
-        {!arena.isPublic && (
-          <button className="btn-share" onClick={onCopy}>Copy</button>
+      <div className="jc-host-grid">
+        <FieldRow label="Market">
+          <div className="gm-seg">
+            {(["BTC", "ETH", "SOL"] as const).map((a) => (
+              <button key={a} className={`opt ${hAsset === a ? "on" : ""}`} onClick={() => setHAsset(a)}>{a}</button>
+            ))}
+          </div>
+        </FieldRow>
+        <FieldRow label="Timeframe">
+          <div className="gm-seg">
+            {(["MIN5", "MIN15", "HOUR", "DAY"] as const).map((h) => (
+              <button key={h} className={`opt ${hHorizon === h ? "on" : ""}`} onClick={() => setHHorizon(h)}>{HORIZON_LABEL[h]}</button>
+            ))}
+          </div>
+        </FieldRow>
+        <FieldRow label="Format">
+          <div className="gm-seg">
+            <button className={`opt ${hFormat === "single" ? "on" : ""}`} onClick={() => setHFormat("single")}>Single</button>
+            <button className={`opt ${hFormat === "royale" ? "on" : ""}`} onClick={() => setHFormat("royale")}>Royale</button>
+          </div>
+        </FieldRow>
+        <FieldRow label="Capacity">
+          <div className="gm-seg">
+            {[2, 4, 8, 12, 16].map((n) => (
+              <button key={n} className={`opt ${hCapacity === n ? "on" : ""}`} onClick={() => setHCapacity(n)}>{n}</button>
+            ))}
+          </div>
+        </FieldRow>
+        {hFormat === "royale" && (
+          <FieldRow label="Rounds">
+            <div className="gm-seg">
+              {[2, 3, 4].map((n) => (
+                <button key={n} className={`opt ${hRounds === n ? "on" : ""}`} onClick={() => setHRounds(n)}>{n}</button>
+              ))}
+            </div>
+          </FieldRow>
         )}
       </div>
+
+      <div className="jc-host-inputs">
+        <label className="gm-num">
+          <span>Entry (USDC)</span>
+          <input value={hEntry} onChange={(e) => setHEntry(e.target.value.replace(/[^0-9.]/g, ""))} inputMode="decimal" />
+        </label>
+        <label className="gm-num">
+          <span>Vault (USDC)</span>
+          <input value={hVault} onChange={(e) => setHVault(e.target.value.replace(/[^0-9.]/g, ""))} inputMode="decimal" />
+        </label>
+      </div>
+
+      <div className="jc-host-preview">
+        <div><span>Seat</span><b>{usd2.format(hostSeat)}</b></div>
+        <div><span>Pool full</span><b className="plasma">{usd2.format(poolIfFull)}</b></div>
+        <div><span>Format</span><b>{hFormat === "single" ? "1 rnd" : `${hRounds} rds`}</b></div>
+      </div>
+
+      {escrow && !escrow.active && (
+        <div className="gm-host-warn" style={{ margin: "8px 0" }}>
+          <b>Practice mode.</b> Hosting works; wallet won&apos;t be asked to sign.
+        </div>
+      )}
+
+      <button className="gm-host-cta" onClick={onSubmit} disabled={busy}>
+        {busy ? "Opening…" : escrow?.active ? (wallet ? "Host & Join · sign deposit" : "Host arena") : (wallet ? "Host & Join · practice" : "Host practice arena")}
+      </button>
+    </div>
+  );
+}
+
+function FieldRow({ label, children }: { label: string; children: React.ReactNode }) {
+  return (
+    <div className="jc-field">
+      <span className="jc-field-label">{label}</span>
+      {children}
+    </div>
+  );
+}
+
+/* ── Invite result — appears after Host & Join ──────────────────── */
+function InviteResult({
+  info, onCopy, onOpen, onReset
+}: { info: { code: string; url: string }; onCopy: (url: string) => void; onOpen: () => void; onReset: () => void }) {
+  return (
+    <div className="jc-invite">
+      <p className="jc-invite-lead">Arena is live — send the code.</p>
+      <div className="gm-invite-code">{info.code}</div>
+      <div className="gm-invite-url">
+        <input readOnly value={info.url} onFocus={(e) => e.currentTarget.select()} />
+        <button className="btn-host" style={{ height: 42, padding: "0 16px", fontSize: 11 }} onClick={() => onCopy(info.url)}>Copy</button>
+      </div>
+      <div style={{ display: "flex", gap: 8, justifyContent: "center", flexWrap: "wrap", marginBottom: 12 }}>
+        <a className="btn ghost sm" target="_blank" rel="noopener noreferrer"
+           href={`https://twitter.com/intent/tweet?text=${encodeURIComponent(`Join my Oracle Rumble arena · ${info.url}`)}`}>Share on X</a>
+        <a className="btn ghost sm" target="_blank" rel="noopener noreferrer"
+           href={`https://t.me/share/url?url=${encodeURIComponent(info.url)}&text=${encodeURIComponent("Join my Oracle Rumble arena")}`}>Telegram</a>
+        <a className="btn ghost sm" target="_blank" rel="noopener noreferrer"
+           href={`https://wa.me/?text=${encodeURIComponent(`Join my Oracle Rumble arena · ${info.url}`)}`}>WhatsApp</a>
+      </div>
+      <button className="gm-host-cta" onClick={onOpen}>Enter {info.code} ▶</button>
+      <button className="link-btn" onClick={onReset} style={{ marginTop: 10 }}>Host another</button>
     </div>
   );
 }
