@@ -8,7 +8,6 @@ import { PUBLIC_ARENA } from "@/lib/royale";
 import { markets as boardMarkets } from "@/lib/arena-data";
 import { quoteParlay, PARLAY_MAX_LEGS, type ParlayLeg } from "@/lib/parlay";
 import { avatarDataUrl } from "@/lib/avatars";
-import PantaHUD from "@/app/PantaHUD";
 import PantaTradeTape from "@/app/PantaTradeTape";
 import PantaResolution from "@/app/PantaResolution";
 import PantaGraduationBanner from "@/app/PantaGraduationBanner";
@@ -100,6 +99,12 @@ export default function ArenaView({ arenaCode }: { arenaCode: string }) {
     } catch { /* ignore */ }
     // Fetch escrow status ONCE — the server's config doesn't change per request.
     fetch("/api/escrow/status", { cache: "no-store" }).then((r) => r.json()).then(setEscrow).catch(() => setEscrow({ active: false, reason: "unreachable" }));
+  }, []);
+
+  // Enable arcade palette / background across the arena view.
+  useEffect(() => {
+    document.body.classList.add("game-mode");
+    return () => { document.body.classList.remove("game-mode"); };
   }, []);
 
   // Every arena runs on a market. If it's a real Panta base58 id, add it to
@@ -363,57 +368,60 @@ export default function ArenaView({ arenaCode }: { arenaCode: string }) {
 
   const hostSeat = (Number(hEntry) || 0) + (Number(hVault) || 0);
 
-  // The network badge always reads the live cluster — the data-source split
-  // (live Panta vs seeded prices) is an internal detail, not a "DEMO" label.
-  const sourceBadge = { text: CLUSTER, cls: "src live" };
-
   const myPnl = me ? me.bankroll - (round?.config.startingBankroll ?? 0) : 0;
   const openParlays = (me?.parlays ?? []).filter((p) => p.status === "open");
   const openParlayPotential = openParlays.reduce((s, t) => s + t.potentialPayout, 0);
 
   return (
-    <main>
+    <main className="game-main arena-main">
+      <div className="game-grid-bg" aria-hidden="true" />
+      <div className="game-scanlines" aria-hidden="true" />
+
       {/* ── HUD ─────────────────────────────────────────────── */}
-      <nav className="hud-bar">
-        <a href="/" className="brand" aria-label="Oracle Rumble">
-          <svg className="mark" viewBox="0 0 24 24" width="20" height="20" aria-hidden="true">
-            <rect x="2" y="2" width="20" height="20" rx="4" fill="none" stroke="var(--up)" strokeWidth="2"/>
-            <path d="M7 14 L10 11 L13 14 L17 8" stroke="var(--text)" strokeWidth="2" fill="none" strokeLinecap="round" strokeLinejoin="round"/>
-          </svg>
-          ORACLE RUMBLE
-        </a>
-        <div className="hud-nav">
-          <a href="/">Arenas</a>
-          <a href="#arena" className="active">Room</a>
-          <a href="/positions">Positions</a>
-          <a href="/docs">Docs</a>
-        </div>
-        <div className="hud-right">
-          <PantaHUD />
-          <span className={sourceBadge.cls}>{CLUSTER}</span>
-          {escrow && (
+      <nav className="hud-bar game-hud">
+        <div className="tabbar-inner">
+          <a href="/" className="brand" aria-label="Oracle Rumble">
+            <svg className="mark" viewBox="0 0 64 64" aria-hidden="true">
+              <g fill="none" stroke="#edf0f6" strokeWidth="3.2" strokeLinecap="round">
+                <path d="M 12 24 A 22 22 0 0 1 24 12" />
+                <path d="M 40 12 A 22 22 0 0 1 52 24" />
+                <path d="M 52 40 A 22 22 0 0 1 40 52" />
+                <path d="M 24 52 A 22 22 0 0 1 12 40" />
+              </g>
+              <path d="M 4 32 L 11 32 M 53 32 L 60 32" stroke="#edf0f6" strokeWidth="3" strokeLinecap="round" />
+              <path d="M 32 2 L 36 18 L 32 23 L 28 18 Z" fill="#edf0f6" />
+              <path d="M 32 62 L 36 46 L 32 41 L 28 46 Z" fill="#edf0f6" />
+              <path d="M 10 32 C 18 20, 26 18, 32 18 C 38 18, 46 20, 54 32 C 46 44, 38 46, 32 46 C 26 46, 18 44, 10 32 Z" fill="#edf0f6" />
+              <circle cx="32" cy="32" r="7" fill="#0a0d13" />
+              <circle cx="32" cy="32" r="3.3" fill="#edf0f6" />
+            </svg>
+            ORACLE RUMBLE
+          </a>
+          <div className="hud-nav">
+            <a href="/">Arenas</a>
+            <a href="#arena" className="active">Room</a>
+            <a href="/positions">Positions</a>
+            <a href="/docs">Docs</a>
+          </div>
+          <div className="hud-right">
             <span
-              className={`escrow-badge ${escrow.active ? "on" : "off"}`}
-              title={escrow.active
-                ? "Real on-chain USDC — wallet will sign every seat deposit."
-                : `Practice mode: ${escrow.reason ?? "escrow not configured"}. No wallet prompts, no real USDC moves.`}
+              className={`system-chip ${escrow?.active ? "on" : "off"}`}
+              title={`Solana ${CLUSTER} · ${escrow?.active ? "on-chain escrow" : `practice mode (${escrow?.reason ?? "escrow off"})`}`}
             >
               <span className="dot" />
-              {escrow.active ? "On-chain" : "Practice"}
+              {CLUSTER}
             </span>
-          )}
-          {isPublic ? (
-            <span className="arena-chip public" title="Public walk-in arena">PUBLIC</span>
-          ) : (
-            <button className="arena-chip private" onClick={() => doCopyInvite()} title="Copy invite link">
-              {arenaCode}
-              <span className="copy-hint">⧉</span>
+            {!isPublic && (
+              <button className="arena-chip private" onClick={() => doCopyInvite()} title="Copy invite link">
+                {arenaCode}
+                <span className="copy-hint">⧉</span>
+              </button>
+            )}
+            <button className={wallet ? "wallet game connected" : "wallet game"} onClick={connect}>
+              <span className="avatar">{wallet ? wallet.slice(0, 2).toUpperCase() : "?"}</span>
+              {wallet ? shortPk(wallet) : "Connect"}
             </button>
-          )}
-          <button className={wallet ? "wallet connected" : "wallet"} onClick={connect}>
-            <span className="avatar">{wallet ? wallet.slice(0, 2).toUpperCase() : "?"}</span>
-            {wallet ? shortPk(wallet) : "Connect"}
-          </button>
+          </div>
         </div>
       </nav>
 

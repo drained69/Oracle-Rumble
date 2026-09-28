@@ -2778,6 +2778,392 @@ body.no-scroll { overflow: hidden; }
   .positions-stats > div:nth-child(2n) { border-right: 0; }
   .positions-stats > div:nth-child(-n+2) { border-bottom: 1px solid var(--border); }
 }
+
+/* ═══════════════════════════════════════════════════════════════════════
+ * ARENA VIEW — arcade re-skin. Overrides the older green/plasma primary
+ * with the violet/cyan/gold palette + Orbitron heads used across the app.
+ * Scoped to .game-main.arena-main so nothing else is touched.
+ * ═══════════════════════════════════════════════════════════════════ */
+
+.arena-main .arena-shell { max-width: 1240px; margin: 0 auto; padding: 0 clamp(16px, 4vw, 32px); position: relative; z-index: 2; }
+
+/* ── Round bar ─────────────────────────────────────────────────────── */
+.arena-main .roundbar {
+  margin: 22px auto 0;
+  max-width: 1240px;
+  background: linear-gradient(180deg, rgba(19, 24, 36, 0.85), rgba(15, 19, 27, 0.6));
+  border: 1px solid rgba(192, 132, 252, 0.22);
+  border-radius: 14px;
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.4);
+  overflow: hidden;
+  position: relative; z-index: 2;
+}
+.arena-main .roundbar::before {
+  content: ""; position: absolute; inset: 0; pointer-events: none;
+  background: radial-gradient(600px 60px at 50% 0%, rgba(192, 132, 252, 0.08), transparent 70%);
+}
+.arena-main .rb-cell { padding: 12px 18px; border-right: 1px solid var(--border); position: relative; z-index: 1; }
+.arena-main .rb-k {
+  font-family: 'JetBrains Mono', monospace; font-size: 9.5px; font-weight: 700;
+  letter-spacing: 1.4px; color: var(--text-3); text-transform: uppercase;
+}
+.arena-main .rb-v {
+  font-family: 'Orbitron', 'JetBrains Mono', monospace; font-size: 15px; font-weight: 800;
+  color: var(--text); letter-spacing: -0.01em;
+}
+.arena-main .rb-v em { color: var(--text-3); font-style: normal; font-weight: 500; }
+.arena-main .rb-v.accent { color: var(--plasma); text-shadow: 0 0 12px rgba(34, 211, 238, 0.35); }
+.arena-main .rb-v.market {
+  font-family: 'Space Grotesk', sans-serif; font-size: 13.5px; font-weight: 600;
+  color: var(--text);
+}
+.arena-main .rb-v.status {
+  padding: 4px 10px; border-radius: 999px; font-size: 10px; letter-spacing: 1.6px;
+  font-family: 'Orbitron', sans-serif; font-weight: 800; text-transform: uppercase;
+}
+.arena-main .rb-v.status.enrolling { color: var(--xp); background: rgba(251, 146, 60, 0.1); }
+.arena-main .rb-v.status.live { color: var(--plasma); background: rgba(34, 211, 238, 0.1); }
+.arena-main .rb-v.status.complete { color: var(--gold); background: rgba(252, 211, 77, 0.1); }
+.arena-main .rb-v.status.cancelled { color: var(--danger); background: rgba(244, 63, 94, 0.1); }
+.arena-main .rb-v.status.settling,
+.arena-main .rb-v.status.advancing { color: var(--text-2); background: var(--surface); }
+
+/* Header arena-chip (invite code copy button) */
+.arena-main .hud-bar.game-hud .arena-chip {
+  height: 32px; padding: 0 12px; border-radius: 10px;
+  font-family: 'Orbitron', sans-serif; font-size: 11px; font-weight: 800;
+  letter-spacing: 1.6px; text-transform: uppercase;
+  border: 1px solid rgba(192, 132, 252, 0.4);
+  background: rgba(192, 132, 252, 0.08);
+  color: var(--neon);
+  display: inline-flex; align-items: center; gap: 8px; cursor: pointer;
+}
+.arena-main .hud-bar.game-hud .arena-chip:hover { background: rgba(192, 132, 252, 0.15); }
+.arena-main .hud-bar.game-hud .arena-chip .copy-hint { opacity: 0.65; }
+
+/* ── Champion screen ───────────────────────────────────────────────── */
+.arena-main .champion { padding: 40px 16px 20px; max-width: 720px; margin: 0 auto; text-align: center; }
+.arena-main .champion .eyebrow {
+  font-family: 'JetBrains Mono', monospace; font-size: 10px; font-weight: 700;
+  letter-spacing: 2px; color: var(--neon); text-transform: uppercase;
+  margin-bottom: 14px;
+}
+.arena-main .champion h1 {
+  font-family: 'Orbitron', sans-serif; font-size: clamp(28px, 4vw, 44px);
+  font-weight: 900; letter-spacing: -0.01em; text-transform: uppercase;
+  background: linear-gradient(180deg, #fff 0%, var(--gold) 100%);
+  -webkit-background-clip: text; background-clip: text; -webkit-text-fill-color: transparent;
+  filter: drop-shadow(0 0 24px rgba(252, 211, 77, 0.35));
+  margin-bottom: 16px;
+}
+.arena-main .champion .lead {
+  color: var(--text-2); font-family: 'Space Grotesk', sans-serif;
+  font-size: 14.5px; line-height: 1.55; max-width: 560px; margin: 0 auto 22px;
+}
+.arena-main .final-board {
+  background: linear-gradient(180deg, rgba(19, 24, 36, 0.85), rgba(15, 19, 27, 0.6));
+  border: 1px solid var(--border); border-radius: 14px; overflow: hidden;
+}
+.arena-main .fb-row { border-bottom: 1px solid var(--border); padding: 14px 18px; }
+.arena-main .fb-row:first-child { background: rgba(252, 211, 77, 0.06); }
+.arena-main .fb-row:first-child .fb-rank { color: var(--gold); }
+.arena-main .fb-row.me { background: rgba(192, 132, 252, 0.08); box-shadow: inset 0 0 0 1px rgba(192, 132, 252, 0.3); }
+.arena-main .fb-rank { font-family: 'Orbitron', sans-serif; font-weight: 900; color: var(--text-3); }
+.arena-main .fb-name { font-family: 'Space Grotesk', sans-serif; font-weight: 600; color: var(--text); }
+.arena-main .fb-bank { font-family: 'JetBrains Mono', monospace; font-weight: 700; color: var(--text); }
+.arena-main .fb-prize { font-family: 'Orbitron', sans-serif; font-weight: 800; color: var(--plasma); }
+
+/* ── Claim box ─────────────────────────────────────────────────────── */
+.arena-main .claim-box {
+  margin: 24px auto; max-width: 480px; padding: 22px 24px;
+  background: linear-gradient(180deg, rgba(34, 211, 238, 0.08), rgba(15, 19, 27, 0.7));
+  border: 1px solid rgba(34, 211, 238, 0.35);
+  border-radius: 14px;
+}
+.arena-main .claim-box p {
+  color: var(--text-2); font-family: 'Space Grotesk', sans-serif;
+  font-size: 14.5px; margin-bottom: 14px;
+}
+.arena-main .claim-box p b { color: var(--text); font-weight: 700; }
+.arena-main .claim-box .btn.primary,
+.arena-main .claim-box button.primary,
+.arena-main .btn.primary.full {
+  height: 46px; border-radius: 10px;
+  font-family: 'Orbitron', sans-serif; font-size: 12.5px; font-weight: 800;
+  letter-spacing: 2.4px; text-transform: uppercase;
+  background: linear-gradient(180deg, var(--plasma), #0891b2);
+  color: #051510; border: 0;
+  box-shadow: 0 8px 24px rgba(34, 211, 238, 0.3);
+}
+.arena-main .claim-box .disclaimer,
+.arena-main .disclaimer {
+  color: var(--text-3); font-family: 'JetBrains Mono', monospace;
+  font-size: 11px; letter-spacing: 0.6px;
+}
+.arena-main .claim-links .link {
+  background: rgba(192, 132, 252, 0.06); border-color: rgba(192, 132, 252, 0.25);
+  color: var(--text-2);
+}
+.arena-main .claim-links .link:hover { color: var(--neon); border-color: rgba(192, 132, 252, 0.5); }
+
+/* ── Event log ─────────────────────────────────────────────────────── */
+.arena-main .log {
+  margin: 18px auto 0; max-width: 1240px; padding: 12px 16px;
+  background: linear-gradient(180deg, rgba(19, 24, 36, 0.7), rgba(10, 13, 19, 0.4));
+  border: 1px solid var(--border); border-radius: 10px;
+  font-family: 'JetBrains Mono', monospace; font-size: 11.5px; color: var(--text-2);
+}
+.arena-main .log span::before { content: "▸ "; color: var(--neon); text-shadow: 0 0 8px rgba(192, 132, 252, 0.5); }
+
+/* ── How the arena works ───────────────────────────────────────────── */
+.arena-main .how-grid { margin: 28px 0; }
+.arena-main .how-grid > div {
+  background: linear-gradient(180deg, rgba(19, 24, 36, 0.7), rgba(15, 19, 27, 0.4));
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  padding: 20px 22px;
+}
+.arena-main .how-grid b {
+  font-family: 'Orbitron', sans-serif; font-size: 11px; font-weight: 800;
+  letter-spacing: 1.6px; color: var(--neon); text-transform: uppercase;
+  margin-bottom: 10px;
+  text-shadow: 0 0 10px rgba(192, 132, 252, 0.4);
+}
+.arena-main .how-grid p {
+  font-family: 'Space Grotesk', sans-serif; font-size: 13.5px;
+  color: var(--text-2); line-height: 1.55;
+}
+.arena-main h1, .arena-main h2 {
+  font-family: 'Orbitron', sans-serif; letter-spacing: -0.01em;
+}
+.arena-main h2.title-heading {
+  font-size: 22px; text-transform: uppercase; color: var(--text); margin-bottom: 12px;
+}
+.arena-main .center-heading, .arena-main .champion + h2 {
+  font-family: 'Orbitron', sans-serif; text-transform: uppercase;
+}
+
+/* ── Cockpit (trade + roster) ──────────────────────────────────────── */
+.arena-main .cockpit { max-width: 1240px; margin: 18px auto; gap: 18px; }
+.arena-main .trade-col {
+  background: linear-gradient(180deg, rgba(19, 24, 36, 0.85), rgba(15, 19, 27, 0.6));
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  padding: 22px 24px 20px;
+}
+.arena-main .tc-head .cat { color: var(--neon); font-family: 'Orbitron', sans-serif; letter-spacing: 1.8px; }
+.arena-main .tc-head h2 { font-family: 'Space Grotesk', sans-serif; font-size: 19px; letter-spacing: -0.01em; }
+.arena-main .tc-price b { font-family: 'Orbitron', sans-serif; letter-spacing: -0.01em; }
+.arena-main .tc-price b.up { color: var(--plasma); text-shadow: 0 0 12px rgba(34, 211, 238, 0.35); }
+.arena-main .tc-price b.down { color: var(--danger); text-shadow: 0 0 12px rgba(244, 63, 94, 0.35); }
+.arena-main .tc-price span { color: var(--text-3); letter-spacing: 1.4px; }
+.arena-main .enroll-cta p { font-family: 'Space Grotesk', sans-serif; font-size: 14px; }
+
+/* Vault strip */
+.arena-main .vault { border-color: var(--border); }
+.arena-main .vault > div span { font-family: 'JetBrains Mono', monospace; letter-spacing: 1.2px; }
+.arena-main .vault > div b { font-family: 'Orbitron', sans-serif; }
+.arena-main .vault > div.up b { color: var(--plasma); }
+.arena-main .vault > div.down b { color: var(--danger); }
+
+/* Bet mode toggle */
+.arena-main .bet-mode { border-radius: 10px; }
+.arena-main .bet-mode .bm {
+  font-family: 'Orbitron', sans-serif; font-weight: 800; letter-spacing: 1.4px;
+  text-transform: uppercase; padding: 7px 14px;
+}
+.arena-main .bet-mode .bm.on {
+  color: #051510;
+  background: linear-gradient(180deg, var(--neon), #6d28d9);
+  box-shadow: 0 4px 12px rgba(192, 132, 252, 0.3);
+}
+
+/* Sides — YES / NO trade buttons */
+.arena-main .sides { gap: 10px; margin-bottom: 14px; }
+.arena-main .side {
+  padding: 14px 16px; border-radius: 10px;
+  font-family: 'Orbitron', sans-serif; letter-spacing: 1.8px;
+  border: 1px solid var(--border); background: var(--surface);
+}
+.arena-main .side b { font-family: 'Orbitron', sans-serif; }
+.arena-main .side.yes:hover, .arena-main .side.yes.on {
+  border-color: rgba(34, 211, 238, 0.5);
+  background: rgba(34, 211, 238, 0.1);
+  color: var(--plasma);
+  box-shadow: 0 0 20px rgba(34, 211, 238, 0.15);
+}
+.arena-main .side.no:hover, .arena-main .side.no.on {
+  border-color: rgba(244, 63, 94, 0.5);
+  background: rgba(244, 63, 94, 0.1);
+  color: var(--danger);
+  box-shadow: 0 0 20px rgba(244, 63, 94, 0.15);
+}
+
+/* Field input (amount / stake) */
+.arena-main .field-input { border-radius: 10px; }
+.arena-main .field-input:focus-within { border-color: var(--neon); box-shadow: 0 0 0 3px rgba(192, 132, 252, 0.15); }
+.arena-main .field-input .curr,
+.arena-main .field-input input { font-family: 'Orbitron', sans-serif; }
+.arena-main .field-input .max:hover { color: var(--neon); border-color: rgba(192, 132, 252, 0.4); }
+
+/* Summary rows */
+.arena-main .summary b { font-family: 'Orbitron', sans-serif; }
+.arena-main .summary b.accent { color: var(--plasma); }
+
+/* Trade action row */
+.arena-main .trade-actions .btn.primary,
+.arena-main .trade-actions .btn.secondary,
+.arena-main .trade-actions .btn.ghost {
+  height: 44px; border-radius: 10px;
+  font-family: 'Orbitron', sans-serif; letter-spacing: 1.6px; text-transform: uppercase;
+  font-size: 12px; font-weight: 800;
+}
+.arena-main .trade-actions .btn.primary {
+  background: linear-gradient(180deg, var(--plasma), #0891b2);
+  color: #051510; border-color: transparent;
+  box-shadow: 0 6px 18px rgba(34, 211, 238, 0.3);
+}
+.arena-main .trade-actions .btn.primary:hover { box-shadow: 0 10px 24px rgba(34, 211, 238, 0.45); }
+.arena-main .trade-actions .btn.secondary { border: 1px solid rgba(192, 132, 252, 0.4); color: var(--neon); background: transparent; }
+
+/* Parlay board */
+.arena-main .pb-mkt { background: rgba(15, 19, 27, 0.6); border: 1px solid var(--border); border-radius: 10px; }
+.arena-main .pb-side.up:hover, .arena-main .pb-side.up.on { color: var(--plasma); border-color: rgba(34, 211, 238, 0.4); background: rgba(34, 211, 238, 0.08); }
+.arena-main .pb-side.down:hover, .arena-main .pb-side.down.on { color: var(--danger); border-color: rgba(244, 63, 94, 0.4); background: rgba(244, 63, 94, 0.08); }
+
+/* Roster panel */
+.arena-main .roster {
+  background: linear-gradient(180deg, rgba(19, 24, 36, 0.85), rgba(15, 19, 27, 0.6));
+  border: 1px solid var(--border);
+  border-radius: 14px;
+}
+.arena-main .roster-head > span:first-child {
+  font-family: 'Orbitron', sans-serif; font-size: 11px; font-weight: 800;
+  letter-spacing: 2px; color: var(--neon); text-transform: uppercase;
+}
+.arena-main .roster-head .cut { color: var(--danger); font-family: 'Orbitron', sans-serif; letter-spacing: 1.4px; }
+.arena-main .r-row.me { background: rgba(192, 132, 252, 0.08); box-shadow: inset 0 0 0 1px rgba(192, 132, 252, 0.3); }
+.arena-main .r-row.me .r-rank { color: var(--neon); }
+.arena-main .r-name { font-family: 'Space Grotesk', sans-serif; font-weight: 600; }
+.arena-main .r-name em { color: var(--text-3); font-family: 'JetBrains Mono', monospace; }
+.arena-main .r-bank { font-family: 'Orbitron', sans-serif; }
+.arena-main .r-pnl { font-family: 'Orbitron', sans-serif; }
+.arena-main .r-pnl.up { color: var(--plasma); }
+.arena-main .r-pnl.down { color: var(--danger); }
+.arena-main .cutline::before { background: var(--danger); opacity: 0.5; }
+.arena-main .cutline span { background: var(--bg-elev); color: var(--danger); font-family: 'Orbitron', sans-serif; letter-spacing: 1.2px; }
+
+/* Parlay open list */
+.arena-main .parlay-list {
+  background: rgba(15, 19, 27, 0.6); border-color: var(--border); border-radius: 10px;
+}
+.arena-main .parlay-list-head { color: var(--neon); font-family: 'Orbitron', sans-serif; letter-spacing: 1.6px; }
+.arena-main .parlay-row .pr-legs { color: var(--text); background: rgba(192, 132, 252, 0.08); border-color: rgba(192, 132, 252, 0.3); font-family: 'Orbitron', sans-serif; }
+.arena-main .parlay-row .pr-payout { color: var(--plasma); font-family: 'Orbitron', sans-serif; }
+
+/* Panta order lifecycle */
+.arena-main .panta-order.done { border-left-color: var(--plasma); }
+.arena-main .panta-order-head .eyebrow { color: var(--neon); font-family: 'Orbitron', sans-serif; letter-spacing: 1.4px; }
+.arena-main .panta-order-steps li.done { color: var(--plasma); }
+.arena-main .panta-order-steps li.done .dot { background: var(--plasma); box-shadow: 0 0 0 3px rgba(34, 211, 238, 0.15); }
+.arena-main .panta-order-steps li.active .dot { background: var(--plasma); box-shadow: 0 0 0 3px rgba(34, 211, 238, 0.2); }
+.arena-main .panta-order-sig:hover { color: var(--plasma); }
+
+/* Fill toggle */
+.arena-main .panta-fill-toggle input { accent-color: var(--neon); }
+
+/* Base buttons inside arena — override green primary */
+.arena-main .btn.primary {
+  background: linear-gradient(180deg, var(--plasma), #0891b2);
+  color: #051510; border-color: transparent;
+  font-family: 'Orbitron', sans-serif; font-weight: 800; letter-spacing: 1.4px;
+  text-transform: uppercase; border-radius: 10px;
+  box-shadow: 0 6px 18px rgba(34, 211, 238, 0.25);
+}
+.arena-main .btn.primary:hover:not(:disabled) { box-shadow: 0 10px 24px rgba(34, 211, 238, 0.4); }
+.arena-main .btn.secondary {
+  background: transparent; color: var(--neon);
+  border: 1px solid rgba(192, 132, 252, 0.4);
+  font-family: 'Orbitron', sans-serif; font-weight: 800; letter-spacing: 1.4px;
+  text-transform: uppercase; border-radius: 10px;
+}
+.arena-main .btn.secondary:hover { background: rgba(192, 132, 252, 0.08); border-color: var(--neon); }
+.arena-main .btn.ghost { color: var(--text-2); border-color: var(--border); border-radius: 10px; }
+.arena-main .link-btn { color: var(--neon); }
+.arena-main .link-btn:hover { color: #d8b4fe; }
+.arena-main .link.link, .arena-main a.link { color: var(--plasma); }
+
+/* Toast + secondary bits */
+.arena-main .toast::before { background: var(--neon); }
+
+/* Resolution panel — arcade cyan/red instead of green */
+.arena-main .resolution-card.yes {
+  border-left-color: var(--plasma);
+  background: linear-gradient(90deg, rgba(34, 211, 238, 0.08), rgba(15, 19, 27, 0.6) 40%);
+}
+.arena-main .resolution-card.yes .tag,
+.arena-main .resolution-card.yes .tag b { color: var(--plasma); }
+.arena-main .resolution-card.no {
+  border-left-color: var(--danger);
+  background: linear-gradient(90deg, rgba(244, 63, 94, 0.08), rgba(15, 19, 27, 0.6) 40%);
+}
+.arena-main .resolution-meta b.up { color: var(--plasma); }
+
+/* Trade tape headings */
+.arena-main .tape-src.panta { color: var(--plasma); border-color: rgba(34, 211, 238, 0.4); background: rgba(34, 211, 238, 0.08); }
+.arena-main .tape-fill .side.up { color: var(--plasma); background: rgba(34, 211, 238, 0.1); border-color: rgba(34, 211, 238, 0.3); }
+.arena-main .tape-fill.born { animation-name: fillInArcade; }
+@keyframes fillInArcade {
+  from { background: rgba(192, 132, 252, 0.12); }
+  to { background: transparent; }
+}
+.arena-main .tape-fill .sig:hover { color: var(--neon); }
+
+/* Modal (host arena modal, create market, cash out) — arcade skin */
+.arena-main .modal,
+.game-mode .modal {
+  background: linear-gradient(180deg, #131824 0%, #0d1017 100%);
+  border: 1px solid rgba(192, 132, 252, 0.28);
+  box-shadow: 0 30px 80px rgba(0, 0, 0, 0.6), inset 0 1px 0 rgba(255, 255, 255, 0.04);
+}
+.game-mode .modal h2 {
+  font-family: 'Orbitron', sans-serif; text-transform: uppercase; letter-spacing: 0.5px;
+  font-size: 18px;
+}
+.game-mode .modal .sub { font-family: 'Space Grotesk', sans-serif; }
+.game-mode .modal .sub b { color: var(--plasma); }
+.game-mode .modal label {
+  font-family: 'JetBrains Mono', monospace; letter-spacing: 1.4px; color: var(--text-3);
+}
+.game-mode .modal label input {
+  font-family: 'Orbitron', sans-serif; border-radius: 10px;
+  border-color: var(--border);
+}
+.game-mode .modal label input:focus { border-color: var(--neon); box-shadow: 0 0 0 3px rgba(192, 132, 252, 0.15); }
+.game-mode .invite-code { color: var(--plasma); background: linear-gradient(180deg, rgba(34, 211, 238, 0.08), rgba(34, 211, 238, 0.02)); border-color: rgba(34, 211, 238, 0.35); text-shadow: 0 0 20px rgba(34, 211, 238, 0.4); }
+
+/* Cash-out modal + create-market modal share the arcade skin above. */
+.game-mode .cashout-summary,
+.game-mode .cashout-leg,
+.game-mode .pcm-summary {
+  background: rgba(15, 19, 27, 0.6); border-color: var(--border);
+}
+.game-mode .cashout-summary .up b,
+.game-mode .cashout-leg-line.small span.up,
+.game-mode .cashout-leg .side.up { color: var(--plasma); border-color: rgba(34, 211, 238, 0.3); background: rgba(34, 211, 238, 0.08); }
+.game-mode .pcm-summary b.up { color: var(--plasma); }
+.game-mode .pcm-summary a.link { color: var(--neon); }
+
+/* Graduation banner — arcade violet accent */
+.game-mode .panta-grad-banner {
+  border-color: rgba(192, 132, 252, 0.4);
+  border-left-color: var(--neon);
+  box-shadow: 0 12px 40px rgba(192, 132, 252, 0.15);
+}
+.game-mode .panta-grad-banner .grad-dot {
+  background: var(--neon);
+  box-shadow: 0 0 0 4px rgba(192, 132, 252, 0.15);
+}
 .docs-foot a { color: var(--text-2); }
 .docs-foot a:hover { color: var(--neon); }
 
