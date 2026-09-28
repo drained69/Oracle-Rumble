@@ -200,7 +200,13 @@ fn load_round(ai: &AccountInfo, program_id: &Pubkey) -> Result<RoundVault, Progr
     if ai.owner != program_id {
         return Err(EscrowError::AccountMismatch.into());
     }
-    let v = RoundVault::try_from_slice(&ai.data.borrow())
+    // The account is allocated at ROUND_VAULT_LEN (168) but the Borsh-serialized
+    // RoundVault is only 160 bytes — 8 bytes trailing padding. Use `deserialize`
+    // with a slice reader so trailing bytes are ignored; `try_from_slice` would
+    // return InvalidAccountData because it insists all bytes be consumed.
+    let data = ai.data.borrow();
+    let mut cursor: &[u8] = &data[..];
+    let v = RoundVault::deserialize(&mut cursor)
         .map_err(|_| ProgramError::InvalidAccountData)?;
     if !v.is_initialized {
         return Err(EscrowError::NotInitialized.into());

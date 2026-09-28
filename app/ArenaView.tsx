@@ -8,6 +8,15 @@ import { PUBLIC_ARENA } from "@/lib/royale";
 import { markets as boardMarkets } from "@/lib/arena-data";
 import { quoteParlay, PARLAY_MAX_LEGS, type ParlayLeg } from "@/lib/parlay";
 import { avatarDataUrl } from "@/lib/avatars";
+import {
+  displayName,
+  getStoredUsername,
+  isUsernameFreeInArena,
+  saveStoredUsername,
+  validateUsername,
+  USERNAME_MAX
+} from "@/lib/username";
+import ArenaStage from "@/app/ArenaStage";
 import PantaTradeTape from "@/app/PantaTradeTape";
 import PantaResolution from "@/app/PantaResolution";
 import PantaGraduationBanner from "@/app/PantaGraduationBanner";
@@ -30,6 +39,12 @@ function shortPk(pk: string) {
   if (pk.startsWith("bot:")) return pk.slice(4).toUpperCase();
   if (pk.length <= 10) return pk;
   return `${pk.slice(0, 4)}…${pk.slice(-4)}`;
+}
+
+/** Best-effort wallet-only display name: prefers stored username, else short pk. */
+function displayForWallet(pk: string): string {
+  const u = getStoredUsername(pk);
+  return u || shortPk(pk);
 }
 
 function fmtClock(ms: number) {
@@ -95,7 +110,11 @@ export default function ArenaView({ arenaCode }: { arenaCode: string }) {
   useEffect(() => {
     try {
       const w = localStorage.getItem(WALLET_KEY);
-      if (w) setWallet(w);
+      if (w) {
+        setWallet(w);
+        const stored = getStoredUsername(w);
+        if (stored) setNickname(stored);
+      }
     } catch { /* ignore */ }
     // Fetch escrow status ONCE — the server's config doesn't change per request.
     fetch("/api/escrow/status", { cache: "no-store" }).then((r) => r.json()).then(setEscrow).catch(() => setEscrow({ active: false, reason: "unreachable" }));
@@ -171,7 +190,17 @@ export default function ArenaView({ arenaCode }: { arenaCode: string }) {
     if (real) {
       setWallet(real);
       try { localStorage.setItem(WALLET_KEY, real); } catch { /* ignore */ }
-      setToast(`Connected · ${shortPk(real)}`);
+      const stored = getStoredUsername(real);
+      if (stored) {
+        setNickname(stored);
+        setToast(`Connected as ${stored}.`);
+      } else {
+        setNickname("");
+        // First time this wallet appears — prompt for a callsign right away
+        // so the user has a username before any arena needs one.
+        setShowEnroll(true);
+        setToast(`Connected · ${shortPk(real)} · pick a callsign.`);
+      }
     } else {
       setToast("No Solana wallet found. Install Phantom, Backpack, or Solflare and reload.");
     }
@@ -180,9 +209,20 @@ export default function ArenaView({ arenaCode }: { arenaCode: string }) {
   // ── actions (all arena-scoped) ────────────────────────────────────
   const doEnroll = useCallback(async () => {
     if (!wallet) { setShowEnroll(false); setToast("Connect a wallet first."); return; }
+    const v = validateUsername(nickname);
+    if (!v.ok) { setToast(v.reason); return; }
+    const nick = v.value;
+    if (round && !isUsernameFreeInArena(nick, round.entrants, wallet)) {
+      setToast(`Callsign "${nick}" is taken in this arena — pick another.`);
+      return;
+    }
+
     setBusy(true);
     try {
-      const nick = (nickname || shortPk(wallet)).slice(0, 16);
+      // Persist the chosen username FIRST — so even if enrollWithEscrow
+      // fails (wallet cancel, tx error) the next arena reuses this handle.
+      saveStoredUsername(wallet, nick);
+
       // enrollWithEscrow: if arena is on-chain, wallet signs a Deposit tx
       // (real USDC on devnet) before the ledger enrolls. Ledger-only arenas
       // fall through immediately. Signing UI is provided by the wallet.
@@ -197,7 +237,7 @@ export default function ArenaView({ arenaCode }: { arenaCode: string }) {
         await refresh();
       }
     } finally { setBusy(false); }
-  }, [wallet, nickname, arenaCode, refresh]);
+  }, [wallet, nickname, arenaCode, refresh, round]);
 
   // ── settlement + claim ────────────────────────────────────────────
   // When a hosted arena's round hits `complete` and has an on-chain vault,
@@ -361,7 +401,7 @@ export default function ArenaView({ arenaCode }: { arenaCode: string }) {
       // With wallet: the host must sign seat #1 deposit before the arena
       // is announced. If signing is dismissed or fails, roll back so the
       // room doesn't linger as an unfunded orphan.
-      const nick = shortPk(wallet).replace("…", "");
+      const nick = getStoredUsername(wallet) || shortPk(wallet).replace("…", "");
       if (escrow?.active) setToast("Sign the seat deposit in your wallet…");
       let enrollError = "";
       try {
@@ -450,8 +490,8 @@ export default function ArenaView({ arenaCode }: { arenaCode: string }) {
               </button>
             )}
             <button className={wallet ? "wallet game connected" : "wallet game"} onClick={connect}>
-              <span className="avatar">{wallet ? wallet.slice(0, 2).toUpperCase() : "?"}</span>
-              {wallet ? shortPk(wallet) : "Connect"}
+              <span className="avatar">{wallet ? (getStoredUsername(wallet) || wallet).slice(0, 2).toUpperCase() : "?"}</span>
+              {wallet ? displayForWallet(wallet) : "Connect"}
             </button>
           </div>
         </div>
@@ -529,7 +569,7 @@ export default function ArenaView({ arenaCode }: { arenaCode: string }) {
               return (
                 <>
                   <p className="eyebrow">{round.config.format === "single" ? "Single round" : `Round ${round.roundNumber}`} · final</p>
-                  <h1>{champ ? `${champ.nickname} wins ${usd2.format(champ.prizeUsdc)}` : "Rumble complete"}</h1>
+                  <h1>{champ ? `${displayName(champ)} wins ${usd2.format(champ.prizeUsdc)}` : "Rumble complete"}</h1>
                   <p className="lead">
                     {paid.length > 1
                       ? `${usd.format(round.prizePoolUsdc)} pool split across the top ${paid.length}.`
@@ -574,7 +614,7 @@ export default function ArenaView({ arenaCode }: { arenaCode: string }) {
                     {standings.map((e, i) => (
                       <div key={e.id} className={`fb-row ${e.wallet === wallet ? "me" : ""}`}>
                         <span className="fb-rank">{i + 1}</span>
-                        <span className="fb-name">{e.nickname}{e.isBot ? " ·bot" : ""}</span>
+                        <span className="fb-name">{displayName(e)}{e.isBot ? " ·bot" : ""}</span>
                         <span className="fb-bank">{usd2.format(e.bankroll)}</span>
                         <span className="fb-prize">{e.prizeUsdc > 0 ? `+${usd2.format(e.prizeUsdc)}` : ""}</span>
                       </div>
@@ -616,6 +656,17 @@ export default function ArenaView({ arenaCode }: { arenaCode: string }) {
             )}
           </div>
         ) : (
+          <>
+            {/* Market Royale stage — real-state visual dashboard */}
+            {round && (
+              <ArenaStage
+                round={round}
+                standings={standings}
+                cut={cut}
+                yesPrice={yesPrice}
+                wallet={wallet}
+              />
+            )}
           <div className="cockpit">
             {/* trading */}
             <div className="trade-col">
@@ -799,7 +850,7 @@ export default function ArenaView({ arenaCode }: { arenaCode: string }) {
                         <span className="r-rank">{e.eliminatedRound !== null ? "✕" : i + 1}</span>
                         {/* eslint-disable-next-line @next/next/no-img-element */}
                         <img className="r-avatar" src={avatarDataUrl(e.wallet, 24)} width={24} height={24} alt="" />
-                        <span className="r-name">{e.nickname}{e.isBot ? <em>bot</em> : ""}{e.wallet === wallet ? <em>you</em> : ""}</span>
+                        <span className="r-name">{displayName(e)}{e.isBot ? <em>bot</em> : ""}{e.wallet === wallet ? <em>you</em> : ""}</span>
                         <span className="r-bank">{usd2.format(e.bankroll)}</span>
                         <span className={`r-pnl ${pnl >= 0 ? "up" : "down"}`}>{pnl >= 0 ? "+" : ""}{pnl.toFixed(0)}</span>
                       </div>
@@ -810,6 +861,7 @@ export default function ArenaView({ arenaCode }: { arenaCode: string }) {
               </ul>
             </aside>
           </div>
+          </>
         )}
 
         {/* event log */}
@@ -868,22 +920,86 @@ export default function ArenaView({ arenaCode }: { arenaCode: string }) {
         />
       )}
 
-      {showEnroll && round && (
+      {showEnroll && (
         <div className="modal-backdrop" onClick={() => setShowEnroll(false)}>
           <div className="modal" onClick={(e) => e.stopPropagation()}>
             <button className="close" onClick={() => setShowEnroll(false)} aria-label="Close">×</button>
-            <h2>Take your seat</h2>
+            <h2>{round ? "Take your seat" : "Set your callsign"}</h2>
             <p className="sub">
-              Arena <b>{arenaCode}</b> · {usd.format(round.config.entryUsdc)} entry → pool &nbsp;+&nbsp; {usd.format(round.config.startingBankroll)} vault → yours to trade &nbsp;=&nbsp; <b>{usd.format(round.config.entryUsdc + round.config.startingBankroll)} total</b>
+              {round
+                ? <>Arena <b>{arenaCode}</b> · {usd.format(round.config.entryUsdc)} entry → pool &nbsp;+&nbsp; {usd.format(round.config.startingBankroll)} vault → yours to trade &nbsp;=&nbsp; <b>{usd.format(round.config.entryUsdc + round.config.startingBankroll)} total</b></>
+                : <>Pick a handle to show in the arena stage, standings, and activity feed. You can change it before joining any arena.</>}
             </p>
             <label>
               Callsign
-              <input value={nickname} onChange={(e) => setNickname(e.target.value)} placeholder={shortPk(wallet ?? "")} maxLength={16} />
+              <input
+                value={nickname}
+                onChange={(e) => setNickname(e.target.value)}
+                placeholder="e.g. nova_9"
+                maxLength={USERNAME_MAX}
+                autoFocus
+                aria-invalid={nickname.length > 0 && !validateUsername(nickname).ok}
+                aria-describedby="callsign-hint"
+              />
             </label>
-            <button className="btn primary full" onClick={doEnroll} disabled={busy} style={{ marginTop: 8 }}>
-              {busy ? "Entering…" : `Lock in ${usd.format(round.config.entryUsdc + round.config.startingBankroll)}`}
-            </button>
-            <p className="disclaimer" style={{ marginTop: 12 }}>Entry funds the pool; the vault stays yours to trade and withdraw. Funds are held in a non-custodial escrow program on {CLUSTER}.</p>
+            {(() => {
+              const v = validateUsername(nickname);
+              const arenaClash = round && v.ok && !isUsernameFreeInArena(v.value, round.entrants, wallet ?? undefined);
+              const hint = nickname.length === 0
+                ? "3–16 characters: letters, numbers, underscore."
+                : !v.ok
+                ? v.reason
+                : arenaClash
+                ? `"${v.value}" is taken in this arena.`
+                : "Looks good — this callsign will show on every screen.";
+              const ok = nickname.length > 0 && v.ok && !arenaClash;
+              return (
+                <p
+                  id="callsign-hint"
+                  className={`disclaimer callsign-hint ${nickname.length === 0 ? "" : ok ? "ok" : "bad"}`}
+                  style={{ marginTop: 6, textAlign: "left" }}
+                >
+                  {hint}
+                </p>
+              );
+            })()}
+            {round ? (
+              (() => {
+                const v = validateUsername(nickname);
+                const arenaClash = v.ok && !isUsernameFreeInArena(v.value, round.entrants, wallet ?? undefined);
+                const disabled = busy || !v.ok || !!arenaClash || !wallet;
+                return (
+                  <button className="btn primary full" onClick={doEnroll} disabled={disabled} style={{ marginTop: 8 }}>
+                    {busy ? "Entering…" : wallet ? `Lock in ${usd.format(round.config.entryUsdc + round.config.startingBankroll)}` : "Connect wallet first"}
+                  </button>
+                );
+              })()
+            ) : (
+              (() => {
+                const v = validateUsername(nickname);
+                const disabled = !v.ok || !wallet;
+                return (
+                  <button
+                    className="btn primary full"
+                    disabled={disabled}
+                    style={{ marginTop: 8 }}
+                    onClick={() => {
+                      if (!wallet || !v.ok) return;
+                      saveStoredUsername(wallet, v.value);
+                      setToast(`Callsign set to ${v.value}.`);
+                      setShowEnroll(false);
+                    }}
+                  >
+                    Save callsign
+                  </button>
+                );
+              })()
+            )}
+            <p className="disclaimer" style={{ marginTop: 12 }}>
+              {round
+                ? <>Entry funds the pool; the vault stays yours to trade and withdraw. Funds are held in a non-custodial escrow program on {CLUSTER}.</>
+                : <>Stored locally by wallet address on this device.</>}
+            </p>
           </div>
         </div>
       )}

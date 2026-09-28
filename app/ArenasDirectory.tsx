@@ -10,6 +10,12 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { connectSolanaWallet } from "@/lib/panta-client";
 import { cancelArena, enrollWithEscrow, newRound } from "@/lib/round-client";
+import {
+  getStoredUsername,
+  saveStoredUsername,
+  validateUsername,
+  USERNAME_MAX
+} from "@/lib/username";
 import PantaGraduationBanner from "@/app/PantaGraduationBanner";
 
 const usd = new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 0 });
@@ -84,6 +90,9 @@ export default function ArenasDirectory() {
   const [hVault, setHVault] = useState("10");
   const [hStartInMin, setHStartInMin] = useState(15);
   const [inviteInfo, setInviteInfo] = useState<{ code: string; url: string } | null>(null);
+  const [callsign, setCallsign] = useState<string>("");
+  const [showCallsign, setShowCallsign] = useState(false);
+  const [csDraft, setCsDraft] = useState("");
 
   useEffect(() => {
     document.body.classList.add("game-mode");
@@ -95,7 +104,14 @@ export default function ArenasDirectory() {
   }, []);
 
   useEffect(() => {
-    try { const w = localStorage.getItem(WALLET_KEY); if (w) setWallet(w); } catch { /* ignore */ }
+    try {
+      const w = localStorage.getItem(WALLET_KEY);
+      if (w) {
+        setWallet(w);
+        const u = getStoredUsername(w);
+        setCallsign(u);
+      }
+    } catch { /* ignore */ }
     fetch("/api/escrow/status", { cache: "no-store" }).then((r) => r.json()).then(setEscrow).catch(() => setEscrow({ active: false, reason: "unreachable" }));
   }, []);
 
@@ -127,6 +143,7 @@ export default function ArenasDirectory() {
   const connect = useCallback(async () => {
     if (wallet) {
       setWallet(null);
+      setCallsign("");
       try { localStorage.removeItem(WALLET_KEY); } catch { /* ignore */ }
       setToast("Wallet disconnected.");
       return;
@@ -135,9 +152,28 @@ export default function ArenasDirectory() {
     if (real) {
       setWallet(real);
       try { localStorage.setItem(WALLET_KEY, real); } catch { /* ignore */ }
-      setToast(`Connected · ${shortPk(real)}`);
+      const stored = getStoredUsername(real);
+      setCallsign(stored);
+      if (stored) {
+        setToast(`Connected as ${stored}.`);
+      } else {
+        // First time this wallet appears — prompt for a callsign right away.
+        setCsDraft("");
+        setShowCallsign(true);
+        setToast(`Connected · ${shortPk(real)} · pick a callsign.`);
+      }
     } else setToast("No Solana wallet found. Install Phantom, Backpack or Solflare.");
   }, [wallet]);
+
+  const saveCallsign = useCallback(() => {
+    if (!wallet) { setToast("Connect a wallet first."); return; }
+    const v = validateUsername(csDraft);
+    if (!v.ok) { setToast(v.reason); return; }
+    saveStoredUsername(wallet, v.value);
+    setCallsign(v.value);
+    setShowCallsign(false);
+    setToast(`Callsign set to ${v.value}.`);
+  }, [wallet, csDraft]);
 
   const hostSeat = (Number(hEntry) || 0) + (Number(hVault) || 0);
   const poolIfFull = (Number(hEntry) || 0) * hCapacity;
@@ -148,6 +184,13 @@ export default function ArenasDirectory() {
     // tx on an arena the caller can't actually fund.
     if (escrow?.active && !wallet) {
       setToast("Connect a wallet first — hosting on-chain needs your seat deposit signature.");
+      return;
+    }
+    // Callsign is required for the host — it shows on every arena screen.
+    if (wallet && !callsign) {
+      setCsDraft("");
+      setShowCallsign(true);
+      setToast("Pick a callsign before hosting your arena.");
       return;
     }
 
@@ -176,7 +219,7 @@ export default function ArenasDirectory() {
       // deposit BEFORE we show the invite screen. If signing fails or the
       // wallet is dismissed, cancel the arena we just opened so the room
       // doesn't linger as an unfunded orphan.
-      const nick = shortPk(wallet).replace("…", "");
+      const nick = callsign || getStoredUsername(wallet) || shortPk(wallet).replace("…", "");
       if (escrow?.active) setToast("Sign the seat deposit in your wallet…");
       let enrollError = "";
       try {
@@ -197,7 +240,7 @@ export default function ArenasDirectory() {
       setInviteInfo({ code: v.arena, url });
       refresh();
     } finally { setBusy(false); }
-  }, [hMode, hStartInMin, hAsset, hHorizon, hFormat, hEntry, hVault, hCapacity, hRounds, wallet, escrow, refresh]);
+  }, [hMode, hStartInMin, hAsset, hHorizon, hFormat, hEntry, hVault, hCapacity, hRounds, wallet, escrow, refresh, callsign]);
 
   const doCopy = useCallback(async (url: string) => {
     try { await navigator.clipboard.writeText(url); setToast("Invite link copied."); }
@@ -246,9 +289,18 @@ export default function ArenasDirectory() {
               <span className="dot" />
               {CLUSTER}
             </span>
+            {wallet && (
+              <button
+                className="callsign-chip"
+                onClick={() => { setCsDraft(callsign); setShowCallsign(true); }}
+                title="Edit your callsign"
+              >
+                {callsign || "set callsign"}
+              </button>
+            )}
             <button className={wallet ? "wallet game connected" : "wallet game"} onClick={connect}>
-              <span className="avatar">{wallet ? wallet.slice(0, 2).toUpperCase() : "?"}</span>
-              {wallet ? shortPk(wallet) : "Connect"}
+              <span className="avatar">{wallet ? (callsign || wallet).slice(0, 2).toUpperCase() : "?"}</span>
+              {wallet ? (callsign || shortPk(wallet)) : "Connect"}
             </button>
           </div>
         </div>
@@ -328,6 +380,55 @@ export default function ArenasDirectory() {
       </section>
 
       {toast && <div className="toast" role="status"><span>{toast}</span><button onClick={() => setToast("")} aria-label="Dismiss">×</button></div>}
+
+      {showCallsign && (
+        <div className="modal-backdrop" onClick={() => setShowCallsign(false)}>
+          <div className="modal" onClick={(e) => e.stopPropagation()}>
+            <button className="close" onClick={() => setShowCallsign(false)} aria-label="Close">×</button>
+            <h2>Set your callsign</h2>
+            <p className="sub">
+              Shown in the arena stage, standings, activity feed, and champion screen.
+              Stored locally on this device per wallet.
+            </p>
+            <label>
+              Callsign
+              <input
+                value={csDraft}
+                onChange={(e) => setCsDraft(e.target.value)}
+                placeholder="e.g. nova_9"
+                maxLength={USERNAME_MAX}
+                autoFocus
+                aria-invalid={csDraft.length > 0 && !validateUsername(csDraft).ok}
+              />
+            </label>
+            {(() => {
+              const v = validateUsername(csDraft);
+              const hint = csDraft.length === 0
+                ? "3–16 characters: letters, numbers, underscore."
+                : !v.ok
+                ? v.reason
+                : "Looks good — this callsign will show on every screen.";
+              const ok = csDraft.length > 0 && v.ok;
+              return (
+                <p
+                  className={`disclaimer callsign-hint ${csDraft.length === 0 ? "" : ok ? "ok" : "bad"}`}
+                  style={{ marginTop: 6, textAlign: "left" }}
+                >
+                  {hint}
+                </p>
+              );
+            })()}
+            <button
+              className="btn primary full"
+              onClick={saveCallsign}
+              disabled={!validateUsername(csDraft).ok || !wallet}
+              style={{ marginTop: 8 }}
+            >
+              Save callsign
+            </button>
+          </div>
+        </div>
+      )}
 
       <PantaGraduationBanner />
     </main>
