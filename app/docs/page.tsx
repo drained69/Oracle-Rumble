@@ -263,9 +263,14 @@ net  = fair − fee   → credited to your vault`}</pre>
           </Section>
 
           <Section id="wallet" title="Wallets & signing">
-            <p>Phantom, Backpack and Solflare are supported. Set the wallet to Solana {CLUSTER}.</p>
+            <p>
+              Phantom, Backpack, Solflare and Brave Wallet are supported. Set the wallet to Solana {CLUSTER}. If more
+              than one is installed, Connect asks which one to use and remembers it.
+            </p>
             <ul>
-              <li><b>Sign-in</b> — before your first seat or trade the wallet signs a free sign-in message (not a transaction). It proves the requests for your seat come from you; the session lasts a week on this browser and ends when you disconnect.</li>
+              <li><b>Sign-in</b> — right after you connect, the wallet asks you to sign a free sign-in message (not a transaction). It proves the requests for your seat come from you; the session lasts a week on this browser and ends when you disconnect. If you skip it, you&apos;re asked again before your first seat or trade.</li>
+              <li><b>After a reload</b> the page reconnects to your wallet without a prompt (for a site the wallet already trusts), so signing works straight away.</li>
+              <li><b>Switching accounts</b> in the wallet switches the page to that account. If the wallet is on a different account from the one you&apos;re playing as, nothing is signed and the page tells you which account to switch to.</li>
               <li><b>Escrow deposit, claim and recover</b> are legacy transactions built by the server and signed by you. The deposit carries a memo with the arena, the seat amount and your opening call (UP, DOWN or decide later), visible in your wallet and on the explorer.</li>
               <li><b>Panta orders and claims</b> are v0 transactions compiled in your browser from Panta&apos;s instructions.</li>
               <li>You pay the network fee for every transaction you sign. Private keys never leave your wallet.</li>

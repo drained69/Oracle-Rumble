@@ -22,6 +22,7 @@ import type {
   PantaPosition
 } from "@/lib/panta";
 import type { ParlayQuote, ParlayLeg } from "@/lib/parlay";
+import { connectWallet, describeWalletError, signAndSendAs } from "@/lib/wallet";
 
 const SOLANA_RPC = process.env.NEXT_PUBLIC_SOLANA_RPC ?? "https://api.mainnet-beta.solana.com";
 
@@ -137,24 +138,10 @@ export async function marketCreateRegister(args: { createId: string; signature: 
 
 // ---- Wallet detection -------------------------------------------------
 
-/**
- * Detects a Phantom / Backpack / Solflare wallet on the page. If one is
- * present, ask it to connect and return the pubkey. Otherwise return null
- * so the caller can fall back to a demo wallet.
- */
+/** Connect the player's wallet (see lib/wallet.ts). Returns the address or null. */
 export async function connectSolanaWallet(): Promise<string | null> {
   if (typeof window === "undefined") return null;
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const w = window as any;
-  const provider = w.phantom?.solana ?? w.solana ?? w.backpack?.solana ?? w.solflare;
-  if (!provider) return null;
-  try {
-    const res = await provider.connect({ onlyIfTrusted: false });
-    const pk = res?.publicKey?.toString?.() ?? provider.publicKey?.toString?.();
-    return pk ?? null;
-  } catch {
-    return null;
-  }
+  try { return await connectWallet(); } catch { return null; }
 }
 
 // ---- Real Solana signing ---------------------------------------------
@@ -182,17 +169,7 @@ function b64ToBytes(b64: string): Uint8Array {
  */
 const CONFIRM_TIMEOUT_MS = 30_000;
 
-export class WalletUnavailableError extends Error { constructor() { super("No Solana wallet detected. Install Phantom, Backpack, or Solflare and reload."); } }
 export class WalletSignatureError extends Error { constructor(cause: unknown) { super(cause instanceof Error ? cause.message : String(cause)); } }
-
-async function pickProvider() {
-  if (typeof window === "undefined") throw new Error("client only");
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const w = window as any;
-  const provider = w.phantom?.solana ?? w.solana ?? w.backpack?.solana ?? w.solflare;
-  if (!provider) throw new WalletUnavailableError();
-  return provider;
-}
 
 async function pollConfirmation(connection: import("@solana/web3.js").Connection, signature: string): Promise<boolean> {
   const deadline = Date.now() + CONFIRM_TIMEOUT_MS;
@@ -219,7 +196,7 @@ export async function signAndBroadcast(args: {
   serializedTx: string;
   wallet: string;
 }): Promise<{ signature: string; confirmed: boolean }> {
-  const provider = await pickProvider();
+  if (typeof window === "undefined") throw new Error("client only");
   const bytes = b64ToBytes(args.serializedTx);
   const { Connection, VersionedTransaction } = await import("@solana/web3.js");
   const connection = new Connection(SOLANA_RPC, "confirmed");
@@ -231,21 +208,12 @@ export async function signAndBroadcast(args: {
     throw new WalletSignatureError(new Error(`Panta returned an unparseable VersionedTransaction: ${err instanceof Error ? err.message : String(err)}`));
   }
 
-  let signature = "";
+  let signature: string;
   try {
-    if (typeof provider.signAndSendTransaction === "function") {
-      const res = await provider.signAndSendTransaction(tx);
-      signature = res.signature ?? "";
-    } else if (typeof provider.signTransaction === "function") {
-      const signed = await provider.signTransaction(tx);
-      signature = await connection.sendRawTransaction(signed.serialize(), { skipPreflight: false });
-    } else {
-      throw new WalletUnavailableError();
-    }
+    signature = await signAndSendAs(args.wallet, tx, (raw) => connection.sendRawTransaction(raw, { skipPreflight: false }));
   } catch (err) {
-    throw new WalletSignatureError(err);
+    throw new WalletSignatureError(new Error(describeWalletError(err, "The transaction")));
   }
-  if (!signature) throw new WalletSignatureError(new Error("wallet returned an empty signature"));
   const confirmed = await pollConfirmation(connection, signature);
   return { signature, confirmed };
 }
@@ -272,7 +240,7 @@ export async function signAndBroadcastFromInstructions(args: {
     throw new WalletSignatureError(new Error("Panta returned no recentBlockhash."));
   }
 
-  const provider = await pickProvider();
+  if (typeof window === "undefined") throw new Error("client only");
   const { Connection, PublicKey, TransactionInstruction, TransactionMessage, VersionedTransaction } = await import("@solana/web3.js");
   const connection = new Connection(SOLANA_RPC, "confirmed");
 
@@ -294,21 +262,12 @@ export async function signAndBroadcastFromInstructions(args: {
   }).compileToV0Message();
   const tx = new VersionedTransaction(message);
 
-  let signature = "";
+  let signature: string;
   try {
-    if (typeof provider.signAndSendTransaction === "function") {
-      const res = await provider.signAndSendTransaction(tx);
-      signature = res.signature ?? "";
-    } else if (typeof provider.signTransaction === "function") {
-      const signed = await provider.signTransaction(tx);
-      signature = await connection.sendRawTransaction(signed.serialize(), { skipPreflight: false });
-    } else {
-      throw new WalletUnavailableError();
-    }
+    signature = await signAndSendAs(args.wallet, tx, (raw) => connection.sendRawTransaction(raw, { skipPreflight: false }));
   } catch (err) {
-    throw new WalletSignatureError(err);
+    throw new WalletSignatureError(new Error(describeWalletError(err, "The transaction")));
   }
-  if (!signature) throw new WalletSignatureError(new Error("wallet returned an empty signature"));
   const confirmed = await pollConfirmation(connection, signature);
   return { signature, confirmed };
 }

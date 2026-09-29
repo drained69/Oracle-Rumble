@@ -2,6 +2,7 @@
 
 import type { Entrant, Round, RoundConfig } from "@/lib/royale";
 import { ensureSession, sessionLost } from "@/lib/session-client";
+import { describeWalletError, ensureWalletFor, signAndSendAs } from "@/lib/wallet";
 
 const CONFIRM_TIMEOUT_MS = 60_000;
 const SOLANA_RPC = process.env.NEXT_PUBLIC_SOLANA_RPC ?? "https://api.devnet.solana.com";
@@ -14,34 +15,23 @@ function b64ToBytes(s: string): Uint8Array {
 }
 
 /**
- * Sign a base64-encoded LEGACY Transaction with the connected Solana wallet
- * (Phantom / Backpack / Solflare) and broadcast to devnet. Returns the tx
- * signature. Used for escrow Deposit / Claim / Recover txs whose account
- * shape doesn't need lookup tables.
+ * Sign a base64-encoded LEGACY Transaction as `wallet` and broadcast it to
+ * devnet, then wait for confirmation. Used for escrow Deposit / Claim /
+ * Recover. Throws a player-readable Error.
  */
-async function signAndBroadcastLegacy(base64: string): Promise<string> {
+async function signAndBroadcastLegacy(wallet: string, base64: string, action: string, onSent?: () => void): Promise<string> {
   if (typeof window === "undefined") throw new Error("client only");
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const w = window as any;
-  const provider = w.phantom?.solana ?? w.solana ?? w.backpack?.solana ?? w.solflare;
-  if (!provider) throw new Error("no wallet found — install Phantom, Backpack or Solflare");
-
-  const bytes = b64ToBytes(base64);
   const { Connection, Transaction } = await import("@solana/web3.js");
   const conn = new Connection(SOLANA_RPC, "confirmed");
-  const tx = Transaction.from(bytes);
+  const tx = Transaction.from(b64ToBytes(base64));
 
-  let signature = "";
-  if (typeof provider.signAndSendTransaction === "function") {
-    const res = await provider.signAndSendTransaction(tx);
-    signature = res.signature ?? "";
-  } else if (typeof provider.signTransaction === "function") {
-    const signed = await provider.signTransaction(tx);
-    signature = await conn.sendRawTransaction(signed.serialize(), { skipPreflight: false });
-  } else {
-    throw new Error("wallet does not expose a signing method");
+  let signature: string;
+  try {
+    signature = await signAndSendAs(wallet, tx, (raw) => conn.sendRawTransaction(raw, { skipPreflight: false }), action);
+  } catch (err) {
+    throw new Error(describeWalletError(err, action));
   }
-  if (!signature) throw new Error("wallet returned empty signature");
+  onSent?.();
 
   const deadline = Date.now() + CONFIRM_TIMEOUT_MS;
   while (Date.now() < deadline) {
@@ -52,7 +42,7 @@ async function signAndBroadcastLegacy(base64: string): Promise<string> {
       if (st.value?.err) failed = st.value.err;
       else if (s === "confirmed" || s === "finalized") return signature;
     } catch { /* transient RPC error — keep polling */ }
-    if (failed) throw new Error(`Transaction failed on chain: ${JSON.stringify(failed)}`);
+    if (failed) throw new Error(`${action} failed on chain: ${JSON.stringify(failed)}`);
     await new Promise((r) => setTimeout(r, 1200));
   }
   return signature; // return best-effort; server confirms too
@@ -168,15 +158,42 @@ async function finishSeat(wallet: string, nickname: string, arena: string | unde
 }
 
 /**
+ * Make sure the wallet is reachable on the right account and signed in,
+ * before anything costs money (e.g. before an arena is created for a host).
+ */
+export async function prepareWallet(wallet: string, onStep?: (step: SeatStep) => void): Promise<{ ok: true } | { ok: false; error: string }> {
+  try { await ensureWalletFor(wallet); }
+  catch (err) { return { ok: false, error: describeWalletError(err, "The connection request") }; }
+  const auth = await ensureSession(wallet, () => onStep?.("signin"));
+  return auth.ok ? { ok: true } : { ok: false, error: auth.error };
+}
+
+/** Where a seat request is — drives the "approve in your wallet" hints. */
+export type SeatStep = "signin" | "deposit" | "confirming" | "seating";
+
+/** Toast line and short button label for each seat step. */
+export function seatStepText(step: SeatStep, seatUsd: number, call?: OpeningCall): { toast: string; button: string } {
+  const amount = `$${seatUsd.toFixed(2)}`;
+  const callText = call === "YES" ? " · opening call UP" : call === "NO" ? " · opening call DOWN" : "";
+  switch (step) {
+    case "signin": return { toast: "Sign in with your wallet — a free message, not a transaction.", button: "Sign the message in your wallet…" };
+    case "deposit": return { toast: `Approve the ${amount} seat deposit in your wallet${callText}.`, button: "Approve the deposit in your wallet…" };
+    case "confirming": return { toast: "Deposit sent — confirming on Solana…", button: "Confirming on Solana…" };
+    case "seating": return { toast: "Taking your seat…", button: "Taking your seat…" };
+  }
+}
+
+/**
  * Full escrow-aware enrollment: ask the server for a Deposit tx, sign it with
  * the connected wallet, then finalize the enrollment. Falls back cleanly to
  * ledger enroll when the arena is not escrow-backed.
  */
-export async function enrollWithEscrow(wallet: string, nickname: string, arena?: string, openingCall: OpeningCall = null): Promise<EnrollResult> {
+export async function enrollWithEscrow(wallet: string, nickname: string, arena?: string, openingCall: OpeningCall = null, onStep?: (step: SeatStep) => void): Promise<EnrollResult> {
   // Attempt 1: plain enroll. Seats a ledger-only arena, a wallet that is
   // already seated, or one whose deposit already landed; otherwise 402.
-  const auth = await ensureSession(wallet);
+  const auth = await ensureSession(wallet, () => onStep?.("signin"));
   if (!auth.ok) return { error: auth.error };
+  onStep?.("seating");
   const first = await enrollRound(wallet, nickname, arena, undefined, openingCall);
   if (first.pending) return finishSeat(wallet, nickname, arena, undefined, openingCall);
   if (!first.needsDeposit) return first;
@@ -199,10 +216,11 @@ export async function enrollWithEscrow(wallet: string, nickname: string, arena?:
 
   // Sign + broadcast via the connected wallet.
   let sig: string;
-  try { sig = await signAndBroadcastLegacy(txRes.base64); }
-  catch (err) { return { error: err instanceof Error ? err.message : "wallet signing failed" }; }
-  if (!sig) return { error: "wallet did not return a signature" };
+  onStep?.("deposit");
+  try { sig = await signAndBroadcastLegacy(wallet, txRes.base64, "The deposit", () => onStep?.("confirming")); }
+  catch (err) { return { error: err instanceof Error ? err.message : "The deposit failed in your wallet." }; }
 
+  onStep?.("seating");
   const done = await finishSeat(wallet, nickname, arena, sig, openingCall);
   return { ...done, deposited: true, escrowSignature: sig };
 }
@@ -235,7 +253,7 @@ export async function claimFromEscrow(wallet: string, arena: string, recover = f
   if (txRes.escrow === "inactive") return { error: "escrow is inactive" };
   if (txRes.error) return { error: txRes.error };
   try {
-    const signature = await signAndBroadcastLegacy(txRes.base64);
+    const signature = await signAndBroadcastLegacy(wallet, txRes.base64, recover ? "The refund" : "The withdrawal");
     return { signature };
   } catch (err) {
     return { error: err instanceof Error ? err.message : "wallet signing failed" };

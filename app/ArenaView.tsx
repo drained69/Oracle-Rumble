@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { getRound, enrollWithEscrow, tradeRound, newRound, placeParlayApi, claimFromEscrow, serverSettleArena, cancelArena, checkSeatFunds, setOpeningCall, type OpeningCall, type RoundView } from "@/lib/round-client";
+import { getRound, enrollWithEscrow, tradeRound, newRound, placeParlayApi, claimFromEscrow, serverSettleArena, cancelArena, checkSeatFunds, setOpeningCall, prepareWallet, seatStepText, type OpeningCall, type RoundView, type SeatStep } from "@/lib/round-client";
 import { useEscrowStatus, useWalletIdentity } from "@/lib/use-wallet";
 import SiteHeader from "@/app/SiteHeader";
 import UsernameModal from "@/app/UsernameModal";
@@ -68,6 +68,8 @@ export default function ArenaView({ arenaCode }: { arenaCode: string }) {
   const [parlayLegs, setParlayLegs] = useState<{ marketId: string; side: "YES" | "NO" }[]>([]);
   const [parlayStake, setParlayStake] = useState("5");
   const [busy, setBusy] = useState(false);
+  // Which wallet step a seat/host request is waiting on (null = idle).
+  const [seatStep, setSeatStep] = useState<SeatStep | null>(null);
   const [toast, setToast] = useState("");
   const [showEnroll, setShowEnroll] = useState(false);
   // UP / DOWN / decide-later pick in the seat modal ("" = not chosen yet).
@@ -194,8 +196,11 @@ export default function ArenaView({ arenaCode }: { arenaCode: string }) {
       // enrollWithEscrow: if arena is on-chain, wallet signs a Deposit tx
       // (real USDC on devnet) before the ledger enrolls. Ledger-only arenas
       // fall through immediately. Signing UI is provided by the wallet.
-      setToast(escrow?.active ? "Approve the seat deposit in your wallet…" : "Taking your seat…");
-      const r = await enrollWithEscrow(wallet, nick, arenaCode, call);
+      const seatUsd = round ? round.config.entryUsdc + round.config.startingBankroll : 0;
+      const r = await enrollWithEscrow(wallet, nick, arenaCode, call, (step) => {
+        setSeatStep(step);
+        setToast(seatStepText(step, seatUsd, call).toast);
+      });
       const seated = !!(r.entrantId || r.already);
       if (seated) {
         const callText = call ? ` · opening call ${call === "YES" ? "UP" : "DOWN"}` : "";
@@ -210,8 +215,8 @@ export default function ArenaView({ arenaCode }: { arenaCode: string }) {
         setToast(r.error ?? "Couldn't take a seat — try again.");
       }
       await refresh();
-    } finally { setBusy(false); }
-  }, [wallet, nickname, arenaCode, refresh, round, saveUsername, callPick, escrow]);
+    } finally { setBusy(false); setSeatStep(null); }
+  }, [wallet, nickname, arenaCode, refresh, round, saveUsername, callPick]);
 
   const doChangeCall = useCallback(async (call: OpeningCall) => {
     if (!wallet) return;
@@ -411,6 +416,14 @@ export default function ArenaView({ arenaCode }: { arenaCode: string }) {
         const short = await checkSeatFunds(wallet, (Number(hEntry) || 1) + (Number(hVault) || 5));
         if (short) { setToast(short); return; }
       }
+      // Wallet reachable and signed in before an arena is created for us.
+      const call: OpeningCall = hCall === "YES" || hCall === "NO" ? hCall : null;
+      const onStep = (step: SeatStep) => { setSeatStep(step); setToast(seatStepText(step, hostSeat, call).toast); };
+      if (wallet) {
+        const ready = await prepareWallet(wallet, onStep);
+        if (!ready.ok) { setToast(ready.error); return; }
+        setSeatStep(null);
+      }
       const v = await newRound({
         asset: hAsset,
         horizon: hHorizon,
@@ -436,14 +449,10 @@ export default function ArenaView({ arenaCode }: { arenaCode: string }) {
       // is announced. If signing is dismissed or fails, roll back so the
       // room doesn't linger as an unfunded orphan.
       const nick = username || shortPk(wallet).replace("…", "");
-      const call: OpeningCall = hCall === "YES" || hCall === "NO" ? hCall : null;
-      if (escrow?.active) {
-        setToast(`Approve your ${usd2.format(hostSeat)} seat deposit in your wallet — ${call ? `opening call ${call === "YES" ? "UP" : "DOWN"}` : "no opening call yet"}.`);
-      }
       let enrollError = "";
       let refundable = false;
       try {
-        const r = await enrollWithEscrow(wallet, nick, v.arena, call);
+        const r = await enrollWithEscrow(wallet, nick, v.arena, call, onStep);
         // A signed deposit means the room is funded — never tear it down.
         if (r.error && !(r.entrantId || r.already)) { enrollError = r.error; refundable = !!r.refundable || !!r.deposited; }
       } catch (err) {
@@ -464,7 +473,7 @@ export default function ArenaView({ arenaCode }: { arenaCode: string }) {
 
       setInviteInfo({ code: v.arena, url });
       setToast(`Arena ${v.arena} is open. Share the link.`);
-    } finally { setBusy(false); }
+    } finally { setBusy(false); setSeatStep(null); }
   }, [hAsset, hHorizon, hFormat, hEntry, hVault, hCapacity, hRounds, wallet, escrow, username, hCall, hostSeat]);
 
   const doCopyInvite = useCallback(async (url?: string) => {
@@ -1073,7 +1082,7 @@ export default function ArenaView({ arenaCode }: { arenaCode: string }) {
                 </label>
                 <p id="seat-hint" className={`username-hint ${nickname.length === 0 ? "" : ok ? "ok" : "bad"}`} role="status">{hint}</p>
                 <button type="submit" className="btn primary full" disabled={busy || !ok || !wallet || !callPick} style={{ marginTop: 10 }}>
-                  {busy ? "Confirm in your wallet…"
+                  {busy ? (seatStep ? seatStepText(seatStep, seat, callPick === "YES" || callPick === "NO" ? callPick : null).button : "Checking your wallet…")
                     : !wallet ? "Connect a wallet first"
                     : !callPick ? "Pick UP, DOWN or decide later"
                     : `Deposit ${usd2.format(seat)} & ${cta}`}
@@ -1219,7 +1228,7 @@ export default function ArenaView({ arenaCode }: { arenaCode: string }) {
                 </div>
 
                 <button className="btn primary full" onClick={doHost} disabled={busy || (!!wallet && !hCall)} style={{ marginTop: 12 }}>
-                  {busy ? "Opening…"
+                  {busy ? (seatStep ? seatStepText(seatStep, hostSeat).button : "Opening…")
                     : !wallet ? `Open ${hAsset} practice rumble`
                     : !hCall ? `Pick UP or DOWN on ${hAsset}`
                     : `Deposit ${usd2.format(hostSeat)} & ${hCall === "YES" ? "call UP" : hCall === "NO" ? "call DOWN" : "open"} · get invite link`}

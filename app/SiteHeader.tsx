@@ -2,6 +2,7 @@
 
 import type { ReactNode } from "react";
 import { BrandMark, Wordmark } from "@/app/BrandMark";
+import WalletPicker from "@/app/WalletPicker";
 import { avatarDataUrl } from "@/lib/avatars";
 import { shortPk } from "@/lib/username";
 import type { EscrowStatus } from "@/lib/use-wallet";
@@ -101,6 +102,7 @@ export default function SiteHeader({
           )}
         </div>
       </div>
+      <WalletPicker />
     </nav>
   );
 }

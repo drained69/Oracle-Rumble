@@ -7,7 +7,7 @@
  */
 
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { cancelArena, checkSeatFunds, enrollWithEscrow, newRound } from "@/lib/round-client";
+import { cancelArena, checkSeatFunds, enrollWithEscrow, newRound, prepareWallet, seatStepText, type SeatStep } from "@/lib/round-client";
 import { shortPk, USERNAME_MAX, validateUsername } from "@/lib/username";
 import { avatarDataUrl } from "@/lib/avatars";
 import { useEscrowStatus, useWalletIdentity } from "@/lib/use-wallet";
@@ -62,7 +62,7 @@ type Tab = "play" | "host";
 
 /** Quick arenas stay open this long after the host's seat is confirmed. */
 const QUICK_ENROLL_SEC = 120;
-type HostStep = "" | "checking" | "opening" | "signing";
+type HostStep = "" | "checking" | "opening" | SeatStep;
 
 export default function ArenasDirectory() {
   const { wallet, username, toggleConnect, saveUsername } = useWalletIdentity();
@@ -152,12 +152,19 @@ export default function ArenasDirectory() {
       hostName = nameDraft.trim();
     }
 
+    const call = hCall === "LATER" ? null : hCall;
+    const onStep = (step: SeatStep) => { setHostStep(step); setToast(seatStepText(step, hostSeat, call).toast); };
     try {
-      // Check funds BEFORE the operator pays for an on-chain InitRound.
+      // Check funds and the wallet BEFORE the operator pays for an on-chain
+      // InitRound, so a declined sign-in doesn't leave a cancelled arena.
       if (wallet && escrow?.active) {
         setHostStep("checking");
         const short = await checkSeatFunds(wallet, hostSeat);
         if (short) { setToast(short); return; }
+      }
+      if (wallet) {
+        const ready = await prepareWallet(wallet, onStep);
+        if (!ready.ok) { setToast(ready.error); return; }
       }
 
       setHostStep("opening");
@@ -179,15 +186,10 @@ export default function ArenasDirectory() {
 
       // The host takes seat #1. If that deposit isn't signed, roll the
       // arena back so no unfunded room is left behind.
-      setHostStep("signing");
-      if (escrow?.active) {
-        const callText = hCall === "LATER" ? "no opening call yet" : `opening call ${hCall === "YES" ? "UP" : "DOWN"}`;
-        setToast(`Approve your ${usd2.format(hostSeat)} seat deposit in your wallet — ${callText}.`);
-      }
       let enrollError = "";
       let refundable = false;
       try {
-        const r = await enrollWithEscrow(wallet, hostName || shortPk(wallet).replace("…", ""), v.arena, hCall === "LATER" ? null : hCall);
+        const r = await enrollWithEscrow(wallet, hostName || shortPk(wallet).replace("…", ""), v.arena, call, onStep);
         // A signed deposit means the room is funded — never tear it down;
         // the seat is registered from the on-chain entry if this call lags.
         if (r.error && !(r.entrantId || r.already)) { enrollError = r.error; refundable = !!r.refundable || !!r.deposited; }
@@ -207,6 +209,7 @@ export default function ArenasDirectory() {
       }
 
       setInviteInfo({ code: v.arena, url });
+      setToast(`Arena ${v.arena} is open — you're in seat 1. Share the link.`);
       refresh();
     } finally { setHostStep(""); }
   }, [hostInputError, escrow, wallet, username, nameDraft, saveUsername, hostSeat, hMode, hStartInMin, hAsset, hHorizon, hFormat, entryNum, vaultNum, hCapacity, hRounds, hCall, refresh]);
@@ -461,7 +464,7 @@ function HostPanel({
   const label =
     step === "checking" ? "Checking balance…" :
     step === "opening" ? "Opening arena…" :
-    step === "signing" ? "Confirm in your wallet…" :
+    step ? seatStepText(step, hostSeat).button :
     !wallet && !escrowActive ? "Host practice arena" :
     !hCall ? `Pick UP or DOWN on ${hAsset}` :
     `${hCall === "YES" ? "Deposit & call UP" : hCall === "NO" ? "Deposit & call DOWN" : "Deposit & take seat 1"} · ${usd2.format(hostSeat)}${escrowActive ? "" : " · practice"}`;
