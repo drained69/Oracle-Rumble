@@ -278,12 +278,16 @@ export async function settleArenaOnChain(roundVaultPk: string, players: SettleEn
   const roundVault = new PublicKey(roundVaultPk);
   const sigs: string[] = [];
   try {
-    for (const p of players) {
-      const playerPk = new PublicKey(p.wallet);
-      const [playerEntry] = playerEntryPda(roundVault, playerPk);
-      const ix = ixSettlePlayer({ host: host.publicKey, roundVault, playerEntry, entitlementUsdc: p.entitlementUsdc });
-      const sig = await signSendConfirm(new Transaction().add(ix), [host]);
-      sigs.push(sig);
+    // Several SettlePlayer instructions per transaction (each is tiny), so a
+    // full arena records in one or two confirmations instead of one per player.
+    const PER_TX = 6;
+    for (let i = 0; i < players.length; i += PER_TX) {
+      const tx = new Transaction();
+      for (const p of players.slice(i, i + PER_TX)) {
+        const [playerEntry] = playerEntryPda(roundVault, new PublicKey(p.wallet));
+        tx.add(ixSettlePlayer({ host: host.publicKey, roundVault, playerEntry, entitlementUsdc: p.entitlementUsdc }));
+      }
+      sigs.push(await signSendConfirm(tx, [host]));
     }
     if (expectDeposited !== undefined) {
       const now = await readVault(roundVaultPk);
@@ -453,6 +457,23 @@ export async function readPlayerEntry(walletPk: string, roundVaultPk: string): P
     };
   } catch {
     return null;
+  }
+}
+
+/**
+ * Successful transactions on a vault since `sinceMs`, oldest first — used to
+ * adopt a settlement that landed on chain but never reached the game record
+ * (e.g. the server restarted between CloseSettlement and saving).
+ */
+export async function vaultSignaturesSince(roundVaultPk: string, sinceMs: number): Promise<string[]> {
+  try {
+    const sigs = await connection().getSignaturesForAddress(new PublicKey(roundVaultPk), { limit: 40 }, "confirmed");
+    return sigs
+      .filter((x) => !x.err && (x.blockTime ?? 0) * 1000 >= sinceMs)
+      .map((x) => x.signature)
+      .reverse();
+  } catch {
+    return [];
   }
 }
 

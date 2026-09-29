@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
-import { escrowReady, listDepositors, readVault, settleArenaOnChain, type SettleEntry } from "@/lib/escrow-server";
+import { escrowReady, listDepositors, readVault, settleArenaOnChain, vaultSignaturesSince, type SettleEntry } from "@/lib/escrow-server";
 import { getLatestRound, mutateRoundById } from "@/lib/round-store";
-import { normalizeArenaCode, type Round, logEvent } from "@/lib/royale";
+import { normalizeArenaCode, payoutShares, type Round, logEvent } from "@/lib/royale";
 
 export const dynamic = "force-dynamic";
 
@@ -12,6 +12,8 @@ export const dynamic = "force-dynamic";
  */
 const REFUND_SAFETY_MS = 120_000;
 
+const usd = (n: number) => `$${n.toFixed(2)}`;
+
 /**
  * Every viewer's page nudges settlement, so calls arrive concurrently. One
  * settlement per arena at a time (the app runs as a single instance); the
@@ -19,6 +21,17 @@ const REFUND_SAFETY_MS = 120_000;
  */
 const _g = globalThis as unknown as { __or_settling?: Set<string> };
 const settling: Set<string> = (_g.__or_settling ??= new Set());
+
+/**
+ * The vault is already settled on chain but the game record doesn't know
+ * (the server stopped between CloseSettlement and saving). Adopt it, so the
+ * arena stops waiting for a settlement that already happened.
+ */
+async function adoptChainSettlement(round: Round, label: string) {
+  const sigs = await vaultSignaturesSince(round.escrow!.roundVault, (round.endedAt || round.createdAt) - 60_000);
+  await recordSettlement(round, sigs.length ? sigs : ["onchain"], label, []);
+  return NextResponse.json({ ok: true, alreadySettled: true, adopted: true });
+}
 
 /** Store the settlement result without overwriting changes made meanwhile. */
 async function recordSettlement(round: Round, signatures: string[], label: string, notes: string[]) {
@@ -41,7 +54,7 @@ async function refundCancelled(round: Round) {
 
   const vault = await readVault(escrow.roundVault);
   if (!vault) return NextResponse.json({ error: "vault not found on-chain" }, { status: 502 });
-  if (vault.settled) return NextResponse.json({ ok: true, refund: true, alreadySettled: true });
+  if (vault.settled) return adoptChainSettlement(round, "Refund");
   if (vault.deposited === 0) return NextResponse.json({ ok: true, refund: true, depositors: 0 });
 
   const seat = vault.entryUsdc + vault.vaultUsdc;
@@ -106,7 +119,7 @@ async function settle(arena: string) {
   // locked for good (Claim needs a settled entry; Recover needs an open vault).
   const vault = await readVault(round.escrow.roundVault);
   if (!vault) return NextResponse.json({ error: "vault not found on-chain" }, { status: 502 });
-  if (vault.settled) return NextResponse.json({ ok: true, alreadySettled: true });
+  if (vault.settled) return adoptChainSettlement(round, "Settle");
   const allOnChain = await listDepositors(round.escrow.roundVault);
   if (allOnChain.length !== vault.deposited) {
     return NextResponse.json({ ok: false, pending: true, retryInMs: 5_000 });
@@ -128,28 +141,17 @@ async function settle(arena: string) {
   const refunds: SettleEntry[] = onChain
     .filter((d) => !seated.has(d.wallet))
     .map((d) => ({ wallet: d.wallet, entitlementUsdc: seatUsdc }));
-  const rawEntries = players.map((e) => ({ wallet: e.wallet, entitlementUsdc: Math.max(0, e.cash + e.prizeUsdc) }));
-
-  // Conservation gate. Ledger trading against bots / the synthetic market can
-  // push sum(cash + prize) above what players actually escrowed; sending that
-  // would trip the on-chain Overpay guard and strand later players. Scale
-  // players down proportionally to the escrowed total (refunds come first).
+  // Payout rule (lib/royale payoutShares): prizes plus the players' vault
+  // money split by final vault value — pays out the escrow exactly, so no
+  // gain is capped away and no loss is left locked in the vault.
   const recoveredUsdc = recovered.length * (vault.entryUsdc + vault.vaultUsdc);
-  const playerCap = Math.max(0, vault.totalEscrowedUsdc - recoveredUsdc - refunds.length * seatUsdc);
-  const rawSum = rawEntries.reduce((s, e) => s + e.entitlementUsdc, 0);
-
+  const playerPot = Math.max(0, vault.totalEscrowedUsdc - recoveredUsdc - refunds.length * seatUsdc);
+  const shares = payoutShares(players.map((e) => ({ key: e.wallet, cash: e.cash, prize: e.prizeUsdc })), playerPot);
   const notes: string[] = [];
-  let entries: SettleEntry[] = rawEntries;
-  let capApplied: { rawSum: number; capped: number; ratio: number } | undefined;
-  if (rawSum > playerCap) {
-    const ratio = rawSum > 0 ? playerCap / rawSum : 0;
-    entries = rawEntries.map((e) => ({
-      wallet: e.wallet,
-      // Floor to 6 decimals (USDC precision) so we never round UP past cap.
-      entitlementUsdc: Math.floor(e.entitlementUsdc * ratio * 1e6) / 1e6
-    }));
-    capApplied = { rawSum, capped: playerCap, ratio };
-    notes.push(`Entitlements capped for conservation: ${rawSum.toFixed(2)} → ${playerCap.toFixed(2)} USDC (×${ratio.toFixed(4)}).`);
+  let entries: SettleEntry[] = players.map((e) => ({ wallet: e.wallet, entitlementUsdc: shares[e.wallet] ?? 0 }));
+  const ledgerSum = players.reduce((s, e) => s + Math.max(0, e.cash) + e.prizeUsdc, 0);
+  if (Math.abs(ledgerSum - playerPot) > 0.005) {
+    notes.push(`Vault money shared by final vault value: ${usd(playerPot)} paid out across ${players.length} player${players.length === 1 ? "" : "s"}.`);
   }
   entries = entries.concat(refunds);
   if (refunds.length) notes.push(`${refunds.length} deposit${refunds.length === 1 ? "" : "s"} without a seat refunded in full.`);
@@ -161,5 +163,5 @@ async function settle(arena: string) {
     return NextResponse.json({ error: res.error }, { status: 502 });
   }
   await recordSettlement(round, res.signatures, "Settle", notes);
-  return NextResponse.json({ ok: true, signatures: res.signatures, capApplied });
+  return NextResponse.json({ ok: true, signatures: res.signatures });
 }

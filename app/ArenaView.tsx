@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { payoutShares } from "@/lib/royale";
 import { getRound, enrollWithEscrow, tradeRound, newRound, placeParlayApi, claimFromEscrow, serverSettleArena, cancelArena, checkSeatFunds, setOpeningCall, prepareWallet, seatStepText, type OpeningCall, type RoundView, type SeatStep } from "@/lib/round-client";
 import { useEscrowStatus, useWalletIdentity } from "@/lib/use-wallet";
 import SiteHeader from "@/app/SiteHeader";
@@ -239,8 +240,11 @@ export default function ArenaView({ arenaCode }: { arenaCode: string }) {
   const hasVault = !!round?.escrow;
   const vaultSettled = !!round?.escrow?.settleSignatures?.length;
   const [escrowNudge, setEscrowNudge] = useState(0);
+  // The chain is the authority: if its vault is settled, stop waiting even
+  // when the game record hasn't caught up yet.
+  const [chainSettled, setChainSettled] = useState(false);
   useEffect(() => {
-    if (!hasVault || vaultSettled) return;
+    if (!hasVault || vaultSettled || chainSettled) return;
     if (roundStatus !== "complete" && roundStatus !== "cancelled") return;
     let timer: number | undefined;
     let stopped = false;
@@ -257,7 +261,7 @@ export default function ArenaView({ arenaCode }: { arenaCode: string }) {
     };
     run();
     return () => { stopped = true; if (timer) window.clearTimeout(timer); };
-  }, [roundId, roundStatus, hasVault, vaultSettled, arenaCode, refresh]);
+  }, [roundId, roundStatus, hasVault, vaultSettled, chainSettled, arenaCode, refresh]);
 
   // This wallet's on-chain position in the arena — drives the refund card,
   // including deposits that landed after the round closed.
@@ -268,6 +272,7 @@ export default function ArenaView({ arenaCode }: { arenaCode: string }) {
     try {
       const r = await fetch(`/api/escrow/entry?arena=${encodeURIComponent(arenaCode)}&wallet=${encodeURIComponent(wallet)}`, { cache: "no-store" }).then((x) => x.json());
       setMyEscrow(r);
+      if (r?.claimsOpen) setChainSettled(true);
     } catch { /* transient */ }
   }, [wallet, hasVault, arenaCode]);
   useEffect(() => {
@@ -607,8 +612,15 @@ export default function ArenaView({ arenaCode }: { arenaCode: string }) {
             {(() => {
               const champ = standings.find((e) => e.id === round.championId) ?? standings[0] ?? null;
               const paid = [...standings].filter((e) => e.prizeUsdc > 0).sort((a, b) => b.prizeUsdc - a.prizeUsdc);
-              const myEntitlement = me ? me.cash + me.prizeUsdc : 0;
-              const escrowSettled = !!round.escrow?.settleSignatures?.length;
+              // Projected payout under the escrow's rule (same function the
+              // server settles with); the on-chain figure replaces it once recorded.
+              const humansNow = standings.filter((e) => !e.isBot);
+              const projected = payoutShares(
+                humansNow.map((e) => ({ key: e.wallet, cash: e.cash, prize: e.prizeUsdc })),
+                humansNow.length * (round.config.entryUsdc + round.config.startingBankroll)
+              );
+              const myEntitlement = me ? projected[me.wallet] ?? 0 : 0;
+              const escrowSettled = !!round.escrow?.settleSignatures?.length || chainSettled || !!myEscrow?.claimsOpen;
               const canClaim = !!wallet && !!round.escrow && escrowSettled && (myEscrow?.entitlementUsdc ?? myEntitlement) > 0.0001 && !myEscrow?.claimed;
               const explorerBase = `https://explorer.solana.com/tx`;
               const explorerCluster = CLUSTER === "mainnet-beta" ? "" : `?cluster=${CLUSTER}`;
@@ -626,19 +638,22 @@ export default function ArenaView({ arenaCode }: { arenaCode: string }) {
                     {paid.length > 1
                       ? `${usd.format(round.prizePoolUsdc)} pool split across the top ${paid.length}.`
                       : `${usd.format(round.prizePoolUsdc)} pool to the winner.`}
-                    {" "}Everyone withdraws their remaining vault; winners also take the pool share.
+                    {" "}Players also share the vault money by how their vaults finished — one player&apos;s trading losses fund another&apos;s gains.
                   </p>
 
                   {/* Withdrawal — amounts come from the on-chain entry once settled. */}
                   {round.escrow && me && !me.isBot && (
                     <div className="claim-box">
                       {!escrowSettled ? (
-                        <p>Recording the results on-chain — this is automatic and takes a few seconds…</p>
+                        <p>
+                          <b>Your payout: {usd2.format(myEntitlement)}</b> — recording the results on-chain. This is
+                          automatic; the Withdraw button appears here in a few seconds.
+                        </p>
                       ) : myEscrow?.claimed ? (
                         <p className="claimed"><b>Withdrawn ✓</b> {usd2.format(myEscrow.entitlementUsdc ?? myEntitlement)} is back in your wallet.</p>
                       ) : (myEscrow?.entitlementUsdc ?? myEntitlement) > 0.0001 ? (
                         <>
-                          <p><b>Your withdrawal:</b> {usd2.format(myEscrow?.entitlementUsdc ?? myEntitlement)}{me.prizeUsdc > 0 ? ` — vault plus ${usd2.format(me.prizeUsdc)} prize` : " — your remaining vault"}</p>
+                          <p><b>Your withdrawal:</b> {usd2.format(myEscrow?.entitlementUsdc ?? myEntitlement)}{me.prizeUsdc > 0 ? ` — includes your ${usd2.format(me.prizeUsdc)} prize` : " — your share of the vault money"}</p>
                           <button
                             className="btn primary full"
                             onClick={() => doClaim(false)}
@@ -648,7 +663,7 @@ export default function ArenaView({ arenaCode }: { arenaCode: string }) {
                             {busy ? "Confirm in your wallet…" : `Withdraw ${usd2.format(myEscrow?.entitlementUsdc ?? myEntitlement)} to my wallet`}
                           </button>
                           <div className="claim-links">
-                            {(round.escrow.settleSignatures ?? []).slice(-2).map((s) => (
+                            {(round.escrow.settleSignatures ?? []).filter((s) => s.length > 60).slice(-2).map((s) => (
                               <a key={s} className="link" target="_blank" rel="noopener noreferrer" href={`${explorerBase}/${s}${explorerCluster}`}>
                                 settle {s.slice(0, 6)}… ↗
                               </a>
@@ -700,7 +715,7 @@ export default function ArenaView({ arenaCode }: { arenaCode: string }) {
               <RefundCard
                 wallet={wallet}
                 state={myEscrow}
-                refundReady={vaultSettled}
+                refundReady={vaultSettled || chainSettled || !!myEscrow?.claimsOpen}
                 busy={busy}
                 onConnect={connect}
                 onClaim={() => doClaim(false)}

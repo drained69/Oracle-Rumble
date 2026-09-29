@@ -134,7 +134,8 @@ export default function DocsPage() {
           <Section id="money" title="Seats, pool & payouts">
             <pre className="code">{`seat      = entry + vault          (both deposited into escrow)
 pool      = entry × players who paid
-withdraw  = remaining vault + prize share`}</pre>
+vault pot = vault × players who paid
+withdraw  = prize share + vault pot × (your final vault ÷ all final vaults)`}</pre>
             <table className="docs-table">
               <thead><tr><th>Players</th><th>Prize split</th></tr></thead>
               <tbody>
@@ -144,8 +145,16 @@ withdraw  = remaining vault + prize share`}</pre>
             </table>
             <p>
               The <b>entry</b> is what you put at risk for the prize. The <b>vault</b> is your trading
-              bankroll: it rises and falls with your trades and whatever is left is yours to withdraw,
-              whether or not you finish in the money. Oracle Rumble takes no cut of the pool.
+              bankroll: it rises and falls with your trades, and at the end the players&apos; vault money is
+              shared out in proportion to how each vault finished — one player&apos;s trading losses pay for
+              another&apos;s gains. The escrow is always paid out in full: nothing is capped away and nothing
+              stays locked. If every vault ends at $0, the vault money goes back equally.
+            </p>
+            <p>
+              Example: two players each deposit $6 ($1 entry + $5 vault). A calls UP, B calls DOWN, SOL closes
+              higher: A&apos;s vault finishes at $10, B&apos;s at $0, so A withdraws $10 + the $2 pool = $12 and B
+              withdraws $0. Playing alone against practice bots, your vault money simply comes back — there&apos;s
+              no one to win it from. Oracle Rumble takes no cut.
             </p>
           </Section>
 
@@ -157,7 +166,7 @@ withdraw  = remaining vault + prize share`}</pre>
             </p>
             <ol>
               <li><b>Deposit</b> — you sign a transfer of your seat (entry + vault) into the arena vault.</li>
-              <li><b>Claim</b> — after settlement you sign to withdraw your remaining vault plus prize.</li>
+              <li><b>Claim</b> — after settlement you sign to withdraw your payout (prize plus your share of the vault money).</li>
               <li><b>Recover</b> — if the round is never settled, you sign to take your full seat back after the deadline.</li>
             </ol>
             <p>

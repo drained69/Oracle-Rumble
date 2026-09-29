@@ -182,6 +182,34 @@ export function computePayouts(prizePoolUsdc: number, rankedWinnerIds: string[],
 }
 
 /**
+ * How an arena's escrow is paid out at the end. Each player gets their prize,
+ * plus a share of the players' vault money in proportion to the vault value
+ * they finished with — so one player's trading losses fund another's gains,
+ * and the total always equals `potUsdc` exactly (nothing is capped away and
+ * nothing is left locked in escrow). If every vault finished at $0 the vault
+ * money is returned equally. Works in micro-USDC.
+ */
+export function payoutShares(players: Array<{ key: string; cash: number; prize: number }>, potUsdc: number): Record<string, number> {
+  const out: Record<string, number> = {};
+  if (players.length === 0) return out;
+  const pot = Math.max(0, Math.floor(potUsdc * 1e6 + 1e-6));
+  let prizes = players.map((p) => Math.max(0, Math.floor(p.prize * 1e6 + 1e-6)));
+  const prizeSum = prizes.reduce((a, b) => a + b, 0);
+  if (prizeSum > pot) prizes = prizes.map((x) => Math.floor((x * pot) / prizeSum));
+  const vaultPot = pot - prizes.reduce((a, b) => a + b, 0);
+  const weights = players.map((p) => Math.max(0, p.cash));
+  const weightSum = weights.reduce((a, b) => a + b, 0);
+  const shares = players.map((_, i) =>
+    weightSum > 0 ? Math.floor(vaultPot * (weights[i] / weightSum)) : Math.floor(vaultPot / players.length));
+  // Rounding dust goes to the best-placed vault so the pot is paid in full.
+  const dust = vaultPot - shares.reduce((a, b) => a + b, 0);
+  const top = weights.indexOf(Math.max(...weights));
+  shares[top >= 0 ? top : 0] += dust;
+  players.forEach((p, i) => { out[p.key] = (prizes[i] + shares[i]) / 1e6; });
+  return out;
+}
+
+/**
  * On-chain escrow record for an arena. Populated by escrow-server when
  * `escrowReady()` is true; undefined for ledger-only arenas. Carries across
  * `advance()` so every round in a rumble points at the same on-chain vault.
