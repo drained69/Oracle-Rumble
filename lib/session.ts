@@ -50,34 +50,65 @@ function isWallet(w: unknown): w is string {
   try { new PublicKey(w); return true; } catch { return false; }
 }
 
-/** A sign-in message for `wallet` plus a token proving we issued it. */
-export function issueChallenge(wallet: string): { message: string; token: string } | null {
+const CHAIN_ID = (process.env.NEXT_PUBLIC_SOLANA_CLUSTER ?? "devnet").toLowerCase();
+const HEADER = " wants you to sign in with your Solana account:";
+
+/**
+ * The site's own host and origin as the browser sees them (behind Railway's
+ * proxy the forwarded headers carry them). The sign-in message is bound to
+ * this domain, so a signature collected on another site can't be replayed.
+ */
+export function siteOrigin(request: Request): { host: string; uri: string } | null {
+  const url = new URL(request.url);
+  const host = (request.headers.get("x-forwarded-host") ?? request.headers.get("host") ?? url.host).split(",")[0].trim().toLowerCase();
+  if (!/^[a-z0-9.-]+(:\d{1,5})?$/.test(host)) return null;
+  const proto = (request.headers.get("x-forwarded-proto") ?? url.protocol.replace(":", "")).split(",")[0].trim();
+  return { host, uri: `${proto === "http" ? "http" : "https"}://${host}` };
+}
+
+/**
+ * A Sign-In With Solana message for `wallet`, plus a token proving we issued
+ * it. The layout must follow the SIWS format exactly: wallets such as Phantom
+ * recognise the "… wants you to sign in" header and refuse ("invalid
+ * formatting") anything that deviates — a non-domain first line, a nonce with
+ * symbols, missing URI/Version.
+ */
+export function issueChallenge(wallet: string, site: { host: string; uri: string }): { message: string; token: string } | null {
   if (!isWallet(wallet)) return null;
-  const nonce = crypto.randomBytes(12).toString("base64url");
-  const issuedAt = new Date().toISOString();
+  const nonce = crypto.randomBytes(12).toString("hex"); // alphanumeric, as SIWS requires
+  const now = Date.now();
   const message = [
-    "Oracle Rumble wants you to sign in with your Solana account:",
+    `${site.host}${HEADER}`,
     wallet,
     "",
-    "Sign in to take seats and trade. This is not a transaction and costs nothing.",
+    "Sign in to Oracle Rumble to take seats and trade. This is not a transaction and costs nothing.",
     "",
+    `URI: ${site.uri}`,
+    "Version: 1",
+    `Chain ID: ${CHAIN_ID}`,
     `Nonce: ${nonce}`,
-    `Issued At: ${issuedAt}`
+    `Issued At: ${new Date(now).toISOString()}`,
+    `Expiration Time: ${new Date(now + CHALLENGE_TTL_MS).toISOString()}`
   ].join("\n");
   return { message, token: mac(`challenge|${message}`) };
 }
 
-/** Check a signed challenge. Returns the wallet on success. */
-export function verifyChallenge(args: { wallet: string; message: string; token: string; signature: string }): { ok: true } | { ok: false; error: string } {
-  const { wallet, message, token, signature } = args;
+/** Check a signed challenge issued for this site. */
+export function verifyChallenge(args: { wallet: string; message: string; token: string; signature: string; host: string }): { ok: true } | { ok: false; error: string } {
+  const { wallet, message, token, signature, host } = args;
   if (!isWallet(wallet) || typeof message !== "string" || typeof token !== "string" || typeof signature !== "string") {
     return { ok: false, error: "bad sign-in request" };
   }
   if (!safeEqual(mac(`challenge|${message}`), token)) return { ok: false, error: "unknown sign-in challenge" };
   const lines = message.split("\n");
+  if (lines[0] !== `${host}${HEADER}`) return { ok: false, error: "sign-in was issued for a different site" };
   if (lines[1] !== wallet) return { ok: false, error: "challenge is for a different wallet" };
-  const issued = Date.parse((lines.find((l) => l.startsWith("Issued At: ")) ?? "").slice("Issued At: ".length));
-  if (!Number.isFinite(issued) || Date.now() - issued > CHALLENGE_TTL_MS) return { ok: false, error: "sign-in expired — try again" };
+  const field = (name: string) => (lines.find((l) => l.startsWith(`${name}: `)) ?? "").slice(name.length + 2);
+  const issued = Date.parse(field("Issued At"));
+  const expires = Date.parse(field("Expiration Time"));
+  if (!Number.isFinite(issued) || !Number.isFinite(expires) || Date.now() > expires || Date.now() - issued > CHALLENGE_TTL_MS) {
+    return { ok: false, error: "sign-in expired — try again" };
+  }
 
   try {
     const pub = crypto.createPublicKey({

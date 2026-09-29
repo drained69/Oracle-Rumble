@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { SESSION_COOKIE, sessionCookieValue, verifyChallenge } from "@/lib/session";
+import { SESSION_COOKIE, sessionCookieValue, siteOrigin, verifyChallenge } from "@/lib/session";
 
 export const dynamic = "force-dynamic";
 
@@ -9,7 +9,10 @@ export const dynamic = "force-dynamic";
  */
 export async function POST(request: Request) {
   const body = (await request.json().catch(() => ({}))) as { wallet?: string; message?: string; token?: string; signature?: string };
+  const site = siteOrigin(request);
+  if (!site) return NextResponse.json({ error: "unrecognised host" }, { status: 400 });
   const res = verifyChallenge({
+    host: site.host,
     wallet: body.wallet ?? "",
     message: body.message ?? "",
     token: body.token ?? "",
