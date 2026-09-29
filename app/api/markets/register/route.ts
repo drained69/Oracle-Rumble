@@ -1,3 +1,4 @@
+import { limitByIp } from "@/lib/rate-limit";
 import { NextResponse } from "next/server";
 import { PANTA_LIVE, pantaFetch, mockPubkey } from "@/lib/panta";
 
@@ -10,6 +11,8 @@ import { PANTA_LIVE, pantaFetch, mockPubkey } from "@/lib/panta";
  * and writes catalog metadata.
  */
 export async function POST(request: Request) {
+  const limited = limitByIp(request, "panta-write", 30, 60_000);
+  if (limited) return limited;
   const body = (await request.json()) as { createId: string; signature: string };
   if (!body?.createId || !body?.signature) {
     return NextResponse.json({ error: "createId, signature required" }, { status: 400 });

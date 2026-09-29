@@ -1,12 +1,13 @@
 "use client";
 
-/** /positions — the connected wallet's Panta positions, with one-click claims. */
+/** /positions — the connected wallet's arenas, positions and payouts, plus Panta holdings. */
 
 import { useCallback, useEffect, useState } from "react";
 import { useEscrowStatus, useWalletIdentity } from "@/lib/use-wallet";
 import SiteHeader from "@/app/SiteHeader";
 import UsernameModal from "@/app/UsernameModal";
 import PantaPositions from "@/app/PantaPositions";
+import ArenaPortfolio from "@/app/ArenaPortfolio";
 
 export default function PositionsPage() {
   const { wallet, username, toggleConnect, saveUsername } = useWalletIdentity();
@@ -49,18 +50,26 @@ export default function PositionsPage() {
         <p className="jt-eyebrow">Portfolio</p>
         <h1>Positions</h1>
         <p className="page-lead">
-          Every Panta market position held by your connected wallet — shares, entry and mark price,
-          and claimable winnings. Positions open when you trade with “Also fill on Panta” enabled.
+          Every arena your wallet is in: your UP/DOWN position and vault value in live rounds, where you
+          stand against the cut, and payouts or refunds ready to withdraw — read from the game and the
+          on-chain escrow.
         </p>
       </section>
 
       <section className="positions-page-shell">
         {wallet ? (
-          <PantaPositions wallet={wallet} />
+          <>
+            <ArenaPortfolio wallet={wallet} onToast={setToast} />
+            <div className="pf-section pf-secondary" aria-labelledby="pf-panta">
+              <h2 id="pf-panta">Panta market holdings</h2>
+              <p className="pf-note">Shares on Panta&apos;s own markets, opened by trading with “Also fill on Panta” switched on.</p>
+              <PantaPositions wallet={wallet} />
+            </div>
+          </>
         ) : (
           <div className="positions-shell">
             <div className="positions-empty">
-              <p>Connect a Solana wallet to see its positions.</p>
+              <p>Connect a Solana wallet to see your arenas, positions and payouts.</p>
               <button className="btn-cta" onClick={connect} style={{ marginTop: 14 }}>Connect wallet</button>
             </div>
           </div>

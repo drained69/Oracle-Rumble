@@ -1,3 +1,4 @@
+import { limitByIp } from "@/lib/rate-limit";
 import { NextResponse } from "next/server";
 import { PANTA_LIVE, PANTA_USER_ID, pantaFetch, type BuildRequest, type BuildResponse, type PantaInstruction } from "@/lib/panta";
 
@@ -23,6 +24,8 @@ type PantaPrimaryBuild = {
 };
 
 export async function POST(request: Request) {
+  const limited = limitByIp(request, "panta-write", 30, 60_000);
+  if (limited) return limited;
   const body = (await request.json()) as BuildRequest & { userId?: string };
   if (!body?.quoteId || !body?.wallet) {
     return NextResponse.json({ error: "quoteId, wallet required" }, { status: 400 });

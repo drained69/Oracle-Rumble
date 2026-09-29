@@ -1,3 +1,4 @@
+import { limitByIp } from "@/lib/rate-limit";
 import { NextResponse } from "next/server";
 import { PANTA_LIVE, pantaFetch, type PantaPosition } from "@/lib/panta";
 
@@ -10,6 +11,8 @@ import { PANTA_LIVE, pantaFetch, type PantaPosition } from "@/lib/panta";
  * on-chain holdings + claim eligibility.
  */
 export async function GET(request: Request) {
+  const limited = limitByIp(request, "panta-read", 120, 60_000);
+  if (limited) return limited;
   const url = new URL(request.url);
   const wallet = url.searchParams.get("wallet");
   if (!wallet) return NextResponse.json({ error: "wallet required" }, { status: 400 });

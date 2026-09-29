@@ -555,7 +555,7 @@ function HostPanel({
         </FieldRow>
         <FieldRow label="Timeframe">
           <div className="gm-seg">
-            {(["MIN5", "MIN15", "HOUR", "DAY"] as const).map((h) => (
+            {(["MIN5", "MIN15", "HOUR"] as const).map((h) => (
               <button key={h} className={`opt ${hHorizon === h ? "on" : ""}`} onClick={() => setHHorizon(h)}>{HORIZON_LABEL[h]}</button>
             ))}
           </div>

@@ -1,3 +1,4 @@
+import { limitByIp } from "@/lib/rate-limit";
 import { NextResponse } from "next/server";
 import { PANTA_LIVE, pantaFetch } from "@/lib/panta";
 
@@ -37,6 +38,8 @@ type Body = {
 const REQUIRED: (keyof Body)[] = ["wallet", "question", "resolutionRule", "sourcesOfTruth", "category", "startTime", "endTime", "resolutionTime", "imageUrl"];
 
 export async function POST(request: Request) {
+  const limited = limitByIp(request, "panta-write", 30, 60_000);
+  if (limited) return limited;
   const body = (await request.json()) as Body;
   for (const k of REQUIRED) {
     if (body[k] === undefined || body[k] === null || (typeof body[k] === "string" && body[k] === "")) {

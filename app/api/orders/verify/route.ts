@@ -1,3 +1,4 @@
+import { limitByIp } from "@/lib/rate-limit";
 import { NextResponse } from "next/server";
 import { PANTA_LIVE, pantaFetch, type VerifyRequest, type VerifyResponse } from "@/lib/panta";
 
@@ -11,6 +12,8 @@ import { PANTA_LIVE, pantaFetch, type VerifyRequest, type VerifyResponse } from 
  * console shows the exact wire value.
  */
 export async function POST(request: Request) {
+  const limited = limitByIp(request, "panta-write", 60, 60_000);
+  if (limited) return limited;
   const body = (await request.json()) as VerifyRequest & { signature?: string; orderId?: string };
   if (!body?.orderId && !body?.signature) {
     return NextResponse.json({ error: "orderId or signature required" }, { status: 400 });

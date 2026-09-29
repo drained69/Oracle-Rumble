@@ -195,14 +195,15 @@ export async function pickMarket(excludeId?: string): Promise<MarketPick | null>
  */
 export async function bootstrapRound(overrides?: Partial<RoundConfig> & { horizon?: string }, arenaCode?: string): Promise<Round | null> {
   const wantAsset = overrides?.asset ? String(overrides.asset).toUpperCase() : undefined;
-  const wantHorizon = overrides?.horizon ? String(overrides.horizon).toUpperCase() : undefined;
+  // A day-long market can't run as one arena round; it plays as the hour.
+  const rawHorizon = overrides?.horizon ? String(overrides.horizon).toUpperCase() : undefined;
+  const wantHorizon = rawHorizon === "DAY" ? "HOUR" : rawHorizon;
   const market = await pickMarketForAsset(wantAsset, wantHorizon);
   if (!market) return null;
 
-  // Match the trading window to the horizon when the host picked one so the
-  // round closes near the market's resolution. Capped by HOST_LIMITS.liveSec
-  // (60s–900s) — hour/day markets clamp to the 15-minute maximum.
-  const horizonSec: Record<string, number> = { MIN5: 300, MIN15: 900, HOUR: 900, DAY: 900 };
+  // The trading window IS the market's horizon, so "Will SOL be up in the
+  // next hour?" really runs (and resolves) over an hour.
+  const horizonSec: Record<string, number> = { MIN5: 300, MIN15: 900, HOUR: 3_600 };
   const impliedLiveSec = wantHorizon && horizonSec[wantHorizon] ? horizonSec[wantHorizon] : undefined;
 
   const base: RoundConfig = {

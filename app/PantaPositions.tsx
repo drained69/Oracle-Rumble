@@ -32,9 +32,25 @@ export default function PantaPositions({ wallet }: { wallet: string | null }) {
     try {
       const res = await fetch(`/api/positions?wallet=${encodeURIComponent(wallet)}`, { cache: "no-store" });
       if (!res.ok) { setLoading(false); return; }
-      const j = (await res.json()) as { source: "panta" | "mock"; positions: PantaPosition[] };
+      const j = (await res.json()) as { source: "panta" | "mock"; positions?: unknown[] };
       setSource(j.source);
-      setPositions(j.positions ?? []);
+      // Panta may send numbers as strings; normalise before rendering.
+      const num = (v: unknown) => { const n = typeof v === "number" ? v : parseFloat(String(v ?? "")); return Number.isFinite(n) ? n : 0; };
+      setPositions((Array.isArray(j.positions) ? j.positions : []).map((raw) => {
+        const p = raw as Partial<PantaPosition> & Record<string, unknown>;
+        return {
+          marketId: String(p.marketId ?? ""),
+          question: String(p.question ?? p.marketId ?? "Market"),
+          side: String(p.side ?? "").toUpperCase() === "NO" ? "NO" : "YES",
+          shares: num(p.shares),
+          entryPrice: Math.round(num(p.entryPrice)),
+          markPrice: Math.round(num(p.markPrice)),
+          cost: num(p.cost).toFixed(2),
+          phase: (p.phase ?? "active") as PantaPosition["phase"],
+          claimable: !!p.claimable,
+          outcome: p.outcome ?? null
+        };
+      }));
     } catch { /* transient */ }
     finally { setLoading(false); }
   }, [wallet]);
@@ -77,7 +93,7 @@ export default function PantaPositions({ wallet }: { wallet: string | null }) {
         </div>
         <div>
           <span>Data</span>
-          <b className={source === "panta" ? "state-live" : source === "mock" ? "state-demo" : ""}>{source === "panta" ? "Panta live" : source === "mock" ? "Sample" : "…"}</b>
+          <b className={source === "panta" ? "state-live" : source === "mock" ? "state-demo" : ""}>{source === "panta" ? "Panta" : source === "mock" ? "Offline" : "…"}</b>
         </div>
         <div>
           <span>Open</span>
@@ -90,15 +106,15 @@ export default function PantaPositions({ wallet }: { wallet: string | null }) {
       </div>
 
       <div className="positions-list">
-        {loading && <div className="positions-empty">Loading positions from Panta…</div>}
+        {loading && <div className="positions-empty">Loading Panta holdings…</div>}
         {!loading && !wallet && <div className="positions-empty">Connect a wallet to see your positions.</div>}
         {!loading && wallet && positions.length === 0 && (
-          <div className="positions-empty">No open Panta positions for this wallet. Trade in an arena (with &quot;Also fill on Panta&quot; on) to open one.</div>
+          <div className="positions-empty">{source === "panta" ? "No Panta market holdings for this wallet." : "Panta isn't connected on this server, so there are no Panta holdings to show."}</div>
         )}
         {positions.map((p) => (
           <div key={`${p.marketId}-${p.side}`} className="panta-pos">
             <div className="panta-pos-head">
-              <span className={`side ${p.side === "YES" ? "up" : "down"}`}>{p.side}</span>
+              <span className={`side ${p.side === "YES" ? "up" : "down"}`}>{p.side === "YES" ? "UP" : "DOWN"}</span>
               <span className="q">{p.question}</span>
               <span className={`phase ${p.phase}`}>{p.phase}</span>
             </div>

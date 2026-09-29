@@ -1,3 +1,4 @@
+import { limitByIp } from "@/lib/rate-limit";
 import { NextResponse } from "next/server";
 import { PANTA_LIVE, pantaFetch, type TradeStatusResponse } from "@/lib/panta";
 import { recordAttribution } from "@/lib/panta-telemetry";
@@ -44,6 +45,8 @@ async function readStatus(signature: string): Promise<TradeStatusResponse> {
 }
 
 export async function GET(request: Request) {
+  const limited = limitByIp(request, "panta-read", 120, 60_000);
+  if (limited) return limited;
   const signature = new URL(request.url).searchParams.get("signature");
   if (!signature) return NextResponse.json({ error: "signature required" }, { status: 400 });
   const resp = await readStatus(signature);
@@ -54,6 +57,8 @@ export async function GET(request: Request) {
 }
 
 export async function POST(request: Request) {
+  const limited = limitByIp(request, "panta-read", 120, 60_000);
+  if (limited) return limited;
   const body = (await request.json().catch(() => ({}))) as { signature?: string };
   if (!body?.signature) return NextResponse.json({ error: "signature required" }, { status: 400 });
   const resp = await readStatus(body.signature);

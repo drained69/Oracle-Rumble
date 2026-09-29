@@ -2,11 +2,12 @@ import { NextResponse } from "next/server";
 import { getActiveRound, withKeeperLock } from "@/lib/round-store";
 import { normalizeArenaCode, logEvent } from "@/lib/royale";
 import { readVault } from "@/lib/escrow-server";
+import { sessionWallet } from "@/lib/session";
 
 export const dynamic = "force-dynamic";
 
 /**
- * POST /api/round/cancel  { arena, wallet? }
+ * POST /api/round/cancel  { arena } — signed-in host only
  *
  * Marks an arena as `cancelled` when the host's seat-deposit signing failed
  * (wallet rejected, tx failed, timeout). This exists so a freshly-created
@@ -31,6 +32,9 @@ export async function POST(request: Request) {
   };
   const arenaCode = normalizeArenaCode(body.arena ?? "");
   if (!arenaCode) return NextResponse.json({ error: "arena required" }, { status: 400 });
+  // Only the signed-in host may cancel their own arena.
+  const caller = sessionWallet(request);
+  if (!caller) return NextResponse.json({ error: "Sign in with your wallet to continue.", needsAuth: true }, { status: 401 });
 
   const peek = await getActiveRound(arenaCode);
   if (peek?.escrow) {
@@ -47,16 +51,10 @@ export async function POST(request: Request) {
     if (round.status !== "enrolling") {
       return { ok: false, error: `arena is ${round.status} — cannot cancel` } as const;
     }
-    const humanCount = round.entrants.filter((e) => !e.isBot).length;
-    if (humanCount > 0) {
-      // If the ONLY human is the caller and they're the host, still allow cancel.
-      // Otherwise refuse — someone else is already in the room.
-      const onlyCaller =
-        humanCount === 1 &&
-        !!body.wallet &&
-        round.entrants.some((e) => !e.isBot && e.wallet === body.wallet);
-      if (!onlyCaller) return { ok: false, error: "arena already has players" } as const;
-    }
+    if (round.config.host !== caller) return { ok: false, error: "only the host can cancel this arena" } as const;
+    const humans = round.entrants.filter((e) => !e.isBot);
+    // Refuse once anyone other than the host is in the room.
+    if (humans.some((e) => e.wallet !== caller)) return { ok: false, error: "arena already has players" } as const;
     round.status = "cancelled";
     round.endedAt = Date.now();
     logEvent(round, "Round cancelled — host deposit was not signed.");

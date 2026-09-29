@@ -1,3 +1,4 @@
+import { limitByIp } from "@/lib/rate-limit";
 import { NextResponse } from "next/server";
 import { PANTA_LIVE, PANTA_USER_ID, pantaFetch, mockQuoteId, type QuoteRequest, type QuoteResponse } from "@/lib/panta";
 import { findMockMarket } from "@/lib/arena-data";
@@ -43,6 +44,8 @@ function decimalToCents(v: number | string | undefined): number {
 }
 
 export async function POST(request: Request) {
+  const limited = limitByIp(request, "panta-write", 30, 60_000);
+  if (limited) return limited;
   const body = (await request.json()) as QuoteRequest;
   if (!body?.marketId || !body?.side || !body?.usdcAmount) {
     return NextResponse.json({ error: "marketId, side, usdcAmount required" }, { status: 400 });

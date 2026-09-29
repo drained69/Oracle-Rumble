@@ -241,7 +241,7 @@ net  = fair − fee   → credited to your vault`}</pre>
               <thead><tr><th>Panta endpoint</th><th>Used for</th></tr></thead>
               <tbody>
                 <tr><td><code>GET /markets/…</code></td><td>Market prices and status</td></tr>
-                <tr><td><code>GET /positions/</code></td><td>The Positions page</td></tr>
+                <tr><td><code>GET /positions/</code></td><td>Your arenas, positions and withdrawals</td></tr>
                 <tr><td><code>POST /primaryorder{`{quote,build,submit,verify}`}/</code></td><td>Mirrored orders</td></tr>
                 <tr><td><code>POST /claim/build/</code></td><td>Claiming a winning Panta position</td></tr>
                 <tr><td><code>GET /trades/{`{signature}`}/</code></td><td>Attribution check</td></tr>
@@ -299,6 +299,7 @@ net  = fair − fee   → credited to your vault`}</pre>
                 <tr><td><code>POST /api/escrow/tx</code></td><td>Unsigned deposit, claim or recover transaction</td></tr>
                 <tr><td><code>POST /api/escrow/settle</code></td><td>Record final entitlements on-chain (idempotent)</td></tr>
                 <tr><td><code>POST /api/orders/{`{quote,build,submit,verify}`}</code></td><td>Panta order proxies</td></tr>
+                <tr><td><code>GET /api/portfolio?wallet=</code></td><td>A wallet&apos;s arenas: live positions, standings, and payouts or refunds to withdraw (game ledger + on-chain deposits)</td></tr>
                 <tr><td><code>GET /api/positions?wallet=</code></td><td>Panta positions for a wallet</td></tr>
               </tbody>
             </table>

@@ -1085,13 +1085,13 @@ export default function ArenaView({ arenaCode }: { arenaCode: string }) {
                   {busy ? (seatStep ? seatStepText(seatStep, seat, callPick === "YES" || callPick === "NO" ? callPick : null).button : "Checking your wallet…")
                     : !wallet ? "Connect a wallet first"
                     : !callPick ? "Pick UP, DOWN or decide later"
-                    : `Deposit ${usd2.format(seat)} & ${cta}`}
+                    : round.escrow ? `Deposit ${usd2.format(seat)} & ${cta}` : `Take a practice seat & ${cta}`}
                 </button>
               </form>
               <p className="disclaimer" style={{ marginTop: 12 }}>
-                {escrow?.active
+                {round.escrow
                   ? <>Held in a non-custodial escrow program on Solana {CLUSTER}. You withdraw your remaining vault plus any prize after settlement.</>
-                  : <>Practice mode — no USDC moves.</>}
+                  : <>Practice arena — no USDC moves and nothing is deposited.</>}
               </p>
             </div>
           </div>
@@ -1172,7 +1172,7 @@ export default function ArenaView({ arenaCode }: { arenaCode: string }) {
                 <div className="host-field">
                   <span className="host-label">Timeframe</span>
                   <div className="seg">
-                    {(["MIN5", "MIN15", "HOUR", "DAY"] as const).map((h) => (
+                    {(["MIN5", "MIN15", "HOUR"] as const).map((h) => (
                       <button key={h} className={hHorizon === h ? "seg-opt on" : "seg-opt"} onClick={() => setHHorizon(h)}>
                         {h === "MIN5" ? "5m" : h === "MIN15" ? "15m" : h === "HOUR" ? "1h" : "1d"}
                       </button>

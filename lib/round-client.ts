@@ -253,13 +253,18 @@ export async function serverSettleArena(arena: string): Promise<{ ok?: boolean; 
 }
 
 /** Claim my settled entitlement out of the arena's escrow to my wallet. */
-export async function claimFromEscrow(wallet: string, arena: string, recover = false, onSlow?: (walletName: string) => void): Promise<{ signature?: string; error?: string; escrow?: string }> {
-  const txRes = await fetch("/api/escrow/tx", {
-    method: "POST", headers: { "content-type": "application/json" },
-    body: JSON.stringify({ action: recover ? "recover" : "claim", wallet, arena })
-  }).then((r) => r.json());
+export async function claimFromEscrow(wallet: string, arena: string, recover = false, onSlow?: (walletName: string) => void, roundVault?: string): Promise<{ signature?: string; error?: string; escrow?: string }> {
+  let txRes: { escrow?: string; error?: string; base64?: string };
+  try {
+    txRes = await fetch("/api/escrow/tx", {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify(arena ? { action: recover ? "recover" : "claim", wallet, arena } : { action: recover ? "recover" : "claim", wallet, roundVault })
+    }).then((r) => r.json());
+  } catch {
+    return { error: "Couldn't reach the server — try again." };
+  }
   if (txRes.escrow === "inactive") return { error: "escrow is inactive" };
-  if (txRes.error) return { error: txRes.error };
+  if (txRes.error || !txRes.base64) return { error: txRes.error ?? "couldn't build the withdrawal" };
   try {
     const signature = await signAndBroadcastLegacy(wallet, txRes.base64, recover ? "The refund" : "The withdrawal", undefined, onSlow);
     return { signature };

@@ -169,6 +169,10 @@ export async function mutateActiveRound(
   const client = await pool().connect();
   try {
     await client.query("BEGIN");
+    // Same per-arena lock as the keeper. The keeper reads without a row lock
+    // and writes its whole copy back, so without this a trade/enroll that
+    // commits mid-tick is silently overwritten by the keeper's stale copy.
+    await client.query("SELECT pg_advisory_xact_lock($1)", [arenaLockKey(code).toString()]);
     const { rows } = await client.query(
       `SELECT data FROM rounds WHERE status = ANY($1) AND arena_code = $2 ORDER BY created_at DESC LIMIT 1 FOR UPDATE`,
       [ACTIVE, code]
@@ -202,6 +206,7 @@ export async function mutateActiveRound(
  */
 export type KeeperCtx = {
   getActive: () => Promise<Round | null>;
+  getById: (id: string) => Promise<Round | null>;
   getLatest: () => Promise<Round | null>;
   save: (r: Round) => Promise<void>;
   /** Retire any other active round IN THIS ARENA than `keepId` (zombie clean). */
@@ -219,6 +224,7 @@ export async function withKeeperLock<T>(arena: string, fn: (ctx: KeeperCtx) => P
   if (!STORE_ENABLED) {
     return fn({
       getActive: async () => memActive(code),
+      getById: async (id) => { const r = _mem.get(id); return r ? withArena(r) : null; },
       getLatest: async () => memLatest(code),
       save: async (r) => { memSave(r); },
       cancelOtherActive: async (keepId) => {
@@ -244,6 +250,11 @@ export async function withKeeperLock<T>(arena: string, fn: (ctx: KeeperCtx) => P
           `SELECT data FROM rounds WHERE status = ANY($1) AND arena_code = $2 ORDER BY created_at DESC LIMIT 1`,
           [ACTIVE, code]
         );
+        const r = rows[0]?.data as Round | undefined;
+        return r ? withArena(r) : null;
+      },
+      getById: async (id) => {
+        const { rows } = await client.query(`SELECT data FROM rounds WHERE id = $1`, [id]);
         const r = rows[0]?.data as Round | undefined;
         return r ? withArena(r) : null;
       },
@@ -306,12 +317,63 @@ export async function recentArenas(limit = 20): Promise<Array<{ arenaCode: strin
     return [...map.entries()].map(([arenaCode, latest]) => ({ arenaCode, latest }));
   }
   await initSchema();
+  // Latest round per arena, THEN the most recent arenas. (DISTINCT ON sorts by
+  // arena code, so limiting it directly returned the first N codes
+  // alphabetically and new arenas vanished from the lobby past N.)
   const { rows } = await pool().query(
-    `SELECT DISTINCT ON (arena_code) arena_code, data
-       FROM rounds
-       ORDER BY arena_code, created_at DESC
-       LIMIT $1`,
+    `SELECT arena_code, data FROM (
+       SELECT DISTINCT ON (arena_code) arena_code, data, created_at
+         FROM rounds
+         ORDER BY arena_code, created_at DESC
+     ) latest
+     ORDER BY created_at DESC
+     LIMIT $1`,
     [limit]
   );
   return rows.map((r) => ({ arenaCode: r.arena_code as string, latest: withArena(r.data as Round) }));
+}
+
+/**
+ * The latest round of every arena a wallet played in (it's on the roster) or
+ * paid into (its deposit sits in the arena's vault), most recent first.
+ */
+export async function latestRoundsForWallet(wallet: string, roundVaults: string[], limit = 100): Promise<Round[]> {
+  const vaults = new Set(roundVaults);
+  if (!STORE_ENABLED) {
+    const latest = new Map<string, Round>();
+    for (const r of [..._mem.values()].map(withArena).sort((a, b) => b.createdAt - a.createdAt)) {
+      if (!latest.has(r.arenaCode)) latest.set(r.arenaCode, r);
+    }
+    return [...latest.values()]
+      .filter((r) => r.entrants.some((e) => e.wallet === wallet) || (r.escrow && vaults.has(r.escrow.roundVault)))
+      .slice(0, limit);
+  }
+  await initSchema();
+  const { rows } = await pool().query(
+    `SELECT data FROM (
+       SELECT DISTINCT ON (arena_code) arena_code, data, created_at
+         FROM rounds
+         WHERE data->'entrants' @> $1::jsonb OR (data->'escrow'->>'roundVault') = ANY($2::text[])
+         ORDER BY arena_code, created_at DESC
+     ) mine
+     ORDER BY created_at DESC
+     LIMIT $3`,
+    [JSON.stringify([{ wallet }]), [...vaults], limit]
+  );
+  return rows.map((r) => withArena(r.data as Round));
+}
+
+/**
+ * Read-modify-write one round by id under its arena's lock, for code that
+ * worked on a round for a while (e.g. on-chain settlement) and must not
+ * overwrite whatever changed meanwhile.
+ */
+export async function mutateRoundById(arena: string, id: string, mutator: (r: Round) => void): Promise<Round | null> {
+  return withKeeperLock(arena, async (ctx) => {
+    const r = await ctx.getById(id);
+    if (!r) return null;
+    mutator(r);
+    await ctx.save(r);
+    return r;
+  });
 }

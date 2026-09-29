@@ -48,6 +48,24 @@ export async function POST(request: Request) {
   // Refresh each leg's price + metadata. Our own BTC/ETH/SOL board markets are
   // synthetic — price them from the board, never the Panta sandbox (which
   // returns a 50¢ fixture for any id). Only real Panta ids hit Panta.
+  // Only the BTC/ETH/SOL direction markets are resolved by this round's
+  // oracle. A leg on any other market has no final price at settlement —
+  // it would settle at its entry price, i.e. win whenever bought above 50¢.
+  // Every leg resolves over this round's window, so it must be this round's
+  // timeframe ("up in 5 minutes"), not a longer market's question.
+  const roundHorizon = findMockMarket(peek.config.marketId)?.market.horizon;
+  for (const leg of body.legs) {
+    if (!leg || typeof leg.marketId !== "string" || !assetOfMarketId(leg.marketId) || !findMockMarket(leg.marketId)) {
+      return NextResponse.json({ error: "Parlay legs must be BTC, ETH or SOL UP/DOWN markets." }, { status: 422 });
+    }
+    if (roundHorizon && findMockMarket(leg.marketId)?.market.horizon !== roundHorizon) {
+      return NextResponse.json({ error: "Parlay legs must be on this round's timeframe." }, { status: 422 });
+    }
+    if (leg.side !== "YES" && leg.side !== "NO") {
+      return NextResponse.json({ error: "Each leg must be UP or DOWN." }, { status: 422 });
+    }
+  }
+
   const refreshed: ParlayLeg[] = [];
   const legState: ParlayLegState[] = [];
   for (const leg of body.legs) {

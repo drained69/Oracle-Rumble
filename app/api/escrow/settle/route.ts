@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { escrowReady, listDepositors, readVault, settleArenaOnChain, type SettleEntry } from "@/lib/escrow-server";
-import { getLatestRound, saveRound } from "@/lib/round-store";
+import { getLatestRound, mutateRoundById } from "@/lib/round-store";
 import { normalizeArenaCode, type Round, logEvent } from "@/lib/royale";
 
 export const dynamic = "force-dynamic";
@@ -11,6 +11,24 @@ export const dynamic = "force-dynamic";
  * that could never be settled — so wait this long after the cancel.
  */
 const REFUND_SAFETY_MS = 120_000;
+
+/**
+ * Every viewer's page nudges settlement, so calls arrive concurrently. One
+ * settlement per arena at a time (the app runs as a single instance); the
+ * others are told to retry and then find it done.
+ */
+const _g = globalThis as unknown as { __or_settling?: Set<string> };
+const settling: Set<string> = (_g.__or_settling ??= new Set());
+
+/** Store the settlement result without overwriting changes made meanwhile. */
+async function recordSettlement(round: Round, signatures: string[], label: string, notes: string[]) {
+  await mutateRoundById(round.arenaCode, round.id, (r) => {
+    if (!r.escrow) return;
+    r.escrow.settleSignatures = signatures;
+    r.escrow.history.push(...signatures.map((s) => `${label} ✓ ${s.slice(0, 12)}…`));
+    for (const n of notes) logEvent(r, n);
+  });
+}
 
 /** Cancelled arena → refund every on-chain depositor their full seat. */
 async function refundCancelled(round: Round) {
@@ -27,19 +45,22 @@ async function refundCancelled(round: Round) {
   if (vault.deposited === 0) return NextResponse.json({ ok: true, refund: true, depositors: 0 });
 
   const seat = vault.entryUsdc + vault.vaultUsdc;
-  const depositors = (await listDepositors(escrow.roundVault)).filter((d) => !d.settled);
-  if (depositors.length !== vault.deposited) {
+  const all = await listDepositors(escrow.roundVault);
+  if (all.length !== vault.deposited) {
     // Account index lagging behind the vault counter — try again shortly
     // rather than closing with someone left out.
     return NextResponse.json({ ok: false, refund: true, pending: true, retryInMs: 5_000 });
   }
-  const res = await settleArenaOnChain(escrow.roundVault, depositors.map((d) => ({ wallet: d.wallet, entitlementUsdc: seat })));
-  if (!res.ok) return NextResponse.json({ error: res.error }, { status: 502 });
-
-  escrow.settleSignatures = res.signatures;
-  escrow.history.push(...res.signatures.map((s) => `Refund ✓ ${s.slice(0, 12)}…`));
-  logEvent(round, `Refunds open — ${depositors.length} deposit${depositors.length === 1 ? "" : "s"} can be claimed in full.`);
-  await saveRound(round);
+  // Entries already recovered on chain have their seat back; skip them.
+  const depositors = all.filter((d) => !d.claimed);
+  const res = await settleArenaOnChain(escrow.roundVault, depositors.map((d) => ({ wallet: d.wallet, entitlementUsdc: seat })), vault.deposited);
+  if (!res.ok) {
+    if ("retry" in res && res.retry) return NextResponse.json({ ok: false, refund: true, pending: true, retryInMs: 3_000 });
+    return NextResponse.json({ error: res.error }, { status: 502 });
+  }
+  await recordSettlement(round, res.signatures, "Refund", [
+    `Refunds open — ${depositors.length} deposit${depositors.length === 1 ? "" : "s"} can be claimed in full.`
+  ]);
   return NextResponse.json({ ok: true, refund: true, signatures: res.signatures, depositors: depositors.length });
 }
 
@@ -56,10 +77,19 @@ async function refundCancelled(round: Round) {
  * own auth — the host keypair is server-side only.
  */
 export async function POST(request: Request) {
-  const body = (await request.json()) as { arena?: string };
+  const body = (await request.json().catch(() => ({}))) as { arena?: string };
   if (!escrowReady()) return NextResponse.json({ escrow: "inactive" });
   const arena = normalizeArenaCode(body.arena);
+  if (settling.has(arena)) return NextResponse.json({ ok: false, pending: true, retryInMs: 4_000 });
+  settling.add(arena);
+  try {
+    return await settle(arena);
+  } finally {
+    settling.delete(arena);
+  }
+}
 
+async function settle(arena: string) {
   // We settle against the LATEST round in the arena — either the active
   // "complete" one or the most recent finished one.
   const round = await getLatestRound(arena);
@@ -77,10 +107,15 @@ export async function POST(request: Request) {
   const vault = await readVault(round.escrow.roundVault);
   if (!vault) return NextResponse.json({ error: "vault not found on-chain" }, { status: 502 });
   if (vault.settled) return NextResponse.json({ ok: true, alreadySettled: true });
-  const onChain = await listDepositors(round.escrow.roundVault);
-  if (onChain.length !== vault.deposited) {
+  const allOnChain = await listDepositors(round.escrow.roundVault);
+  if (allOnChain.length !== vault.deposited) {
     return NextResponse.json({ ok: false, pending: true, retryInMs: 5_000 });
   }
+  // A player who already recovered their seat on chain (recovery deadline
+  // passed) holds their money back: leave them out and shrink the pot by
+  // what they took, so the rest are never promised more than the escrow has.
+  const recovered = allOnChain.filter((d) => d.claimed);
+  const onChain = allOnChain.filter((d) => !d.claimed);
   const depositorSet = new Set(onChain.map((d) => d.wallet));
   const seatUsdc = round.config.entryUsdc + round.config.startingBankroll;
 
@@ -99,9 +134,11 @@ export async function POST(request: Request) {
   // push sum(cash + prize) above what players actually escrowed; sending that
   // would trip the on-chain Overpay guard and strand later players. Scale
   // players down proportionally to the escrowed total (refunds come first).
-  const playerCap = Math.max(0, vault.totalEscrowedUsdc - refunds.length * seatUsdc);
+  const recoveredUsdc = recovered.length * (vault.entryUsdc + vault.vaultUsdc);
+  const playerCap = Math.max(0, vault.totalEscrowedUsdc - recoveredUsdc - refunds.length * seatUsdc);
   const rawSum = rawEntries.reduce((s, e) => s + e.entitlementUsdc, 0);
 
+  const notes: string[] = [];
   let entries: SettleEntry[] = rawEntries;
   let capApplied: { rawSum: number; capped: number; ratio: number } | undefined;
   if (rawSum > playerCap) {
@@ -112,24 +149,17 @@ export async function POST(request: Request) {
       entitlementUsdc: Math.floor(e.entitlementUsdc * ratio * 1e6) / 1e6
     }));
     capApplied = { rawSum, capped: playerCap, ratio };
-    logEvent(round, 
-      `Entitlements capped for conservation: ${rawSum.toFixed(2)} → ${playerCap.toFixed(2)} USDC (×${ratio.toFixed(4)}).`
-    );
+    notes.push(`Entitlements capped for conservation: ${rawSum.toFixed(2)} → ${playerCap.toFixed(2)} USDC (×${ratio.toFixed(4)}).`);
   }
   entries = entries.concat(refunds);
-  if (refunds.length) {
-    logEvent(round, `${refunds.length} deposit${refunds.length === 1 ? "" : "s"} without a seat refunded in full.`);
-  }
+  if (refunds.length) notes.push(`${refunds.length} deposit${refunds.length === 1 ? "" : "s"} without a seat refunded in full.`);
+  if (recovered.length) notes.push(`${recovered.length} deposit${recovered.length === 1 ? " was" : "s were"} already recovered on chain.`);
 
-  const res = await settleArenaOnChain(round.escrow.roundVault, entries);
-  if (!res.ok) return NextResponse.json({ error: res.error }, { status: 502 });
-
-  // Persist signatures back on the round so the UI can link them.
-  const sigs = res.signatures;
-  if (round.escrow) {
-    round.escrow.settleSignatures = sigs;
-    round.escrow.history.push(...sigs.map((s) => `Settle ✓ ${s.slice(0, 12)}…`));
-    await saveRound(round);
+  const res = await settleArenaOnChain(round.escrow.roundVault, entries, vault.deposited);
+  if (!res.ok) {
+    if ("retry" in res && res.retry) return NextResponse.json({ ok: false, pending: true, retryInMs: 3_000 });
+    return NextResponse.json({ error: res.error }, { status: 502 });
   }
-  return NextResponse.json({ ok: true, signatures: sigs, capApplied });
+  await recordSettlement(round, res.signatures, "Settle", notes);
+  return NextResponse.json({ ok: true, signatures: res.signatures, capApplied });
 }

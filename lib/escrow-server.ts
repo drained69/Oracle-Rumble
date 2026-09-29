@@ -127,6 +127,8 @@ export type InitArenaParams = {
   vaultUsdc: number;
   capacity: number;
   enrollmentSec: number;
+  liveSec: number;
+  roundLimit: number;
 };
 
 export async function initArenaOnChain(p: InitArenaParams): Promise<{ ok: true; record: RoundEscrow } | { ok: false; error: string }> {
@@ -134,9 +136,13 @@ export async function initArenaOnChain(p: InitArenaParams): Promise<{ ok: true; 
   if (!escrowReady() || !host || !USDC_MINT) return { ok: false, error: "escrow inactive" };
   const roundSeed = newRoundSeed();
   const [roundVault] = roundVaultPda(host.publicKey, roundSeed);
-  // Recovery kicks in after enrollment + a generous slack, so players can
-  // reclaim funds if the operator ever fails to settle.
-  const settleDeadline = Math.floor(Date.now() / 1000) + Math.max(p.enrollmentSec, 30) + 60 * 60;
+  // Recovery (players reclaiming their seat without a settlement) must never
+  // open while the game can still be running, or a player could pull their
+  // deposit mid-game and leave the others' settlement short. So the deadline
+  // covers the longest possible game: host-seat grace + enrollment + every
+  // round with its oracle wait, plus an hour of slack for settlement.
+  const longestGameSec = 3 * 60 + Math.max(p.enrollmentSec, 30) + Math.max(1, p.roundLimit) * (p.liveSec + 120);
+  const settleDeadline = Math.floor(Date.now() / 1000) + longestGameSec + 60 * 60;
   const ix = ixInitRound({
     host: host.publicKey,
     roundSeed,
@@ -259,7 +265,14 @@ export async function buildWithdrawTx(player: PublicKey, roundVault: PublicKey, 
 // ── SETTLE: server signs + submits SettlePlayer + CloseSettlement ────────
 export type SettleEntry = { wallet: string; entitlementUsdc: number };
 
-export async function settleArenaOnChain(roundVaultPk: string, players: SettleEntry[]): Promise<{ ok: true; signatures: string[] } | { ok: false; error: string }> {
+/**
+ * SettlePlayer for every entry, then CloseSettlement. `expectDeposited` is
+ * the vault's deposit count the entries were computed from: if a deposit
+ * lands meanwhile, closing would lock that player's USDC for good (an
+ * unsettled entry can't claim, a closed vault can't recover), so we stop
+ * before closing and report `retry` — SettlePlayer is idempotent.
+ */
+export async function settleArenaOnChain(roundVaultPk: string, players: SettleEntry[], expectDeposited?: number): Promise<{ ok: true; signatures: string[] } | { ok: false; error: string; retry?: boolean }> {
   const host = hostKeypair();
   if (!escrowReady() || !host) return { ok: false, error: "escrow inactive" };
   const roundVault = new PublicKey(roundVaultPk);
@@ -271,6 +284,12 @@ export async function settleArenaOnChain(roundVaultPk: string, players: SettleEn
       const ix = ixSettlePlayer({ host: host.publicKey, roundVault, playerEntry, entitlementUsdc: p.entitlementUsdc });
       const sig = await signSendConfirm(new Transaction().add(ix), [host]);
       sigs.push(sig);
+    }
+    if (expectDeposited !== undefined) {
+      const now = await readVault(roundVaultPk);
+      if (!now || now.deposited !== expectDeposited) {
+        return { ok: false, retry: true, error: "a new deposit landed during settlement — settling again" };
+      }
     }
     const closeIx = ixCloseSettlement({ host: host.publicKey, roundVault });
     const closeSig = await signSendConfirm(new Transaction().add(closeIx), [host]);
@@ -336,11 +355,9 @@ export type VaultState = {
   settled: boolean;       // CloseSettlement ran — claims are open
 };
 
-/** Decode the RoundVault account (layout mirrors program/src/lib.rs). */
-export async function readVault(roundVaultPk: string): Promise<VaultState | null> {
-  const info = await connection().getAccountInfo(new PublicKey(roundVaultPk), "confirmed").catch(() => null);
-  if (!info || info.data.length < 160) return null;
-  const d = info.data;
+/** Decode a RoundVault account's data (layout mirrors program/src/lib.rs). */
+function decodeVault(d: Buffer): VaultState | null {
+  if (d.length < 160) return null;
   let o = 1 + 96;
   const u64 = () => { const v = Number(d.readBigUInt64LE(o)); o += 8; return v; };
   const entry = u64();
@@ -364,6 +381,12 @@ export async function readVault(roundVaultPk: string): Promise<VaultState | null
   };
 }
 
+/** Read the RoundVault account. */
+export async function readVault(roundVaultPk: string): Promise<VaultState | null> {
+  const info = await connection().getAccountInfo(new PublicKey(roundVaultPk), "confirmed").catch(() => null);
+  return info ? decodeVault(info.data) : null;
+}
+
 export type DepositorEntry = { wallet: string; entitlementUsdc: number; settled: boolean; claimed: boolean };
 
 /** Every wallet with a PlayerEntry in this vault — the on-chain truth, not the ledger. */
@@ -382,6 +405,36 @@ export async function listDepositors(roundVaultPk: string): Promise<DepositorEnt
       claimed: d.readUInt8(82) === 1
     };
   });
+}
+
+export type WalletDeposit = DepositorEntry & { roundVault: string; vault: VaultState | null };
+
+/**
+ * Every deposit a wallet has made into the escrow program (one PlayerEntry
+ * per arena vault), with each vault's state — the on-chain truth for the
+ * Positions page, independent of the game ledger.
+ */
+export async function listWalletDeposits(walletPk: string): Promise<WalletDeposit[]> {
+  if (!ESCROW_PROGRAM_ID) return [];
+  const conn = connection();
+  const accounts = await conn.getProgramAccounts(ESCROW_PROGRAM_ID, {
+    commitment: "confirmed",
+    filters: [{ dataSize: PLAYER_ENTRY_SIZE }, { memcmp: { offset: 33, bytes: walletPk } }]
+  });
+  const entries = accounts.map(({ account }) => {
+    const d = account.data;
+    return {
+      roundVault: new PublicKey(d.subarray(1, 33)).toBase58(),
+      wallet: walletPk,
+      entitlementUsdc: Number(d.readBigUInt64LE(73)) / 1e6,
+      settled: d.readUInt8(81) === 1,
+      claimed: d.readUInt8(82) === 1
+    };
+  });
+  const infos = entries.length
+    ? await conn.getMultipleAccountsInfo(entries.map((e) => new PublicKey(e.roundVault)), "confirmed")
+    : [];
+  return entries.map((e, i) => ({ ...e, vault: infos[i] ? decodeVault(infos[i]!.data) : null }));
 }
 
 /** One wallet's PlayerEntry in a vault, or null if it never deposited. */

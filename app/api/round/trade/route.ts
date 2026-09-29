@@ -18,8 +18,14 @@ export async function POST(request: Request) {
   // Only the wallet itself (signed-in session) may act for its seat.
   const denied = requireWallet(request, body.wallet);
   if (denied) return denied;
-  if (body.action === "buy" && (!body.side || !body.usdc)) {
-    return NextResponse.json({ error: "side and usdc required for buy" }, { status: 400 });
+  if (body.action !== "buy" && body.action !== "sell") {
+    return NextResponse.json({ error: "action must be buy or sell" }, { status: 400 });
+  }
+  if (body.action === "buy") {
+    if (body.side !== "YES" && body.side !== "NO") return NextResponse.json({ error: "side must be YES (UP) or NO (DOWN)" }, { status: 400 });
+    if (typeof body.usdc !== "number" || !Number.isFinite(body.usdc) || body.usdc <= 0) {
+      return NextResponse.json({ error: "usdc must be a positive amount" }, { status: 400 });
+    }
   }
   const arena = normalizeArenaCode(body.arena);
 

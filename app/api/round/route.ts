@@ -2,7 +2,10 @@ import { NextResponse } from "next/server";
 import { STORE_ENABLED, withKeeperLock } from "@/lib/round-store";
 import { advanceToNext, bootstrapRound, livePricing, oraclePriceMap, pickMarket, tick, yesAfterTick, type Pricing } from "@/lib/round-keeper";
 import { PUBLIC_ARENA, cutLine, humanCount, newArenaCode, normalizeArenaCode, redactOpeningCalls, seatPlayer, standings, type Round, logEvent } from "@/lib/royale";
-import { escrowReady, initArenaOnChain } from "@/lib/escrow-server";
+import { escrowReady, initArenaOnChain, playerBalances } from "@/lib/escrow-server";
+import { sessionWallet } from "@/lib/session";
+import { limitByIp, overLimit } from "@/lib/rate-limit";
+import { PublicKey } from "@solana/web3.js";
 import { LOCK_HOLD_MAX_MS, unseatedDepositors, type SeatSync } from "@/lib/seat-sync";
 
 export const dynamic = "force-dynamic";
@@ -155,19 +158,47 @@ export async function POST(request: Request) {
   // a specific code (including PUBLIC) with the host secret.
   const arena = wantArena && forceOk ? wantArena : (wantArena === PUBLIC_ARENA ? PUBLIC_ARENA : newArenaCode());
 
+  const onChain = escrowReady() && arena !== PUBLIC_ARENA;
+  // Every on-chain arena costs the operator an InitRound (fee + rent), so
+  // hosting one needs a signed-in, funded wallet and is rate-limited.
+  const limited = limitByIp(request, "host", 12, 10 * 60_000);
+  if (limited) return limited;
+  const host = sessionWallet(request);
+  if (onChain && !host) {
+    return NextResponse.json({ error: "Sign in with your wallet to host an arena.", needsAuth: true }, { status: 401 });
+  }
+  if (onChain && overLimit("host-wallet", host!, 6, 10 * 60_000)) {
+    return NextResponse.json({ error: "You've opened several arenas in the last few minutes — wait a little before hosting another." }, { status: 429 });
+  }
+
   const fresh = await bootstrapRound(body.config as never, arena);
   if (!fresh) return NextResponse.json({ error: "no market available" }, { status: 503 });
+  // The host is whoever is signed in — never a value from the request body.
+  fresh.config.host = host ?? "";
+
+  if (onChain) {
+    const seat = fresh.config.entryUsdc + fresh.config.startingBankroll;
+    const bal = await playerBalances(new PublicKey(host!));
+    if (bal.usdc + 1e-9 < seat) {
+      return NextResponse.json({ error: `This seat costs ${seat.toFixed(2)} USDC but your wallet holds ${bal.usdc.toFixed(2)} devnet USDC. Get test USDC at faucet.circle.com (Solana Devnet).` }, { status: 402 });
+    }
+    if (bal.sol < 0.005) {
+      return NextResponse.json({ error: `You need about 0.005 devnet SOL for fees (you hold ${bal.sol.toFixed(4)}). Get some at faucet.solana.com.` }, { status: 402 });
+    }
+  }
 
   // If the on-chain escrow is deployed + configured AND this arena isn't the
   // walk-in PUBLIC lobby, mint the on-chain vault here so subsequent Deposit
   // calls have a real vault to land in. PUBLIC stays ledger-only — it's the
   // free bot practice arena.
-  if (escrowReady() && arena !== PUBLIC_ARENA) {
+  if (onChain) {
     const res = await initArenaOnChain({
       entryUsdc: fresh.config.entryUsdc,
       vaultUsdc: fresh.config.startingBankroll,
       capacity: fresh.config.capacity,
-      enrollmentSec: fresh.config.enrollmentSec
+      enrollmentSec: fresh.config.enrollmentSec,
+      liveSec: fresh.config.liveSec,
+      roundLimit: fresh.config.roundLimit
     });
     if (res.ok) {
       fresh.escrow = res.record;

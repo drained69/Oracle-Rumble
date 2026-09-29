@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { sessionWallet } from "@/lib/session";
 import { PublicKey } from "@solana/web3.js";
-import { buildDepositTx, buildWithdrawTx, escrowReady, playerBalances, readPlayerEntry, verifyPlayerDeposited } from "@/lib/escrow-server";
+import { buildDepositTx, buildWithdrawTx, escrowReady, playerBalances, readPlayerEntry, readVault, verifyPlayerDeposited } from "@/lib/escrow-server";
 import { getActiveRound, getLatestRound, mutateActiveRound } from "@/lib/round-store";
 import { normalizeArenaCode, type Side } from "@/lib/royale";
 import { validateUsername } from "@/lib/username";
@@ -30,6 +30,8 @@ export async function POST(request: Request) {
     action: "deposit" | "claim" | "recover";
     wallet: string;
     arena?: string;
+    /** Claim/recover only: the vault itself, for a deposit whose arena the ledger no longer has. */
+    roundVault?: string;
     nickname?: string;
     openingCall?: Side | null;
   };
@@ -41,6 +43,25 @@ export async function POST(request: Request) {
   let wallet: PublicKey;
   try { wallet = new PublicKey(body.wallet); }
   catch { return NextResponse.json({ error: "invalid wallet pubkey" }, { status: 400 }); }
+
+  if ((body.action === "claim" || body.action === "recover") && !body.arena && body.roundVault) {
+    // No arena record: build from the chain alone. The program enforces
+    // every rule (own entry, settled/claimed state, recovery deadline).
+    let rv: PublicKey;
+    try { rv = new PublicKey(body.roundVault); } catch { return NextResponse.json({ error: "invalid vault" }, { status: 400 }); }
+    const [pe, vault] = await Promise.all([readPlayerEntry(body.wallet, body.roundVault), readVault(body.roundVault)]);
+    if (!pe || !vault) return NextResponse.json({ error: "this wallet has no deposit in that vault" }, { status: 403 });
+    if (pe.claimed) return NextResponse.json({ error: "already claimed" }, { status: 409 });
+    if (body.action === "claim" && !(vault.settled && pe.settled && pe.entitlementUsdc > 0)) {
+      return NextResponse.json({ error: "nothing to claim from this vault yet" }, { status: 409 });
+    }
+    if (body.action === "recover" && (vault.settled || Date.now() / 1000 < vault.settleDeadline)) {
+      return NextResponse.json({ error: vault.settled ? "this vault was settled — claim instead" : "recovery opens after the vault's deadline" }, { status: 409 });
+    }
+    const res = await buildWithdrawTx(wallet, rv, body.action === "recover");
+    if ("error" in res) return NextResponse.json({ error: res.error }, { status: 409 });
+    return NextResponse.json({ escrow: "active", base64: res.base64, roundVault: rv.toBase58() });
+  }
 
   if (body.action === "deposit" || body.action === "claim" || body.action === "recover") {
     const arena = normalizeArenaCode(body.arena);

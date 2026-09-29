@@ -1,3 +1,4 @@
+import { limitByIp } from "@/lib/rate-limit";
 import { NextResponse } from "next/server";
 import { quoteParlay, validateParlay, type ParlayLeg } from "@/lib/parlay";
 import { findMockMarket } from "@/lib/arena-data";
@@ -29,6 +30,8 @@ type Body = {
 };
 
 export async function POST(request: Request) {
+  const limited = limitByIp(request, "panta-read", 120, 60_000);
+  if (limited) return limited;
   const body = (await request.json()) as Body;
   if (!Array.isArray(body?.legs) || body.legs.length === 0) {
     return NextResponse.json({ error: "legs[] required" }, { status: 400 });

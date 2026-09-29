@@ -1,3 +1,4 @@
+import { limitByIp } from "@/lib/rate-limit";
 import { NextResponse } from "next/server";
 import { PANTA_LIVE, pantaFetch, type SubmitRequest, type SubmitResponse } from "@/lib/panta";
 
@@ -10,6 +11,8 @@ import { PANTA_LIVE, pantaFetch, type SubmitRequest, type SubmitResponse } from 
  * /orders/verify to learn when it confirms.
  */
 export async function POST(request: Request) {
+  const limited = limitByIp(request, "panta-write", 30, 60_000);
+  if (limited) return limited;
   const body = (await request.json()) as SubmitRequest;
   if (!body?.orderId || !body?.signature) {
     return NextResponse.json({ error: "orderId, signature required" }, { status: 400 });

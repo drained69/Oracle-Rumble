@@ -1,3 +1,4 @@
+import { limitByIp } from "@/lib/rate-limit";
 import { NextResponse } from "next/server";
 import { PANTA_LIVE, pantaFetch, type ClaimBuildRequest, type ClaimBuildResponse, type PantaInstruction } from "@/lib/panta";
 
@@ -28,6 +29,8 @@ function sharesToUsdc(shares: string | number | undefined): string {
 }
 
 export async function POST(request: Request) {
+  const limited = limitByIp(request, "panta-write", 30, 60_000);
+  if (limited) return limited;
   const body = (await request.json()) as ClaimBuildRequest;
   if (!body?.wallet || !body?.marketId) {
     return NextResponse.json({ error: "wallet, marketId required" }, { status: 400 });

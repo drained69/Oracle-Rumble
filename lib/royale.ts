@@ -116,7 +116,7 @@ export const HOST_LIMITS = {
   // Scheduled events extend enrollment up to 3 hours so friends have time
   // to see the invite link before the first lock.
   enrollmentSec: { min: 20, max: 10_800 },
-  liveSec: { min: 60, max: 900 }
+  liveSec: { min: 60, max: 3_600 }
 } as const;
 
 const clamp = (n: number, lo: number, hi: number) =>
@@ -134,9 +134,11 @@ export function normalizeConfig(base: RoundConfig, patch: Partial<RoundConfig>):
   const roundLimit = format === "single"
     ? 1
     : clamp(patch.roundLimit ?? base.roundLimit, L.royaleRounds.min, L.royaleRounds.max);
+  // Only the host-tunable rules are taken from `patch` — never arbitrary
+  // fields from a request body.
   return {
     ...base,
-    ...patch,
+    host: typeof patch.host === "string" ? patch.host.slice(0, 64) : base.host,
     format,
     entryUsdc: clamp(patch.entryUsdc ?? base.entryUsdc, L.entryUsdc.min, L.entryUsdc.max),
     startingBankroll: clamp(patch.startingBankroll ?? base.startingBankroll, L.startingBankroll.min, L.startingBankroll.max),

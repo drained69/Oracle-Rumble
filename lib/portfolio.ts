@@ -1,0 +1,71 @@
+/** Shape of GET /api/portfolio — a wallet's arenas, positions and claims. */
+
+import type { RoundStatus, Side } from "@/lib/royale";
+
+export type PortfolioAction =
+  | "claim"     // settled: withdraw remaining vault + prize (or a refund)
+  | "recover"   // never settled and the recovery deadline passed
+  | "settling"  // finished; settlement on chain still in progress
+  | "claimed"   // already withdrawn
+  | "none";     // nothing to do (live, practice, or nothing left)
+
+export type PortfolioItem = {
+  /** Arena code, or "" for a deposit whose arena the server no longer knows. */
+  arena: string;
+  status: RoundStatus | "unknown";
+  question: string;
+  asset: string;
+  format: "single" | "royale";
+  roundNumber: number;
+  roundLimit: number;
+  createdAt: number;
+  endedAt: number;
+  /** Enrollment or trading deadline (ms), 0 when none is running. */
+  deadline: number;
+  /** Ledger-only practice arena — no USDC involved. */
+  practice: boolean;
+  me: null | {
+    nickname: string;
+    startingVault: number;
+    /** Vault value now: cash + open position + open parlays, at live prices. */
+    vault: number;
+    cash: number;
+    side: Side | null;
+    shares: number;
+    avgPrice: number;        // cents
+    markPrice: number | null; // cents, current price of the side held
+    openingCall: Side | null; // only returned to the wallet itself
+    openParlays: number;
+    /** Place among players still in (live) or overall finishing place (done). */
+    place: number | null;
+    players: number;
+    /** How many survive this round's cut (live royale / single final). */
+    survivors: number;
+    eliminatedRound: number | null;
+    prizeUsdc: number;
+  };
+  chain: null | {
+    roundVault: string;
+    seatUsdc: number;
+    entitlementUsdc: number;
+    settled: boolean;
+    claimed: boolean;
+    claimsOpen: boolean;
+    recoverAt: number | null; // ms
+  };
+  action: PortfolioAction;
+  /** USDC the action pays out (claim / recover). */
+  actionUsdc: number;
+};
+
+export type Portfolio = {
+  wallet: string;
+  items: PortfolioItem[];
+  summary: {
+    active: number;        // arenas enrolling or live
+    inPlayUsdc: number;    // vault value across active on-chain arenas
+    claimableUsdc: number; // withdrawable right now
+    prizesUsdc: number;    // prizes won, all time
+  };
+  error?: string;
+};
