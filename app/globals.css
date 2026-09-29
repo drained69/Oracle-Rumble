@@ -3918,3 +3918,5 @@ a.pf-code:hover { background: rgba(34, 211, 238, 0.08); }
 /* "How the arena works": 3 → 2 → 1 columns. */
 @media (max-width: 1000px) { .how-grid, .arena-main .how-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
 @media (max-width: 640px) { .how-grid, .arena-main .how-grid { grid-template-columns: 1fr; } }
+.final-board .fb-row.fb-head span { font: inherit; color: var(--text-3); text-shadow: none; }
+.final-board .fb-row.fb-head { padding-top: 6px; padding-bottom: 6px; }

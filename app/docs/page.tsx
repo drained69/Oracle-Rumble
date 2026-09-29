@@ -187,7 +187,7 @@ withdraw  = prize share + vault pot × (your final vault ÷ all final vaults)`}<
               <li><b>Host doesn&apos;t fund seat #1</b> — the host picks UP, DOWN or decide later and pays seat 1 like everyone else. If the host rejects the deposit, or no seat is confirmed within 3 minutes of opening, the arena closes before anyone else can join.</li>
               <li><b>Your seat follows your deposit</b> — the escrow vault is the source of truth. If your deposit confirms but the page loses its connection before the seat is registered, the arena seats you from your on-chain entry automatically (before it locks, with the username and call you chose). An arena that has received a deposit can&apos;t be cancelled as empty.</li>
               <li><b>Full refunds</b> — when an arena closes without starting, every wallet that deposited (including a deposit that confirmed after the close) is refunded its full seat. The refund opens about two minutes after the close; claim it from the arena page. A deposit that lands after the round has already started is refunded in full at settlement.</li>
-              <li><b>Settlement never happens</b> — as a last resort, one hour after enrollment closes any depositor can call Recover directly on the escrow program and receive their full seat.</li>
+              <li><b>Settlement never happens</b> — as a last resort, once the arena's recovery deadline passes (an hour after the longest the game could possibly run) any depositor can call Recover on the escrow program and receive their full seat. Your Positions page shows a Recover button when that applies.</li>
             </ul>
           </Section>
 

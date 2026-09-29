@@ -32,7 +32,8 @@ async function currentWithTick(arena: string, allowBootstrap: boolean): Promise<
   const mayAdvance = peek?.status === "live";
   const nextMarket = mayAdvance ? await pickMarket(peek?.config.marketId) : null;
   // Only the walk-in PUBLIC arena auto-boots. Hosted arenas stay empty when done.
-  const bootRound = !peek && allowBootstrap ? await bootstrapRound(undefined, arena) : null;
+  // The walk-in practice arena runs quick single rounds.
+  const bootRound = !peek && allowBootstrap ? await bootstrapRound({ format: "single" }, arena) : null;
   // Paid-but-unseated wallets (escrow arenas while enrolling).
   const sync = await unseatedDepositors(peek);
 
@@ -41,9 +42,12 @@ async function currentWithTick(arena: string, allowBootstrap: boolean): Promise<
     let round = await ctx.getActive();
     if (!round) {
       const latest = await ctx.getLatest();
-      if (latest && (latest.status === "complete" || latest.status === "cancelled")
+      // Hold a finished result on screen briefly — except an empty practice
+      // round, which is simply replaced.
+      const emptyPractice = arena === PUBLIC_ARENA && !!latest && humanCount(latest) === 0;
+      if (latest && !emptyPractice && (latest.status === "complete" || latest.status === "cancelled")
           && latest.endedAt && Date.now() - latest.endedAt < HOLD_MS) {
-        return latest; // hold the result on screen briefly
+        return latest;
       }
       if (bootRound) { await ctx.save(bootRound); await ctx.cancelOtherActive(bootRound.id); return bootRound; }
       return latest ?? null;
@@ -56,6 +60,7 @@ async function currentWithTick(arena: string, allowBootstrap: boolean): Promise<
       await ctx.save(round);
       return round;
     }
+    const before = JSON.stringify(round);
     tick(round, pricing);
     if (round.status === "advancing") {
       const next = advanceToNext(round, nextMarket, pricing.spots);
@@ -63,7 +68,8 @@ async function currentWithTick(arena: string, allowBootstrap: boolean): Promise<
       await ctx.save(next);
       await ctx.cancelOtherActive(next.id);
       round = next;
-    } else {
+    } else if (JSON.stringify(round) !== before) {
+      // Most polls change nothing (e.g. an enrolling room) — skip the write.
       await ctx.save(round);
     }
     return round;

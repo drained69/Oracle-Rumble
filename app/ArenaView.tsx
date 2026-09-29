@@ -1041,16 +1041,16 @@ export default function ArenaView({ arenaCode }: { arenaCode: string }) {
         <div className="how-grid">
           <div><b>1 · Host chooses the game</b><p>Any user opens their own arena — pick BTC, ETH or SOL, the player limit, the entry, the starting vault, and one to four rounds. You get a shareable link.</p></div>
           <div><b>2 · Invite friends</b><p>Send the arena link. Anyone with the link takes a seat in your room — everyone else plays a different arena on the same site.</p></div>
-          <div><b>3 · Entry and vault separate</b><p>Your entry joins the shared prize pool. Your starting vault stays in your own game account to trade.</p></div>
+          <div><b>3 · Entry and vault separate</b><p>Your entry joins the shared prize pool. Your vault is your trading bankroll for the round.</p></div>
           <div><b>4 · Call UP or DOWN</b><p>Pick a direction when you sit down, or trade once the round opens. The round opens at the asset&apos;s live price: UP pays $1 a share if it closes higher, DOWN if lower.</p></div>
           <div><b>5 · The price decides</b><p>At the deadline the live price settles every position and players are ranked by vault value. In a royale the bottom half is cut and survivors carry their bankroll on.</p></div>
-          <div><b>6 · Winners claim &amp; progress</b><p>Everyone withdraws their remaining vault. Top finishers share the pool — 62.5% / 23.4% / 14.1%, or the whole pool in a duel.</p></div>
+          <div><b>6 · Everyone withdraws</b><p>Top finishers share the pool — 62.5% / 23.4% / 14.1%, or all of it in a duel. The players&apos; vault money is shared by how each vault finished, so losses fund gains. Withdraw from the arena or your Positions page.</p></div>
         </div>
         <p className="disclaimer">
           Rounds, vaults, elimination and the prize pool are server-side game state on Postgres, priced by the
           live BTC, ETH and SOL spot price (Coinbase, with Kraken as backup). Player funds are held in a non-custodial
-          escrow program on Solana {CLUSTER} — testnet USDC has no monetary value. If a game can&apos;t finish,
-          recovery lets players reclaim their entry and remaining vault.
+          escrow program on Solana {CLUSTER} — testnet USDC has no monetary value. If a game is never settled,
+          recovery lets each player take their full seat back after the deadline.
         </p>
       </section>
 
@@ -1160,7 +1160,7 @@ export default function ArenaView({ arenaCode }: { arenaCode: string }) {
               </form>
               <p className="disclaimer" style={{ marginTop: 12 }}>
                 {round.escrow
-                  ? <>Held in a non-custodial escrow program on Solana {CLUSTER}. You withdraw your remaining vault plus any prize after settlement.</>
+                  ? <>Held in a non-custodial escrow program on Solana {CLUSTER}. After settlement you withdraw your payout: any prize plus your share of the vault money.</>
                   : <>Practice arena — no USDC moves and nothing is deposited.</>}
               </p>
             </div>

@@ -34,6 +34,8 @@ import {
 const HOST_SEAT_GRACE_MS = 3 * 60_000;
 /** Max time to hold a lock or a settlement waiting for the price oracle. */
 const ORACLE_WAIT_MS = 60_000;
+/** Bots make one trading decision at most this often. */
+const BOT_TICK_MS = 5_000;
 /** A spot price read this soon after the deadline counts as the close. */
 const CLOSE_FRESH_MS = 15_000;
 
@@ -155,6 +157,9 @@ function assetOfCandidate(id: string, question: string): AssetSymbol | null {
  * the fallback. Optionally excludes the current market so rounds rotate assets.
  */
 export async function pickMarket(excludeId?: string): Promise<MarketPick | null> {
+  // Royale rounds keep the timeframe of the round they follow ("up in 15
+  // minutes" stays 15 minutes); only the asset rotates.
+  const keepHorizon = excludeId ? findMockMarket(excludeId)?.market.horizon : undefined;
   let candidates: Array<{ id: string; question: string; category: string; asset: AssetSymbol }> = [];
   if (PANTA_LIVE) {
     try {
@@ -176,6 +181,10 @@ export async function pickMarket(excludeId?: string): Promise<MarketPick | null>
   // Rotate to a different asset than the one just played, not just a
   // different market on the same asset.
   const excludeAsset = excludeId ? assetOfCandidate(excludeId, "") : null;
+  if (keepHorizon) {
+    const same = candidates.filter((c) => findMockMarket(c.id)?.market.horizon === keepHorizon);
+    if (same.length) candidates = same;
+  }
   const pool = candidates.filter((c) => c.id !== excludeId && (!excludeAsset || c.asset !== excludeAsset));
   const chosen = (pool.length ? pool : candidates.filter((c) => c.id !== excludeId))[0] ?? candidates[0];
   if (!chosen) return null;
@@ -203,8 +212,10 @@ export async function bootstrapRound(overrides?: Partial<RoundConfig> & { horizo
 
   // The trading window IS the market's horizon, so "Will SOL be up in the
   // next hour?" really runs (and resolves) over an hour.
-  const horizonSec: Record<string, number> = { MIN5: 300, MIN15: 900, HOUR: 3_600 };
-  const impliedLiveSec = wantHorizon && horizonSec[wantHorizon] ? horizonSec[wantHorizon] : undefined;
+  const horizonSec: Record<string, number> = { MIN5: 300, MIN15: 900, HOUR: 3_600, DAY: 3_600 };
+  // The round lasts exactly its market's timeframe, whatever the caller asked.
+  const marketHorizon = findMockMarket(market.marketId)?.market.horizon;
+  const impliedLiveSec = marketHorizon ? horizonSec[marketHorizon] : wantHorizon ? horizonSec[wantHorizon] : undefined;
 
   const base: RoundConfig = {
     ...DEFAULT_CONFIG,
@@ -218,6 +229,7 @@ export async function bootstrapRound(overrides?: Partial<RoundConfig> & { horizo
   const { marketId: _m, marketQuestion: _q, category: _c, asset: _a, horizon: _h, ...rules } = overrides ?? {};
   void _m; void _q; void _c; void _a; void _h;
   const config = normalizeConfig(base, rules);
+  if (impliedLiveSec) config.liveSec = impliedLiveSec;
   return createRound(config, 1, arenaCode);
 }
 
@@ -273,7 +285,9 @@ export function tick(round: Round, pricing: Pricing): Round {
 
   // The walk-in practice arena never cancels for being empty: it waits for
   // its first player, whose seat starts a fresh enrollment clock.
-  if (round.status === "enrolling" && humanCount(round) === 0 && round.arenaCode === PUBLIC_ARENA && now >= round.enrollDeadline) {
+  // (A leftover round with older practice settings is retired instead.)
+  if (round.status === "enrolling" && humanCount(round) === 0 && round.arenaCode === PUBLIC_ARENA && now >= round.enrollDeadline
+      && round.config.format === "single") {
     round.enrollDeadline = now + round.config.enrollmentSec * 1000;
   }
 
@@ -329,8 +343,12 @@ export function tick(round: Round, pricing: Pricing): Round {
     }
     const priceMap = direction ? oraclePriceMap(round, pricing.spots, now) : pricing.priceMap;
     const yesPrice = direction ? priceMap[round.config.marketId] ?? 50 : pricing.yesPrice;
+    // The keeper runs on every page poll; pace the bots so how often they
+    // trade doesn't depend on how many people are watching.
+    const botsAct = !round.botTickAt || now - round.botTickAt >= BOT_TICK_MS;
+    if (botsAct) round.botTickAt = now;
     for (const e of round.entrants) {
-      if (e.isBot) botTick(e, yesPrice);
+      if (e.isBot && botsAct) botTick(e, yesPrice);
       markToMarket(e, yesPrice, priceMap);
     }
     if (now >= round.liveDeadline) {

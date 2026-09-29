@@ -279,6 +279,7 @@ export type Round = {
   history: string[];      // human-readable event log
   historyAt?: number[];   // ms epoch per history entry (0 = not recorded)
   oracle?: RoundOracle;   // direction rounds: open/last/close prices
+  botTickAt?: number;     // ms — bots decide at a fixed pace, not once per page poll
   /** On-chain escrow record; undefined = ledger-only arena. */
   escrow?: RoundEscrowRecord;
 };
