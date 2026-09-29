@@ -128,7 +128,8 @@ export async function POST(request: Request) {
     const res = body.action === "deposit"
       ? await buildDepositTx(wallet, roundVault, memo)
       : await buildWithdrawTx(wallet, roundVault, body.action === "recover");
-    if ("error" in res) return NextResponse.json({ error: res.error }, { status: 500 });
+    if ("error" in res) return NextResponse.json({ error: res.error }, { status: 409 });
+    console.log(`[escrow] ${body.action} tx built arena=${arena} wallet=${body.wallet}`);
     return NextResponse.json({ escrow: "active", base64: res.base64, roundVault: roundVault.toBase58() });
   }
 

@@ -19,7 +19,7 @@ function b64ToBytes(s: string): Uint8Array {
  * devnet, then wait for confirmation. Used for escrow Deposit / Claim /
  * Recover. Throws a player-readable Error.
  */
-async function signAndBroadcastLegacy(wallet: string, base64: string, action: string, onSent?: () => void): Promise<string> {
+async function signAndBroadcastLegacy(wallet: string, base64: string, action: string, onSent?: () => void, onSlow?: (walletName: string) => void): Promise<string> {
   if (typeof window === "undefined") throw new Error("client only");
   const { Connection, Transaction } = await import("@solana/web3.js");
   const conn = new Connection(SOLANA_RPC, "confirmed");
@@ -27,7 +27,11 @@ async function signAndBroadcastLegacy(wallet: string, base64: string, action: st
 
   let signature: string;
   try {
-    signature = await signAndSendAs(wallet, tx, (raw) => conn.sendRawTransaction(raw, { skipPreflight: false }), action);
+    signature = await signAndSendAs(
+      wallet, tx,
+      (raw) => conn.sendRawTransaction(raw, { skipPreflight: false, preflightCommitment: "confirmed", maxRetries: 5 }),
+      action, onSlow
+    );
   } catch (err) {
     throw new Error(describeWalletError(err, action));
   }
@@ -161,23 +165,27 @@ async function finishSeat(wallet: string, nickname: string, arena: string | unde
  * Make sure the wallet is reachable on the right account and signed in,
  * before anything costs money (e.g. before an arena is created for a host).
  */
-export async function prepareWallet(wallet: string, onStep?: (step: SeatStep) => void): Promise<{ ok: true } | { ok: false; error: string }> {
+export async function prepareWallet(wallet: string, onStep?: (step: SeatStep, walletName?: string) => void): Promise<{ ok: true } | { ok: false; error: string }> {
   try { await ensureWalletFor(wallet); }
   catch (err) { return { ok: false, error: describeWalletError(err, "The connection request") }; }
-  const auth = await ensureSession(wallet, () => onStep?.("signin"));
+  const auth = await ensureSession(wallet, () => onStep?.("signin"), (name) => onStep?.("waiting", name));
   return auth.ok ? { ok: true } : { ok: false, error: auth.error };
 }
 
 /** Where a seat request is — drives the "approve in your wallet" hints. */
-export type SeatStep = "signin" | "deposit" | "confirming" | "seating";
+export type SeatStep = "signin" | "deposit" | "waiting" | "confirming" | "seating";
 
 /** Toast line and short button label for each seat step. */
-export function seatStepText(step: SeatStep, seatUsd: number, call?: OpeningCall): { toast: string; button: string } {
+export function seatStepText(step: SeatStep, seatUsd: number, call?: OpeningCall, walletName = "your wallet"): { toast: string; button: string } {
   const amount = `$${seatUsd.toFixed(2)}`;
   const callText = call === "YES" ? " · opening call UP" : call === "NO" ? " · opening call DOWN" : "";
   switch (step) {
     case "signin": return { toast: "Sign in with your wallet — a free message, not a transaction.", button: "Sign the message in your wallet…" };
     case "deposit": return { toast: `Approve the ${amount} seat deposit in your wallet${callText}.`, button: "Approve the deposit in your wallet…" };
+    case "waiting": return {
+      toast: `Still waiting for ${walletName}. If its window isn't showing, click the ${walletName === "your wallet" ? "wallet" : walletName} icon in your browser toolbar — or check behind this window.`,
+      button: `Waiting for ${walletName}…`
+    };
     case "confirming": return { toast: "Deposit sent — confirming on Solana…", button: "Confirming on Solana…" };
     case "seating": return { toast: "Taking your seat…", button: "Taking your seat…" };
   }
@@ -188,10 +196,10 @@ export function seatStepText(step: SeatStep, seatUsd: number, call?: OpeningCall
  * the connected wallet, then finalize the enrollment. Falls back cleanly to
  * ledger enroll when the arena is not escrow-backed.
  */
-export async function enrollWithEscrow(wallet: string, nickname: string, arena?: string, openingCall: OpeningCall = null, onStep?: (step: SeatStep) => void): Promise<EnrollResult> {
+export async function enrollWithEscrow(wallet: string, nickname: string, arena?: string, openingCall: OpeningCall = null, onStep?: (step: SeatStep, walletName?: string) => void): Promise<EnrollResult> {
   // Attempt 1: plain enroll. Seats a ledger-only arena, a wallet that is
   // already seated, or one whose deposit already landed; otherwise 402.
-  const auth = await ensureSession(wallet, () => onStep?.("signin"));
+  const auth = await ensureSession(wallet, () => onStep?.("signin"), (name) => onStep?.("waiting", name));
   if (!auth.ok) return { error: auth.error };
   onStep?.("seating");
   const first = await enrollRound(wallet, nickname, arena, undefined, openingCall);
@@ -217,7 +225,7 @@ export async function enrollWithEscrow(wallet: string, nickname: string, arena?:
   // Sign + broadcast via the connected wallet.
   let sig: string;
   onStep?.("deposit");
-  try { sig = await signAndBroadcastLegacy(wallet, txRes.base64, "The deposit", () => onStep?.("confirming")); }
+  try { sig = await signAndBroadcastLegacy(wallet, txRes.base64, "The deposit", () => onStep?.("confirming"), (name) => onStep?.("waiting", name)); }
   catch (err) { return { error: err instanceof Error ? err.message : "The deposit failed in your wallet." }; }
 
   onStep?.("seating");
@@ -245,7 +253,7 @@ export async function serverSettleArena(arena: string): Promise<{ ok?: boolean; 
 }
 
 /** Claim my settled entitlement out of the arena's escrow to my wallet. */
-export async function claimFromEscrow(wallet: string, arena: string, recover = false): Promise<{ signature?: string; error?: string; escrow?: string }> {
+export async function claimFromEscrow(wallet: string, arena: string, recover = false, onSlow?: (walletName: string) => void): Promise<{ signature?: string; error?: string; escrow?: string }> {
   const txRes = await fetch("/api/escrow/tx", {
     method: "POST", headers: { "content-type": "application/json" },
     body: JSON.stringify({ action: recover ? "recover" : "claim", wallet, arena })
@@ -253,7 +261,7 @@ export async function claimFromEscrow(wallet: string, arena: string, recover = f
   if (txRes.escrow === "inactive") return { error: "escrow is inactive" };
   if (txRes.error) return { error: txRes.error };
   try {
-    const signature = await signAndBroadcastLegacy(wallet, txRes.base64, recover ? "The refund" : "The withdrawal");
+    const signature = await signAndBroadcastLegacy(wallet, txRes.base64, recover ? "The refund" : "The withdrawal", undefined, onSlow);
     return { signature };
   } catch (err) {
     return { error: err instanceof Error ? err.message : "wallet signing failed" };

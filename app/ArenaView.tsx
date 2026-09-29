@@ -197,9 +197,9 @@ export default function ArenaView({ arenaCode }: { arenaCode: string }) {
       // (real USDC on devnet) before the ledger enrolls. Ledger-only arenas
       // fall through immediately. Signing UI is provided by the wallet.
       const seatUsd = round ? round.config.entryUsdc + round.config.startingBankroll : 0;
-      const r = await enrollWithEscrow(wallet, nick, arenaCode, call, (step) => {
+      const r = await enrollWithEscrow(wallet, nick, arenaCode, call, (step, name) => {
         setSeatStep(step);
-        setToast(seatStepText(step, seatUsd, call).toast);
+        setToast(seatStepText(step, seatUsd, call, name).toast);
       });
       const seated = !!(r.entrantId || r.already);
       if (seated) {
@@ -279,7 +279,7 @@ export default function ArenaView({ arenaCode }: { arenaCode: string }) {
     if (!wallet) return setToast("Connect a wallet first.");
     setBusy(true);
     try {
-      const r = await claimFromEscrow(wallet, arenaCode, recover);
+      const r = await claimFromEscrow(wallet, arenaCode, recover, (name) => setToast(seatStepText("waiting", 0, null, name).toast));
       if (r.error) setToast(`Claim: ${r.error}`);
       else if (r.signature) setToast(`${recover ? "Recovered" : "Claimed"} · ${r.signature.slice(0, 8)}…`);
       else setToast("Withdrawal submitted.");
@@ -418,7 +418,7 @@ export default function ArenaView({ arenaCode }: { arenaCode: string }) {
       }
       // Wallet reachable and signed in before an arena is created for us.
       const call: OpeningCall = hCall === "YES" || hCall === "NO" ? hCall : null;
-      const onStep = (step: SeatStep) => { setSeatStep(step); setToast(seatStepText(step, hostSeat, call).toast); };
+      const onStep = (step: SeatStep, name?: string) => { setSeatStep(step); setToast(seatStepText(step, hostSeat, call, name).toast); };
       if (wallet) {
         const ready = await prepareWallet(wallet, onStep);
         if (!ready.ok) { setToast(ready.error); return; }

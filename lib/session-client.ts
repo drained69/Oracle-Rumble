@@ -27,7 +27,7 @@ export async function hasSession(wallet: string): Promise<boolean> {
   return false;
 }
 
-async function signIn(wallet: string, onPrompt?: () => void): Promise<Result> {
+async function signIn(wallet: string, onPrompt?: () => void, onSlow?: (walletName: string) => void): Promise<Result> {
   if (await hasSession(wallet)) return { ok: true };
 
   let ch: { message?: string; token?: string; error?: string };
@@ -43,7 +43,7 @@ async function signIn(wallet: string, onPrompt?: () => void): Promise<Result> {
   let sig: Uint8Array;
   try {
     onPrompt?.();
-    sig = await signMessageAs(wallet, new TextEncoder().encode(ch.message));
+    sig = await signMessageAs(wallet, new TextEncoder().encode(ch.message), onSlow);
   } catch (err) {
     const error = describeWalletError(err, "Sign-in");
     return { ok: false, error, cancelled: /cancelled/.test(error) };
@@ -66,10 +66,10 @@ async function signIn(wallet: string, onPrompt?: () => void): Promise<Result> {
  * Make sure the browser holds a session for `wallet`, asking the wallet to
  * sign in if needed. `onPrompt` runs just before the wallet prompt opens.
  */
-export function ensureSession(wallet: string, onPrompt?: () => void): Promise<Result> {
+export function ensureSession(wallet: string, onPrompt?: () => void, onSlow?: (walletName: string) => void): Promise<Result> {
   if (signedInAs === wallet) return Promise.resolve({ ok: true });
   if (pending?.wallet === wallet) return pending.promise;
-  const promise = signIn(wallet, onPrompt).finally(() => { if (pending?.promise === promise) pending = null; });
+  const promise = signIn(wallet, onPrompt, onSlow).finally(() => { if (pending?.promise === promise) pending = null; });
   pending = { wallet, promise };
   return promise;
 }

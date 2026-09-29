@@ -224,56 +224,146 @@ export async function ensureWalletFor(expected: string): Promise<WalletOption> {
   return opt;
 }
 
+// ---- Diagnostics ---------------------------------------------------------------
+
+/**
+ * Wallet prompts run in the browser, out of the server's sight. Failures and
+ * slow prompts are reported to /api/client-log so they show in server logs.
+ * Public data only.
+ */
+export function reportWallet(event: string, data: { wallet?: string; walletName?: string; action?: string; message?: string; ms?: number }): void {
+  try {
+    const body = JSON.stringify({ event, page: location.pathname, ...data });
+    if (!navigator.sendBeacon?.("/api/client-log", new Blob([body], { type: "application/json" }))) {
+      void fetch("/api/client-log", { method: "POST", headers: { "content-type": "application/json" }, body, keepalive: true }).catch(() => {});
+    }
+  } catch { /* diagnostics must never break a flow */ }
+}
+
+/** A wallet prompt left unanswered this long gets a "where is it?" hint. */
+const SLOW_MS = 15_000;
+
+function errText(err: unknown): string {
+  const e = err as { code?: unknown; message?: unknown } | null;
+  return `${e?.code ?? ""} ${String(e?.message ?? err ?? "")}`.trim().slice(0, 200);
+}
+
 // ---- Signing -----------------------------------------------------------------
 
 /** Sign an off-chain message as `expected`. Returns the 64-byte signature. */
-export async function signMessageAs(expected: string, message: Uint8Array): Promise<Uint8Array> {
-  const { provider: p, name, kind } = await ensureWalletFor(expected);
-  if (typeof p.signMessage !== "function") {
-    throw new WalletError("unsupported", `${name} can't sign messages, which sign-in needs — update it or connect a different wallet.`);
-  }
-  let out: unknown;
+export async function signMessageAs(expected: string, message: Uint8Array, onSlow?: (walletName: string) => void): Promise<Uint8Array> {
+  const opt = activeWallet();
+  const started = Date.now();
+  const timer = setTimeout(() => {
+    onSlow?.(opt?.name ?? "your wallet");
+    reportWallet("slow", { wallet: expected, walletName: opt?.name, action: "sign-in", ms: SLOW_MS });
+  }, SLOW_MS);
   try {
-    // Backpack's second argument is an account, not a display encoding.
-    out = kind === "backpack" ? await p.signMessage(message) : await p.signMessage(message, "utf8");
+    const { provider: p, name, kind } = await ensureWalletFor(expected);
+    if (typeof p.signMessage !== "function") {
+      throw new WalletError("unsupported", `${name} can't sign messages, which sign-in needs — update it or connect a different wallet.`);
+    }
+    let out: unknown;
+    try {
+      // Backpack's second argument is an account, not a display encoding.
+      out = kind === "backpack" ? await p.signMessage(message) : await p.signMessage(message, "utf8");
+    } catch (err) {
+      reportWallet("error", { wallet: expected, walletName: name, action: "sign-in", message: errText(err), ms: Date.now() - started });
+      throw asWalletError(err, "Sign-in");
+    }
+    const raw = out instanceof Uint8Array || Array.isArray(out) ? out : (out as { signature?: unknown } | null)?.signature;
+    const sig = raw instanceof Uint8Array ? raw : Array.isArray(raw) ? Uint8Array.from(raw as number[]) : null;
+    if (!sig || sig.length !== 64) throw new WalletError("failed", `${name} didn't return a valid signature.`);
+    return sig;
   } catch (err) {
-    throw asWalletError(err, "Sign-in");
+    if (err instanceof WalletError && err.reason !== "cancelled") {
+      reportWallet("error", { wallet: expected, walletName: opt?.name, action: "sign-in", message: err.message, ms: Date.now() - started });
+    }
+    throw err;
+  } finally {
+    clearTimeout(timer);
   }
-  const raw = out instanceof Uint8Array || Array.isArray(out) ? out : (out as { signature?: unknown } | null)?.signature;
-  const sig = raw instanceof Uint8Array ? raw : Array.isArray(raw) ? Uint8Array.from(raw as number[]) : null;
-  if (!sig || sig.length !== 64) throw new WalletError("failed", `${name} didn't return a valid signature.`);
-  return sig;
+}
+
+/** Solana's reply to a send, in a sentence (the wallet already signed). */
+function explainSendError(err: unknown, action: string): WalletError {
+  const msg = String((err as { message?: unknown } | null)?.message ?? err ?? "");
+  if (/blockhash not found|block height exceeded|expired/i.test(msg)) {
+    return new WalletError("failed", `${action} expired while it waited in your wallet (Solana transactions last about a minute). Nothing was taken — try again and approve it straight away.`);
+  }
+  if (/insufficient (funds|lamports)|no record of a prior credit|0x1\b/i.test(msg)) {
+    return new WalletError("failed", `${action} was rejected by Solana: not enough USDC or SOL in your wallet. Nothing was taken.`);
+  }
+  if (/already been processed/i.test(msg)) return new WalletError("failed", `${action} was already sent.`);
+  return new WalletError("failed", `${action} was signed but Solana rejected it: ${msg.replace(/^.*?Transaction simulation failed: /, "").slice(0, 160)}. Nothing was taken.`);
 }
 
 /**
- * Sign and send a transaction as `expected`. Uses the wallet's own
- * sign-and-send when it has one, otherwise signs and hands the bytes to
- * `broadcast`. Returns the transaction signature.
+ * Sign a transaction as `expected` and send it. The wallet only signs; the
+ * app sends through its own RPC (`broadcast`), so the transaction always
+ * goes to this app's cluster whatever network the wallet is set to — a
+ * wallet's own "sign and send" uses the wallet's network. Returns the
+ * transaction signature.
  */
 export async function signAndSendAs(
   expected: string,
   tx: unknown,
   broadcast: (raw: Uint8Array) => Promise<string>,
-  action = "The transaction"
+  action = "The transaction",
+  onSlow?: (walletName: string) => void
 ): Promise<string> {
-  const { provider: p, name } = await ensureWalletFor(expected);
-  let sig: unknown;
+  const opt = activeWallet();
+  const started = Date.now();
+  const timer = setTimeout(() => {
+    onSlow?.(opt?.name ?? "your wallet");
+    reportWallet("slow", { wallet: expected, walletName: opt?.name, action, ms: SLOW_MS });
+  }, SLOW_MS);
+  let name = opt?.name ?? "your wallet";
   try {
-    if (typeof p.signAndSendTransaction === "function") {
-      const res = await p.signAndSendTransaction(tx);
-      // Phantom/Brave return { signature }, Solflare returns the string.
-      sig = typeof res === "string" ? res : (res as { signature?: unknown } | null)?.signature;
-    } else if (typeof p.signTransaction === "function") {
-      const signed = await p.signTransaction(tx);
-      sig = await broadcast(signed.serialize());
-    } else {
-      throw new WalletError("unsupported", `${name} can't sign transactions.`);
+    const ready = await ensureWalletFor(expected);
+    const p = ready.provider;
+    name = ready.name;
+
+    if (typeof p.signTransaction === "function") {
+      let signed: { serialize(): Uint8Array };
+      try { signed = await p.signTransaction(tx); }
+      catch (err) {
+        reportWallet("error", { wallet: expected, walletName: name, action, message: errText(err), ms: Date.now() - started });
+        throw asWalletError(err, action);
+      }
+      clearTimeout(timer);
+      let raw: Uint8Array;
+      try { raw = signed.serialize(); }
+      catch { throw new WalletError("failed", `${name} returned the transaction without your signature — try again.`); }
+      try {
+        return await broadcast(raw);
+      } catch (err) {
+        reportWallet("send-failed", { wallet: expected, walletName: name, action, message: errText(err), ms: Date.now() - started });
+        throw explainSendError(err, action);
+      }
     }
+
+    if (typeof p.signAndSendTransaction === "function") {
+      let res: unknown;
+      try { res = await p.signAndSendTransaction(tx); }
+      catch (err) {
+        reportWallet("error", { wallet: expected, walletName: name, action, message: errText(err), ms: Date.now() - started });
+        throw asWalletError(err, action);
+      }
+      // Phantom/Brave return { signature }, Solflare returns the string.
+      const sig = typeof res === "string" ? res : (res as { signature?: unknown } | null)?.signature;
+      if (typeof sig !== "string" || !sig) throw new WalletError("failed", `${name} didn't return a transaction signature.`);
+      return sig;
+    }
+    throw new WalletError("unsupported", `${name} can't sign transactions.`);
   } catch (err) {
-    throw asWalletError(err, action);
+    if (err instanceof WalletError && (err.reason === "wrong-account" || err.reason === "not-connected" || err.reason === "none" || err.reason === "unsupported")) {
+      reportWallet("error", { wallet: expected, walletName: name, action, message: err.message, ms: Date.now() - started });
+    }
+    throw err;
+  } finally {
+    clearTimeout(timer);
   }
-  if (typeof sig !== "string" || !sig) throw new WalletError("failed", `${name} didn't return a transaction signature.`);
-  return sig;
 }
 
 // ---- Account changes -------------------------------------------------------

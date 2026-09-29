@@ -153,7 +153,7 @@ export default function ArenasDirectory() {
     }
 
     const call = hCall === "LATER" ? null : hCall;
-    const onStep = (step: SeatStep) => { setHostStep(step); setToast(seatStepText(step, hostSeat, call).toast); };
+    const onStep = (step: SeatStep, name?: string) => { setHostStep(step); setToast(seatStepText(step, hostSeat, call, name).toast); };
     try {
       // Check funds and the wallet BEFORE the operator pays for an on-chain
       // InitRound, so a declined sign-in doesn't leave a cancelled arena.
@@ -222,8 +222,10 @@ export default function ArenasDirectory() {
   const goTo = useCallback((slug: string) => { window.location.href = slug; }, []);
 
   const active = useMemo(
-    () => arenas.filter((a) => !a.isPublic && ["enrolling", "live", "settling", "advancing"].includes(a.status)),
-    [arenas]
+    // An on-chain arena whose host hasn't paid seat 1 yet isn't open to join.
+    () => arenas.filter((a) => !a.isPublic && ["enrolling", "live", "settling", "advancing"].includes(a.status)
+      && !(escrow?.active && a.status === "enrolling" && a.humans === 0)),
+    [arenas, escrow?.active]
   );
   const featured = active.find((a) => a.status === "live")
     ?? active.find((a) => a.status === "enrolling")

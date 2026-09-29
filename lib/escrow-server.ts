@@ -19,7 +19,8 @@ import {
   Keypair,
   PublicKey,
   Transaction,
-  TransactionInstruction
+  TransactionInstruction,
+  VersionedTransaction
 } from "@solana/web3.js";
 import {
   ESCROW_ACTIVE,
@@ -177,14 +178,52 @@ export async function playerBalances(owner: PublicKey): Promise<{ usdc: number; 
 }
 
 // ── CLIENT-SIGNED TX BUILDERS ────────────────────────────────────────────
-/** Wrap instructions into a legacy Transaction; return base64 for wallet signing. */
-async function buildTx(ixs: Awaited<ReturnType<typeof ixDeposit>>[], feePayer: PublicKey): Promise<string> {
-  const { blockhash } = await connection().getLatestBlockhash("confirmed");
+
+/** Escrow program errors are Custom(100 + index) — see program/src/lib.rs. */
+const ESCROW_ERRORS = [
+  "account already initialized", "account not initialized", "not the round host", "the arena is full",
+  "the arena is not open", "the arena is not settled", "already claimed", "your payout isn't recorded yet",
+  "entitlements exceed escrowed funds", "the recovery deadline hasn't passed", "account mismatch",
+  "numeric overflow", "invalid amount"
+];
+
+function explainSimulation(err: unknown, logs: string[] | null): string {
+  const text = JSON.stringify(err ?? "");
+  const custom = /"Custom":(\d+)/.exec(text);
+  if (custom) {
+    const code = Number(custom[1]);
+    if (code >= 100 && code < 100 + ESCROW_ERRORS.length) return ESCROW_ERRORS[code - 100];
+    if (code === 1) return "not enough USDC in your wallet";
+  }
+  if (/InsufficientFundsForFee|insufficient lamports/i.test(text + (logs ?? []).join(" "))) return "not enough SOL for the network fee";
+  const line = (logs ?? []).reverse().find((l) => /error|failed/i.test(l));
+  return line ? line.replace(/^Program log: /, "").slice(0, 160) : text.slice(0, 160);
+}
+
+/**
+ * Wrap instructions into a legacy Transaction for the wallet to sign and
+ * dry-run it first, so a transaction that would fail on chain is never put
+ * in front of the player.
+ */
+async function buildTx(ixs: Awaited<ReturnType<typeof ixDeposit>>[], feePayer: PublicKey): Promise<{ base64: string } | { error: string }> {
+  const conn = connection();
+  const { blockhash } = await conn.getLatestBlockhash("confirmed");
   const tx = new Transaction();
   tx.recentBlockhash = blockhash;
   tx.feePayer = feePayer;
   for (const ix of ixs) tx.add(ix);
-  return Buffer.from(tx.serialize({ requireAllSignatures: false, verifySignatures: false })).toString("base64");
+  try {
+    const sim = await conn.simulateTransaction(new VersionedTransaction(tx.compileMessage()), { sigVerify: false, commitment: "confirmed" });
+    if (sim.value.err) {
+      const why = explainSimulation(sim.value.err, sim.value.logs);
+      console.warn(`[escrow] simulation failed payer=${feePayer.toBase58()}: ${why} ${JSON.stringify(sim.value.err)}`);
+      return { error: `This transaction would fail on Solana (${why}), so it wasn't sent to your wallet.` };
+    }
+  } catch (err) {
+    // The dry run is a courtesy — an RPC hiccup must not block the player.
+    console.warn(`[escrow] simulation unavailable: ${err instanceof Error ? err.message : String(err)}`);
+  }
+  return { base64: Buffer.from(tx.serialize({ requireAllSignatures: false, verifySignatures: false })).toString("base64") };
 }
 
 /** SPL Memo v2 — a readable note on the deposit (arena, seat, opening call). */
@@ -206,8 +245,7 @@ export async function buildDepositTx(player: PublicKey, roundVault: PublicKey, m
   // The idempotent variant is a no-op if the ATA already exists.
   const createAta = ixCreateAtaIdempotent({ payer: player, owner: player, mint: USDC_MINT });
   const deposit = ixDeposit({ player, roundVault, mint: USDC_MINT });
-  const base64 = await buildTx(memo ? [createAta, deposit, ixMemo(memo, player)] : [createAta, deposit], player);
-  return { base64 };
+  return buildTx(memo ? [createAta, deposit, ixMemo(memo, player)] : [createAta, deposit], player);
 }
 
 export async function buildWithdrawTx(player: PublicKey, roundVault: PublicKey, recover = false): Promise<{ base64: string } | { error: string }> {
@@ -215,8 +253,7 @@ export async function buildWithdrawTx(player: PublicKey, roundVault: PublicKey, 
   // Ditto: recover/claim may be the first time the wallet touches USDC.
   const createAta = ixCreateAtaIdempotent({ payer: player, owner: player, mint: USDC_MINT });
   const withdraw = ixWithdraw({ player, roundVault, mint: USDC_MINT, recover });
-  const base64 = await buildTx([createAta, withdraw], player);
-  return { base64 };
+  return buildTx([createAta, withdraw], player);
 }
 
 // ── SETTLE: server signs + submits SettlePlayer + CloseSettlement ────────
