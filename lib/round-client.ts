@@ -2,7 +2,7 @@
 
 import type { Entrant, Round, RoundConfig } from "@/lib/royale";
 import { ensureSession, sessionLost } from "@/lib/session-client";
-import { describeWalletError, ensureWalletFor, signAndSendAs } from "@/lib/wallet";
+import { describeWalletError, ensureWalletFor, signAndSendAs, WalletError } from "@/lib/wallet";
 
 const CONFIRM_TIMEOUT_MS = 60_000;
 const SOLANA_RPC = process.env.NEXT_PUBLIC_SOLANA_RPC ?? "https://api.devnet.solana.com";
@@ -19,21 +19,48 @@ function b64ToBytes(s: string): Uint8Array {
  * devnet, then wait for confirmation. Used for escrow Deposit / Claim /
  * Recover. Throws a player-readable Error.
  */
-async function signAndBroadcastLegacy(wallet: string, base64: string, action: string, onSent?: () => void, onSlow?: (walletName: string) => void): Promise<string> {
+async function signAndBroadcastLegacy(
+  wallet: string, base64: string, action: string,
+  onSent?: () => void, onSlow?: (walletName: string) => void, onRetry?: () => void
+): Promise<string> {
   if (typeof window === "undefined") throw new Error("client only");
   const { Connection, Transaction } = await import("@solana/web3.js");
   const conn = new Connection(SOLANA_RPC, "confirmed");
   const tx = Transaction.from(b64ToBytes(base64));
 
-  let signature: string;
-  try {
-    signature = await signAndSendAs(
-      wallet, tx,
-      (raw) => conn.sendRawTransaction(raw, { skipPreflight: false, preflightCommitment: "confirmed", maxRetries: 5 }),
-      action, onSlow
-    );
-  } catch (err) {
-    throw new Error(describeWalletError(err, action));
+  let signature = "";
+  for (let attempt = 0; ; attempt++) {
+    // Stamp a fresh blockhash right before the wallet prompt: a transaction
+    // is only valid for ~150 blocks from its blockhash, and the one the
+    // server built with is already seconds old. Safe — the player is the
+    // only signer.
+    const fresh = await conn.getLatestBlockhash("confirmed");
+    tx.recentBlockhash = fresh.blockhash;
+    for (const s of tx.signatures) s.signature = null; // a retry must be signed afresh
+    const broadcast = async (raw: Uint8Array) => {
+      try {
+        return await conn.sendRawTransaction(raw, { skipPreflight: false, preflightCommitment: "confirmed", maxRetries: 5 });
+      } catch (err) {
+        // A lagging RPC node can report a still-valid blockhash as unknown:
+        // if it hasn't actually expired, send the same signed bytes without
+        // that node's pre-check (on-chain failures are caught when confirming).
+        if (/blockhash not found/i.test(String((err as Error)?.message ?? err))) {
+          const height = await conn.getBlockHeight("confirmed").catch(() => 0);
+          if (height && height <= fresh.lastValidBlockHeight) {
+            return conn.sendRawTransaction(raw, { skipPreflight: true, maxRetries: 5 });
+          }
+        }
+        throw err;
+      }
+    };
+    try {
+      signature = await signAndSendAs(wallet, tx, broadcast, action, onSlow);
+      break;
+    } catch (err) {
+      // Really expired while the prompt was open: ask once more, fresh.
+      if (err instanceof WalletError && err.reason === "expired" && attempt === 0) { onRetry?.(); continue; }
+      throw new Error(describeWalletError(err, action));
+    }
   }
   onSent?.();
 
@@ -173,7 +200,7 @@ export async function prepareWallet(wallet: string, onStep?: (step: SeatStep, wa
 }
 
 /** Where a seat request is — drives the "approve in your wallet" hints. */
-export type SeatStep = "signin" | "deposit" | "waiting" | "confirming" | "seating";
+export type SeatStep = "signin" | "deposit" | "again" | "waiting" | "confirming" | "seating";
 
 /** Toast line and short button label for each seat step. */
 export function seatStepText(step: SeatStep, seatUsd: number, call?: OpeningCall, walletName = "your wallet"): { toast: string; button: string } {
@@ -182,6 +209,10 @@ export function seatStepText(step: SeatStep, seatUsd: number, call?: OpeningCall
   switch (step) {
     case "signin": return { toast: "Sign in with your wallet — a free message, not a transaction.", button: "Sign the message in your wallet…" };
     case "deposit": return { toast: `Approve the ${amount} seat deposit in your wallet${callText}.`, button: "Approve the deposit in your wallet…" };
+    case "again": return {
+      toast: `That took over a minute, so Solana needs a fresh signature — approve the ${amount} deposit once more in your wallet.`,
+      button: "Approve again in your wallet…"
+    };
     case "waiting": return {
       toast: `Still waiting for ${walletName}. If its window isn't showing, click the ${walletName === "your wallet" ? "wallet" : walletName} icon in your browser toolbar — or check behind this window.`,
       button: `Waiting for ${walletName}…`
@@ -225,7 +256,7 @@ export async function enrollWithEscrow(wallet: string, nickname: string, arena?:
   // Sign + broadcast via the connected wallet.
   let sig: string;
   onStep?.("deposit");
-  try { sig = await signAndBroadcastLegacy(wallet, txRes.base64, "The deposit", () => onStep?.("confirming"), (name) => onStep?.("waiting", name)); }
+  try { sig = await signAndBroadcastLegacy(wallet, txRes.base64, "The deposit", () => onStep?.("confirming"), (name) => onStep?.("waiting", name), () => onStep?.("again")); }
   catch (err) { return { error: err instanceof Error ? err.message : "The deposit failed in your wallet." }; }
 
   onStep?.("seating");
@@ -253,7 +284,9 @@ export async function serverSettleArena(arena: string): Promise<{ ok?: boolean; 
 }
 
 /** Claim my settled entitlement out of the arena's escrow to my wallet. */
-export async function claimFromEscrow(wallet: string, arena: string, recover = false, onSlow?: (walletName: string) => void, roundVault?: string): Promise<{ signature?: string; error?: string; escrow?: string }> {
+export async function claimFromEscrow(
+  wallet: string, arena: string, recover = false, onSlow?: (walletName: string) => void, roundVault?: string, onRetry?: () => void
+): Promise<{ signature?: string; error?: string; escrow?: string }> {
   let txRes: { escrow?: string; error?: string; base64?: string };
   try {
     txRes = await fetch("/api/escrow/tx", {
@@ -266,7 +299,7 @@ export async function claimFromEscrow(wallet: string, arena: string, recover = f
   if (txRes.escrow === "inactive") return { error: "escrow is inactive" };
   if (txRes.error || !txRes.base64) return { error: txRes.error ?? "couldn't build the withdrawal" };
   try {
-    const signature = await signAndBroadcastLegacy(wallet, txRes.base64, recover ? "The refund" : "The withdrawal", undefined, onSlow);
+    const signature = await signAndBroadcastLegacy(wallet, txRes.base64, recover ? "The refund" : "The withdrawal", undefined, onSlow, onRetry);
     return { signature };
   } catch (err) {
     return { error: err instanceof Error ? err.message : "wallet signing failed" };

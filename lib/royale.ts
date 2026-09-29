@@ -464,6 +464,10 @@ export function seatPlayer(round: Round, wallet: string, nickname: string, opts:
   if (firstPlayer && !opts.restored && round.arenaCode !== PUBLIC_ARENA) {
     round.enrollDeadline = Math.max(round.enrollDeadline, Date.now() + round.config.enrollmentSec * 1000);
   }
+  // Practice arena: the first player's seat starts the countdown from now.
+  if (firstPlayer && round.arenaCode === PUBLIC_ARENA) {
+    round.enrollDeadline = Date.now() + round.config.enrollmentSec * 1000;
+  }
   if (round.escrow) {
     round.escrow.history.push(opts.signature
       ? `Deposit ${name} ✓ ${opts.signature.slice(0, 12)}…`

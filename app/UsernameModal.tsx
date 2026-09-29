@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import { USERNAME_MAX, validateUsername } from "@/lib/username";
+import { useEscapeKey } from "@/lib/use-escape";
 
 /** "Set username" dialog, opened from the header on every page. */
 export default function UsernameModal({
@@ -15,6 +16,7 @@ export default function UsernameModal({
 }) {
   const [draft, setDraft] = useState(initial);
   const [error, setError] = useState("");
+  useEscapeKey(true, onClose);
   const v = validateUsername(draft);
   const hint = draft.length === 0
     ? "3–16 characters: letters, numbers and underscores."

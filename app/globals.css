@@ -23,7 +23,7 @@
   /* Text — 3 levels */
   --text: #edf0f6;
   --text-2: #8b93a7;
-  --text-3: #545b6c;
+  --text-3: #7d8599;
 
   /* Semantic — used sparingly, meaningfully */
   --up: #22c55e;
@@ -3617,7 +3617,7 @@ body.no-scroll { overflow: hidden; }
   .arena-main .mr-orb { width: 112px; height: 112px; }
   .arena-main .mr-orb-price { font-size: 30px; }
   .arena-main .mr-pod { width: 96px; padding: 6px 6px; }
-  .arena-main .mr-arena { --pod-hx: 54px; --pod-hy: 66px; }
+  .arena-main .mr-arena { --pod-hx: 54px; --pod-hy: 66px; height: 440px; }
   .arena-main .mr-pod-avatar { width: 28px; height: 28px; }
   .arena-main .mr-pod-name { font-size: 11px; max-width: 84px; }
   .arena-main .mr-pod-side, .arena-main .mr-pod-pnl { display: none; }
@@ -3908,3 +3908,13 @@ a.pf-code:hover { background: rgba(34, 211, 238, 0.08); }
 }
 .invite-inline-row input:focus { border-color: var(--border-focus); color: var(--text); }
 .final-board .fb-row.fb-head { font-family: 'JetBrains Mono', monospace; font-size: 10px; letter-spacing: 1.1px; text-transform: uppercase; color: var(--text-3); background: transparent; border-color: transparent; }
+
+/* Wide docs tables scroll inside their own box on phones instead of widening the page. */
+@media (max-width: 700px) {
+  .docs-table { display: block; max-width: 100%; overflow-x: auto; -webkit-overflow-scrolling: touch; }
+  .docs-table code { word-break: break-word; }
+}
+
+/* "How the arena works": 3 → 2 → 1 columns. */
+@media (max-width: 1000px) { .how-grid, .arena-main .how-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+@media (max-width: 640px) { .how-grid, .arena-main .how-grid { grid-template-columns: 1fr; } }

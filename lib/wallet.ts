@@ -37,7 +37,7 @@ export type SolanaProvider = {
 export type WalletOption = { kind: WalletKind; name: string; icon: string | null; provider: SolanaProvider };
 
 export class WalletError extends Error {
-  constructor(public reason: "none" | "cancelled" | "wrong-account" | "unsupported" | "not-connected" | "failed", message: string) {
+  constructor(public reason: "none" | "cancelled" | "wrong-account" | "unsupported" | "not-connected" | "failed" | "expired", message: string) {
     super(message);
   }
 }
@@ -289,7 +289,7 @@ export async function signMessageAs(expected: string, message: Uint8Array, onSlo
 function explainSendError(err: unknown, action: string): WalletError {
   const msg = String((err as { message?: unknown } | null)?.message ?? err ?? "");
   if (/blockhash not found|block height exceeded|expired/i.test(msg)) {
-    return new WalletError("failed", `${action} expired while it waited in your wallet (Solana transactions last about a minute). Nothing was taken — try again and approve it straight away.`);
+    return new WalletError("expired", `${action} expired while it waited in your wallet (Solana transactions last about a minute). Nothing was taken — try again and approve it straight away.`);
   }
   if (/insufficient (funds|lamports)|no record of a prior credit|0x1\b/i.test(msg)) {
     return new WalletError("failed", `${action} was rejected by Solana: not enough USDC or SOL in your wallet. Nothing was taken.`);

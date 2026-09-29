@@ -18,6 +18,7 @@ import { useCallback, useEffect, useState } from "react";
 import type { ParlayTicket } from "@/lib/royale";
 import { cashOutParlayApi } from "@/lib/round-client";
 import { CASHOUT_FEE_RATE, CASHOUT_FEE_CAP_USDC } from "@/lib/parlay";
+import { useEscapeKey } from "@/lib/use-escape";
 
 const usd = new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 2 });
 
@@ -35,6 +36,7 @@ export default function PantaCashOutModal({
   const [quote, setQuote] = useState<Quote | null>(null);
   const [phase, setPhase] = useState<"preview" | "committing" | "done" | "error">("preview");
   const [error, setError] = useState<string | null>(null);
+  useEscapeKey(phase !== "committing", onClose);
 
   /**
    * Preview is a dry-run that hits the same server pricing so the number

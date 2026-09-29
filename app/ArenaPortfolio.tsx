@@ -103,7 +103,8 @@ export default function ArenaPortfolio({ wallet, onToast }: { wallet: string; on
     setBusy(key);
     onToast("Approve the withdrawal in your wallet…");
     try {
-      const r = await claimFromEscrow(wallet, i.arena, i.action === "recover", (name) => onToast(seatStepText("waiting", 0, null, name).toast), i.chain?.roundVault);
+      const r = await claimFromEscrow(wallet, i.arena, i.action === "recover", (name) => onToast(seatStepText("waiting", 0, null, name).toast), i.chain?.roundVault,
+        () => onToast("That took over a minute, so Solana needs a fresh signature — approve the withdrawal once more in your wallet."));
       if (r.error) onToast(r.error);
       else onToast(`${usd.format(i.actionUsdc)} is on its way to your wallet.`);
       await load();

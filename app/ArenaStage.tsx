@@ -263,7 +263,7 @@ export default function ArenaStage({ round, standings, survivors, yesPrice, spot
                   {move > 0 ? "▲" : move < 0 ? "▼" : "•"} {Math.abs(move).toFixed(2)}% vs open
                 </span>
               ) : shown ? (
-                <span className="mr-orb-move">{round.status === "enrolling" ? "opens when trading starts" : "live price"}</span>
+                <span className="mr-orb-move">{round.status === "enrolling" ? "live · opens at the start" : "live price"}</span>
               ) : null}
               <span className="mr-orb-sides">
                 <span className="y">UP {yesPrice}¢</span>

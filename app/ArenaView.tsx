@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { availableFor, hostAmountError, paidPlaces, payoutShares } from "@/lib/royale";
+import { useEscapeKey } from "@/lib/use-escape";
 import { getRound, enrollWithEscrow, tradeRound, newRound, placeParlayApi, claimFromEscrow, serverSettleArena, cancelArena, checkSeatFunds, setOpeningCall, prepareWallet, seatStepText, type OpeningCall, type RoundView, type SeatStep } from "@/lib/round-client";
 import { useEscrowStatus, useWalletIdentity } from "@/lib/use-wallet";
 import SiteHeader from "@/app/SiteHeader";
@@ -23,7 +24,6 @@ import PantaTradeTape from "@/app/PantaTradeTape";
 import PantaResolution from "@/app/PantaResolution";
 import PantaGraduationBanner from "@/app/PantaGraduationBanner";
 import PantaOrderStatus from "@/app/PantaOrderStatus";
-import PantaCreateMarketModal from "@/app/PantaCreateMarketModal";
 import PantaCashOutModal from "@/app/PantaCashOutModal";
 import { executePantaOrder, type LifecycleUpdate } from "@/lib/panta-order";
 import { looksLikePantaMarketId } from "@/lib/tracked-markets";
@@ -93,7 +93,6 @@ export default function ArenaView({ arenaCode }: { arenaCode: string }) {
   // through Panta's own APIs and streams progress here.
   const [pantaFillOn, setPantaFillOn] = useState(false);
   const [pantaOrder, setPantaOrder] = useState<LifecycleUpdate | null>(null);
-  const [showCreateMarket, setShowCreateMarket] = useState(false);
   const [cashoutTicket, setCashoutTicket] = useState<ParlayTicket | null>(null);
   const pollRef = useRef<number | null>(null);
 
@@ -284,7 +283,8 @@ export default function ArenaView({ arenaCode }: { arenaCode: string }) {
     if (!wallet) return setToast("Connect a wallet first.");
     setBusy(true);
     try {
-      const r = await claimFromEscrow(wallet, arenaCode, recover, (name) => setToast(seatStepText("waiting", 0, null, name).toast));
+      const r = await claimFromEscrow(wallet, arenaCode, recover, (name) => setToast(seatStepText("waiting", 0, null, name).toast), undefined,
+        () => setToast("That took over a minute, so Solana needs a fresh signature — approve the withdrawal once more in your wallet."));
       if (r.error) setToast(`Claim: ${r.error}`);
       else if (r.signature) setToast(`${recover ? "Recovered" : "Claimed"} · ${r.signature.slice(0, 8)}…`);
       else setToast("Withdrawal submitted.");
@@ -500,6 +500,10 @@ export default function ArenaView({ arenaCode }: { arenaCode: string }) {
     // Preserve inviteInfo when closing — the arena is live and shareable via HUD.
     setShowHost(false);
   }, []);
+  const closeEnroll = useCallback(() => setShowEnroll(false), []);
+  // Escape closes a dialog — but never while a wallet request is in flight.
+  useEscapeKey(showHost && !busy, closeHostModal);
+  useEscapeKey(showEnroll && !busy, closeEnroll);
 
 
   const myPnl = me ? me.bankroll - (round?.config.startingBankroll ?? 0) : 0;
@@ -542,7 +546,9 @@ export default function ArenaView({ arenaCode }: { arenaCode: string }) {
             {deadline > 0 && (
               <div className="rb-cell">
                 <span className="rb-k">{round.status === "enrolling" ? "Locks in" : "Settles in"}</span>
-                <span className="rb-v mono">{fmtClock(timeLeft)}</span>
+                <span className="rb-v mono">
+                  {round.status === "enrolling" && standings.every((e) => e.isBot) ? "Waiting" : fmtClock(timeLeft)}
+                </span>
               </div>
             )}
             <div className="rb-cell">
@@ -1017,13 +1023,12 @@ export default function ArenaView({ arenaCode }: { arenaCode: string }) {
 
       </section>
 
-      {/* Live Panta fills for THIS market — the trade tape */}
-      {round && round.config.marketId && (
+      {/* Live Panta fills + resolution — only for rounds on a real Panta market
+          (the BTC/ETH/SOL direction markets are oracle-resolved, never on Panta). */}
+      {round && looksLikePantaMarketId(round.config.marketId) && (
         <PantaTradeTape marketId={round.config.marketId} marketQuestion={round.config.marketQuestion} />
       )}
-
-      {/* Resolution + dispute window: appears only when Panta says the market is resolved */}
-      {round && round.config.marketId && (
+      {round && looksLikePantaMarketId(round.config.marketId) && (
         <PantaResolution marketId={round.config.marketId} />
       )}
 
@@ -1051,7 +1056,6 @@ export default function ArenaView({ arenaCode }: { arenaCode: string }) {
 
       {toast && <div className="toast" role="status"><span>{toast}</span><button onClick={() => setToast("")} aria-label="Dismiss">×</button></div>}
 
-      {showCreateMarket && <PantaCreateMarketModal initialWallet={wallet} onClose={() => setShowCreateMarket(false)} />}
       {cashoutTicket && wallet && (
         <PantaCashOutModal
           ticket={cashoutTicket}
@@ -1088,7 +1092,7 @@ export default function ArenaView({ arenaCode }: { arenaCode: string }) {
         const rounds = round.config.format === "royale" ? round.config.roundLimit : 1;
         const cta = callPick === "YES" ? "call UP" : callPick === "NO" ? "call DOWN" : "join";
         return (
-          <div className="modal-backdrop" onClick={() => setShowEnroll(false)}>
+          <div className="modal-backdrop" onClick={() => { if (!busy) setShowEnroll(false); }}>
             <div className="modal seat-modal" role="dialog" aria-modal="true" aria-labelledby="seat-title" onClick={(e) => e.stopPropagation()}>
               <button className="close" onClick={() => setShowEnroll(false)} aria-label="Close">×</button>
               <h2 id="seat-title">Take your seat</h2>
@@ -1165,7 +1169,7 @@ export default function ArenaView({ arenaCode }: { arenaCode: string }) {
       })()}
 
       {showHost && (
-        <div className="modal-backdrop" onClick={closeHostModal}>
+        <div className="modal-backdrop" onClick={() => { if (!busy) closeHostModal(); }}>
           <div className="modal host-modal" onClick={(e) => e.stopPropagation()}>
             <button className="close" onClick={closeHostModal} aria-label="Close">×</button>
 

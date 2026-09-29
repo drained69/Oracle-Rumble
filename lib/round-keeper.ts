@@ -271,6 +271,12 @@ export function tick(round: Round, pricing: Pricing): Round {
     round.oracle.lastAt = now;
   }
 
+  // The walk-in practice arena never cancels for being empty: it waits for
+  // its first player, whose seat starts a fresh enrollment clock.
+  if (round.status === "enrolling" && humanCount(round) === 0 && round.arenaCode === PUBLIC_ARENA && now >= round.enrollDeadline) {
+    round.enrollDeadline = now + round.config.enrollmentSec * 1000;
+  }
+
   // A hosted arena starts empty while the host approves their seat deposit
   // in the wallet. Hold it open for that instead of cancelling on the first
   // deadline; the enroll route restarts the clock once the host is seated.

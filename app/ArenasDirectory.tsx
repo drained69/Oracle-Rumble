@@ -261,8 +261,8 @@ export default function ArenasDirectory() {
             <span className="hl-b">Outplay</span> the room.
           </h1>
           <p className="jt-lead">
-            Everyone pays the same seat, trades the same live market, and is ranked by vault
-            value. The bottom half is cut each round — the survivors split the pool.
+            Everyone pays the same seat, calls UP or DOWN on the same live market, and is ranked by
+            vault value. The top finishers take the pool — in a royale, the bottom half is cut each round.
           </p>
 
           <ol className="jt-steps">
@@ -414,7 +414,7 @@ function PlayPanel({
       {others.length > 0 && (
         <div className="jc-others">
           <div className="jc-others-head">More arenas · {others.length}</div>
-          {others.slice(0, 4).map((a) => {
+          {others.slice(0, 8).map((a) => {
             const t = tierFor(a.prizePoolUsdc);
             const d = a.status === "enrolling" ? a.enrollDeadline : a.status === "live" ? a.liveDeadline : 0;
             const tl = d ? Math.max(0, d - now) : 0;
