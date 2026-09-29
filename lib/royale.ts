@@ -119,6 +119,18 @@ export const HOST_LIMITS = {
   liveSec: { min: 60, max: 3_600 }
 } as const;
 
+/** Why a host's entry/vault amounts would be changed by the server, or "". */
+export function hostAmountError(entry: number, vault: number): string {
+  const L = HOST_LIMITS;
+  if (!Number.isInteger(entry) || entry < L.entryUsdc.min || entry > L.entryUsdc.max) {
+    return `Entry must be a whole number of USDC from ${L.entryUsdc.min} to ${L.entryUsdc.max}.`;
+  }
+  if (!Number.isInteger(vault) || vault < L.startingBankroll.min || vault > L.startingBankroll.max) {
+    return `Vault must be a whole number of USDC from ${L.startingBankroll.min} to ${L.startingBankroll.max}.`;
+  }
+  return "";
+}
+
 const clamp = (n: number, lo: number, hi: number) =>
   Math.min(hi, Math.max(lo, Math.round(Number.isFinite(n) ? n : lo)));
 
@@ -501,12 +513,15 @@ export function placeOpeningCalls(round: Round, yesPrice: number): void {
 export function buyShares(entrant: Entrant, side: Side, usdc: number, priceCents: number, markYesPrice: number): { ok: boolean; reason?: string } {
   if (entrant.eliminatedRound !== null) return { ok: false, reason: "Eliminated." };
   if (usdc <= 0) return { ok: false, reason: "Amount must be positive." };
-  if (usdc > entrant.cash) return { ok: false, reason: "Insufficient bankroll." };
+  // Switching sides sells the current position first, so its value counts
+  // towards what can be bought.
+  if (usdc > availableFor(entrant, side, markYesPrice) + 1e-9) return { ok: false, reason: "Insufficient bankroll." };
   const price = Math.max(1, Math.min(99, priceCents));
 
   if (entrant.side && entrant.side !== side && entrant.shares > 0) {
     liquidate(entrant, markYesPrice);
   }
+  usdc = Math.min(usdc, entrant.cash);
   const newShares = usdc / (price / 100);
   const prevCost = entrant.avgPrice * entrant.shares;
   entrant.shares += newShares;
@@ -515,6 +530,22 @@ export function buyShares(entrant: Entrant, side: Side, usdc: number, priceCents
   entrant.cash -= usdc;
   markToMarket(entrant, markYesPrice);
   return { ok: true };
+}
+
+/** USDC a player can put on `side` now: cash, plus the current position if it's the other side. */
+export function availableFor(entrant: Entrant, side: Side, markYesPrice: number): number {
+  if (!entrant.side || entrant.side === side || entrant.shares <= 0) return entrant.cash;
+  const mark = entrant.side === "YES" ? markYesPrice : 100 - markYesPrice;
+  return entrant.cash + entrant.shares * (mark / 100);
+}
+
+/**
+ * Places paid from the prize pool: the winner alone in a duel (≤ 2 players
+ * paid in), otherwise the top 3. Bots never take a paid place.
+ */
+export function paidPlaces(round: Round): number {
+  const funded = round.config.entryUsdc > 0 ? Math.round(round.prizePoolUsdc / round.config.entryUsdc) : humanCount(round);
+  return funded <= 2 ? 1 : Math.min(3, humanCount(round));
 }
 
 /** Sell the entire current position at the live mark. */

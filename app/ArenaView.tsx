@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { payoutShares } from "@/lib/royale";
+import { availableFor, hostAmountError, paidPlaces, payoutShares } from "@/lib/royale";
 import { getRound, enrollWithEscrow, tradeRound, newRound, placeParlayApi, claimFromEscrow, serverSettleArena, cancelArena, checkSeatFunds, setOpeningCall, prepareWallet, seatStepText, type OpeningCall, type RoundView, type SeatStep } from "@/lib/round-client";
 import { useEscrowStatus, useWalletIdentity } from "@/lib/use-wallet";
 import SiteHeader from "@/app/SiteHeader";
@@ -63,7 +63,7 @@ export default function ArenaView({ arenaCode }: { arenaCode: string }) {
   const [nickname, setNickname] = useState("");
   const [view, setView] = useState<RoundView | null>(null);
   const [now, setNow] = useState(() => Date.now());
-  const [amount, setAmount] = useState("100");
+  const [amount, setAmount] = useState("");
   const [side, setSide] = useState<"YES" | "NO">("YES");
   const [betMode, setBetMode] = useState<"single" | "parlay">("single");
   const [parlayLegs, setParlayLegs] = useState<{ marketId: string; side: "YES" | "NO" }[]>([]);
@@ -300,6 +300,7 @@ export default function ArenaView({ arenaCode }: { arenaCode: string }) {
     if (!enrolled) return setToast("Enroll in the round first.");
     const v = Number(amount);
     if (!v || v <= 0) return setToast("Enter an amount.");
+    if (me && v > availableFor(me, side, yesPrice) + 1e-9) return setToast(`You have ${usd2.format(availableFor(me, side, yesPrice))} available for ${side === "YES" ? "UP" : "DOWN"}.`);
     setBusy(true);
     try {
       // Kick the Panta order lifecycle in parallel when opted in and the
@@ -319,7 +320,8 @@ export default function ArenaView({ arenaCode }: { arenaCode: string }) {
       const r = await tradeRound({ wallet, action: "buy", side, usdc: v, arena: arenaCode });
       if (r.error) setToast(r.error);
       else {
-        setToast(`Bought ${side} $${v.toFixed(0)}.`);
+        setToast(`Bought ${side === "YES" ? "UP" : "DOWN"} for ${usd2.format(v)}.`);
+        setAmount("");
         await refresh();
       }
       // Don't block the UI on the Panta lifecycle — it streams via
@@ -327,7 +329,7 @@ export default function ArenaView({ arenaCode }: { arenaCode: string }) {
       // paths settle when the toggle was on.
       if (pantaLifecycle) await pantaLifecycle;
     } finally { setBusy(false); }
-  }, [wallet, enrolled, amount, side, arenaCode, refresh, pantaFillOn, pantaFillAvailable, marketId]);
+  }, [wallet, enrolled, amount, side, arenaCode, refresh, pantaFillOn, pantaFillAvailable, marketId, me, yesPrice]);
 
   const doSell = useCallback(async () => {
     if (!wallet || !enrolled) return;
@@ -335,7 +337,7 @@ export default function ArenaView({ arenaCode }: { arenaCode: string }) {
     try {
       const r = await tradeRound({ wallet, action: "sell", arena: arenaCode });
       if (r.error) setToast(r.error);
-      else { setToast("Position liquidated."); await refresh(); }
+      else { setToast("Sold — your position is back in cash."); await refresh(); }
     } finally { setBusy(false); }
   }, [wallet, enrolled, arenaCode, refresh]);
 
@@ -399,6 +401,7 @@ export default function ArenaView({ arenaCode }: { arenaCode: string }) {
   }, [wallet, enrolled, parlayLegs, parlayStake, arenaCode, refresh]);
 
   const hostSeat = (Number(hEntry) || 0) + (Number(hVault) || 0);
+  const hostError = hostAmountError(Number(hEntry) || 0, Number(hVault) || 0);
 
   const doHost = useCallback(async () => {
     // Real-mode guard: on-chain hosting requires the host to sign a seat
@@ -412,13 +415,14 @@ export default function ArenaView({ arenaCode }: { arenaCode: string }) {
       setToast("Set a username before hosting.");
       return;
     }
+    if (hostError) { setToast(hostError); return; }
     if (wallet && !hCall) { setToast(`Pick UP or DOWN on ${hAsset} (or decide later) before taking seat 1.`); return; }
 
     setBusy(true);
     try {
       // Check funds before the operator pays for an on-chain InitRound.
       if (wallet && escrow?.active) {
-        const short = await checkSeatFunds(wallet, (Number(hEntry) || 1) + (Number(hVault) || 5));
+        const short = await checkSeatFunds(wallet, hostSeat);
         if (short) { setToast(short); return; }
       }
       // Wallet reachable and signed in before an arena is created for us.
@@ -433,8 +437,8 @@ export default function ArenaView({ arenaCode }: { arenaCode: string }) {
         asset: hAsset,
         horizon: hHorizon,
         format: hFormat,
-        entryUsdc: Number(hEntry) || 1,
-        startingBankroll: Number(hVault) || 5,
+        entryUsdc: Number(hEntry),
+        startingBankroll: Number(hVault),
         capacity: hCapacity,
         roundLimit: hFormat === "royale" ? hRounds : 1,
         enrollmentSec: 120, // counted from the host's confirmed seat
@@ -479,7 +483,7 @@ export default function ArenaView({ arenaCode }: { arenaCode: string }) {
       setInviteInfo({ code: v.arena, url });
       setToast(`Arena ${v.arena} is open. Share the link.`);
     } finally { setBusy(false); setSeatStep(null); }
-  }, [hAsset, hHorizon, hFormat, hEntry, hVault, hCapacity, hRounds, wallet, escrow, username, hCall, hostSeat]);
+  }, [hAsset, hHorizon, hFormat, hEntry, hVault, hCapacity, hRounds, wallet, escrow, username, hCall, hostSeat, hostError]);
 
   const doCopyInvite = useCallback(async (url?: string) => {
     const link = url ?? currentInviteUrl;
@@ -549,12 +553,17 @@ export default function ArenaView({ arenaCode }: { arenaCode: string }) {
               <span className="rb-k">Alive</span>
               <span className="rb-v">{aliveCount} <em>/ {standings.length}</em></span>
             </div>
-            {round.status === "live" && aliveCount > cut && (
+            {round.status === "live" && round.config.format === "single" ? (
+              <div className="rb-cell">
+                <span className="rb-k">Paid</span>
+                <span className="rb-v">{paidPlaces(round) === 1 ? "Winner" : `Top ${paidPlaces(round)}`}</span>
+              </div>
+            ) : round.status === "live" && aliveCount > cut ? (
               <div className="rb-cell">
                 <span className="rb-k">Survive</span>
                 <span className="rb-v danger">Top {cut}</span>
               </div>
-            )}
+            ) : null}
             <div className="rb-cell grow">
               <span className="rb-k">Market · {round.config.asset}</span>
               <span className="rb-v market">{round.config.marketQuestion}</span>
@@ -638,7 +647,7 @@ export default function ArenaView({ arenaCode }: { arenaCode: string }) {
                     {paid.length > 1
                       ? `${usd.format(round.prizePoolUsdc)} pool split across the top ${paid.length}.`
                       : `${usd.format(round.prizePoolUsdc)} pool to the winner.`}
-                    {" "}Players also share the vault money by how their vaults finished — one player&apos;s trading losses fund another&apos;s gains.
+                    {round.escrow ? <>{" "}Players also share the vault money by how their vaults finished — one player&apos;s trading losses fund another&apos;s gains.</> : null}
                   </p>
 
                   {/* Withdrawal — amounts come from the on-chain entry once settled. */}
@@ -691,14 +700,23 @@ export default function ArenaView({ arenaCode }: { arenaCode: string }) {
                     <p className="disclaimer">Settlement complete on-chain — players withdraw from the wallet they played with.</p>
                   )}
 
+                  {!round.escrow && <p className="disclaimer">Practice round — no USDC moved.</p>}
                   <button className="btn primary" onClick={() => { setInviteInfo(null); setHCall(""); setShowHost(true); }} disabled={busy}>Host the next rumble →</button>
                   <div className="final-board">
+                    <div className="fb-row fb-head" aria-hidden="true">
+                      <span className="fb-rank">#</span>
+                      <span className="fb-name">Player</span>
+                      <span className="fb-bank">Final vault</span>
+                      <span className="fb-prize">{round.escrow ? "Payout" : "Prize"}</span>
+                    </div>
                     {standings.map((e, i) => (
                       <div key={e.id} className={`fb-row ${e.wallet === wallet ? "me" : ""}`}>
                         <span className="fb-rank">{i + 1}</span>
                         <span className="fb-name">{displayName(e)}{e.isBot ? " ·bot" : ""}</span>
                         <span className="fb-bank">{usd2.format(e.bankroll)}</span>
-                        <span className="fb-prize">{e.prizeUsdc > 0 ? `+${usd2.format(e.prizeUsdc)}` : ""}</span>
+                        <span className="fb-prize">
+                          {e.isBot ? "" : round.escrow ? usd2.format(projected[e.wallet] ?? 0) : e.prizeUsdc > 0 ? `+${usd2.format(e.prizeUsdc)}` : ""}
+                        </span>
                       </div>
                     ))}
                   </div>
@@ -763,7 +781,7 @@ export default function ArenaView({ arenaCode }: { arenaCode: string }) {
                     <>
                       <p>
                         Call where <b>{asset}</b> goes: <b className="up">UP</b> if you think it finishes the round higher than it opens, <b className="down">DOWN</b> if lower.
-                        Your seat is <b>{usd.format(round.config.entryUsdc + round.config.startingBankroll)}</b> — <b>{usd.format(round.config.entryUsdc)}</b> into the shared prize pool plus a <b>{usd.format(round.config.startingBankroll)}</b> vault you trade with and withdraw at the end.
+                        Your seat is <b>{usd.format(round.config.entryUsdc + round.config.startingBankroll)}</b> — <b>{usd.format(round.config.entryUsdc)}</b> into the shared prize pool plus a <b>{usd.format(round.config.startingBankroll)}</b> vault you trade with. At the end the players&apos; vault money is shared out by how each vault finished.
                       </p>
                       <div className="cta-row">
                         <button className="btn primary" onClick={() => { if (!wallet) { connect(); return; } setCallPick(""); setShowEnroll(true); }} disabled={busy}>
@@ -832,19 +850,41 @@ export default function ArenaView({ arenaCode }: { arenaCode: string }) {
                             <button className={side === "YES" ? "side yes on" : "side yes"} onClick={() => setSide("YES")} aria-pressed={side === "YES"}>▲ UP <b>{yesPrice}¢</b></button>
                             <button className={side === "NO" ? "side no on" : "side no"} onClick={() => setSide("NO")} aria-pressed={side === "NO"}>▼ DOWN <b>{100 - yesPrice}¢</b></button>
                           </div>
-                          <label className="field">
-                            Stake from your vault (USDC)
-                            <div className="field-input">
-                              <span className="curr">$</span>
-                              <input value={amount} onChange={(e) => setAmount(e.target.value.replace(/[^0-9.]/g, ""))} inputMode="decimal" />
-                              <button type="button" className="max" onClick={() => setAmount(String(Math.floor(me!.cash)))}>MAX</button>
-                            </div>
-                          </label>
-                          <div className="summary">
-                            <span>Entry price</span><b>{side === "YES" ? yesPrice : 100 - yesPrice}¢</b>
-                            <span>Shares</span><b>{(Number(amount || 0) / ((side === "YES" ? yesPrice : 100 - yesPrice) / 100)).toFixed(1)}</b>
-                            <span>Pays if {asset} closes {side === "YES" ? "higher" : "lower"}</span><b className="accent">{usd2.format(Number(amount || 0) / ((side === "YES" ? yesPrice : 100 - yesPrice) / 100))}</b>
-                          </div>
+                          {(() => {
+                            const avail = availableFor(me!, side, yesPrice);
+                            const stake = Number(amount || 0);
+                            const price = side === "YES" ? yesPrice : 100 - yesPrice;
+                            const over = stake > avail + 1e-9;
+                            const switching = !!me!.side && me!.side !== side && me!.shares > 0;
+                            return (
+                              <>
+                                <label className="field">
+                                  <span className="field-head">
+                                    Stake from your vault (USDC)
+                                    <em>{usd2.format(avail)} available{switching ? ` — sells your ${me!.side === "YES" ? "UP" : "DOWN"} first` : ""}</em>
+                                  </span>
+                                  <div className={`field-input ${over ? "bad" : ""}`}>
+                                    <span className="curr">$</span>
+                                    <input value={amount} placeholder={avail > 0 ? avail.toFixed(2) : "0.00"} onChange={(e) => setAmount(e.target.value.replace(/[^0-9.]/g, ""))} inputMode="decimal" aria-invalid={over} />
+                                    <button type="button" className="max" onClick={() => setAmount(String(Math.floor(avail * 100) / 100))}>MAX</button>
+                                  </div>
+                                </label>
+                                <div className="summary">
+                                  <span>Entry price</span><b>{price}¢</b>
+                                  <span>Shares</span><b>{(stake / (price / 100)).toFixed(2)}</b>
+                                  <span>Pays if {asset} closes {side === "YES" ? "higher" : "lower"}</span><b className="accent">{usd2.format(stake / (price / 100))}</b>
+                                </div>
+                                {over && <p className="jc-error" role="alert">That&apos;s more than the {usd2.format(avail)} you have available.</p>}
+                                <div className="trade-actions">
+                                  <button className="btn primary full" onClick={doBuy} disabled={busy || !stake || over}>
+                                    {switching ? `Switch to ${side === "YES" ? "UP" : "DOWN"}` : `Buy ${side === "YES" ? "UP" : "DOWN"}`}
+                                  </button>
+                                  <button className="btn secondary" onClick={doSell} disabled={busy || !me!.side}>Sell all</button>
+                                </div>
+                              </>
+                            );
+                          })()}
+                          {pantaFillAvailable && (
                           <div className="panta-fill-toggle">
                             <label className={pantaFillAvailable ? "" : "disabled"}>
                               <input
@@ -862,10 +902,7 @@ export default function ArenaView({ arenaCode }: { arenaCode: string }) {
                               </span>
                             </label>
                           </div>
-                          <div className="trade-actions">
-                            <button className="btn primary full" onClick={doBuy} disabled={busy}>Buy {side === "YES" ? "UP" : "DOWN"}</button>
-                            <button className="btn secondary" onClick={doSell} disabled={busy || !me!.side}>Liquidate</button>
-                          </div>
+                          )}
                           {pantaFillOn && pantaFillAvailable && pantaOrder && (
                             <PantaOrderStatus update={pantaOrder} />
                           )}
@@ -925,6 +962,18 @@ export default function ArenaView({ arenaCode }: { arenaCode: string }) {
                           ? <>Your whole {usd2.format(me!.cash)} vault goes on <b className={me!.openingCall === "YES" ? "up" : "down"}>{me!.openingCall === "YES" ? "UP" : "DOWN"}</b> at the opening price (50¢ a share) the moment trading opens. You can switch or cash out any time while the round is live.</>
                           : <>No call yet — your vault stays in cash until you trade. You&apos;ll get UP and DOWN buttons the moment the round goes live.</>}
                       </p>
+                      {!isPublic && currentInviteUrl && (
+                        <div className="invite-inline">
+                          <span className="call-k">Invite players · {standings.filter((e) => !e.isBot).length}/{round!.config.capacity} seats taken</span>
+                          <div className="invite-inline-row">
+                            <input readOnly value={currentInviteUrl} onFocus={(e) => e.currentTarget.select()} aria-label="Invite link" />
+                            <button className="btn secondary sm" onClick={() => doCopyInvite()}>Copy link</button>
+                          </div>
+                          <p className="call-note">
+                            If nobody else joins, you play a practice bot — with no one to win from, your vault money simply comes back to you.
+                          </p>
+                        </div>
+                      )}
                     </div>
                   )}
                 </>
@@ -935,13 +984,15 @@ export default function ArenaView({ arenaCode }: { arenaCode: string }) {
             <aside className="roster">
               <div className="roster-head">
                 <span>Standings</span>
-                {round?.status === "live" && aliveCount > cut && (
+                {round?.status === "live" && round.config.format === "single" ? (
+                  <span className="cut">{paidPlaces(round) === 1 ? "Winner takes the pool" : `Top ${paidPlaces(round)} paid`}</span>
+                ) : round?.status === "live" && aliveCount > cut ? (
                   <span className="cut">Top {cut} survive · {aliveCount - cut} cut</span>
-                )}
+                ) : null}
               </div>
               <ul>
                 {standings.map((e, i) => {
-                  const isCutLine = round?.status === "live" && i === cut && e.eliminatedRound === null;
+                  const isCutLine = round?.status === "live" && round.config.format !== "single" && i === cut && e.eliminatedRound === null;
                   const pnl = e.bankroll - (round?.config.startingBankroll ?? 0);
                   return (
                     <li key={e.id}>
@@ -952,7 +1003,7 @@ export default function ArenaView({ arenaCode }: { arenaCode: string }) {
                         <img className="r-avatar" src={avatarDataUrl(e.wallet, 24)} width={24} height={24} alt="" />
                         <span className="r-name">{displayName(e)}{e.isBot ? <em>bot</em> : ""}{e.wallet === wallet ? <em>you</em> : ""}</span>
                         <span className="r-bank">{usd2.format(e.bankroll)}</span>
-                        <span className={`r-pnl ${pnl >= 0 ? "up" : "down"}`}>{pnl >= 0 ? "+" : ""}{pnl.toFixed(0)}</span>
+                        <span className={`r-pnl ${pnl >= 0 ? "up" : "down"}`}>{pnl >= 0 ? "+" : "−"}{usd2.format(Math.abs(pnl))}</span>
                       </div>
                     </li>
                   );
@@ -1226,13 +1277,13 @@ export default function ArenaView({ arenaCode }: { arenaCode: string }) {
                 <div className="host-2col">
                   <label className="host-num">
                     Entry (USDC)
-                    <input value={hEntry} onChange={(e) => setHEntry(e.target.value.replace(/[^0-9.]/g, ""))} inputMode="decimal" />
-                    <em>→ shared pool</em>
+                    <input value={hEntry} onChange={(e) => setHEntry(e.target.value.replace(/[^0-9]/g, "").slice(0, 3))} inputMode="numeric" />
+                    <em>→ shared pool · $1–100</em>
                   </label>
                   <label className="host-num">
                     Starting vault (USDC)
-                    <input value={hVault} onChange={(e) => setHVault(e.target.value.replace(/[^0-9.]/g, ""))} inputMode="decimal" />
-                    <em>→ each player trades</em>
+                    <input value={hVault} onChange={(e) => setHVault(e.target.value.replace(/[^0-9]/g, "").slice(0, 3))} inputMode="numeric" />
+                    <em>→ each player trades · $5–500</em>
                   </label>
                 </div>
 
@@ -1242,7 +1293,8 @@ export default function ArenaView({ arenaCode }: { arenaCode: string }) {
                   <div><span>Format</span><b>{hFormat === "single" ? "1 round" : `${hRounds} rounds · cut`}</b></div>
                 </div>
 
-                <button className="btn primary full" onClick={doHost} disabled={busy || (!!wallet && !hCall)} style={{ marginTop: 12 }}>
+                {hostError && <p className="jc-error" role="alert">{hostError}</p>}
+                <button className="btn primary full" onClick={doHost} disabled={busy || !!hostError || (!!wallet && !hCall)} style={{ marginTop: 12 }}>
                   {busy ? (seatStep ? seatStepText(seatStep, hostSeat).button : "Opening…")
                     : !wallet ? `Open ${hAsset} practice rumble`
                     : !hCall ? `Pick UP or DOWN on ${hAsset}`

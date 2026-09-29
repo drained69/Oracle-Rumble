@@ -92,8 +92,9 @@ export default function DocsPage() {
             <p>
               <b>Oracle Rumble</b> is a prediction-market battle royale on Solana. Players pay the
               same seat and call whether BTC, ETH or SOL finishes the round <b>UP</b> or <b>DOWN</b>
-              from its opening price. Everyone is ranked by vault value; at the end of each round the
-              bottom half is eliminated and the finalists split the prize pool.
+              from its opening price. Everyone is ranked by vault value. A single round pays the prize
+              pool to the top finishers; a royale cuts the bottom half each round until the finalists
+              split the pool.
             </p>
             <ol>
               <li><b>Arena engine</b> — server-side rounds (enrolling → live → settling → advancing/complete) persisted in Postgres.</li>
@@ -124,9 +125,9 @@ export default function DocsPage() {
             </div>
             <ul>
               <li><b>Enrolling</b> — seats are open. The clock starts once the host&apos;s own seat is confirmed: <em>Quick</em> arenas stay open for 2 minutes, <em>Scheduled</em> arenas for the chosen window (5 minutes to 3 hours). Enrollment locks early when every seat is filled. A host who ends up alone gets one practice opponent so the round can run.</li>
-              <li><b>Live</b> — the round opens at the asset&apos;s live price. Opening calls go in, then everyone trades UP/DOWN with the same starting vault. The arena shows who is above and below the cut in real time.</li>
+              <li><b>Live</b> — the round opens at the asset&apos;s live price. Opening calls go in, then everyone trades UP/DOWN with the same starting vault. The arena shows in real time who is in the money (single round) or above and below the cut (royale). The round lasts its timeframe: 5 minutes, 15 minutes or an hour.</li>
               <li><b>Settling</b> — at the deadline the asset&apos;s close is compared with its open: UP shares pay $1 if it closed higher, DOWN shares if lower (50¢ each if exactly flat). Players are ranked by vault value; ties go to whoever joined first.</li>
-              <li><b>Cut</b> — the top <code>ceil(alive / 2)</code> players survive. Everyone else is eliminated, keeps the vault they finished with, and withdraws it at the end.</li>
+              <li><b>Cut</b> (royale) — the top <code>ceil(alive / 2)</code> players survive. Everyone else is eliminated and their vault is frozen at its final value until the end, when all players are paid out together.</li>
               <li><b>Complete</b> — the arena settles on-chain and every player can withdraw.</li>
             </ul>
           </Section>
@@ -197,7 +198,7 @@ withdraw  = prize share + vault pot × (your final vault ÷ all final vaults)`}<
               <b> DOWN</b> (a NO share) pays $1 if it closes below. A dead-flat close pays 50¢ each way.
             </p>
             <ul>
-              <li><b>Opening call</b> — when you take a seat you pick UP, DOWN or <em>decide later</em>. A call puts your whole vault on that side at the opening price (50¢ a share) the moment trading opens. You can change it until then, and switch or sell any time while the round is live. Other players can&apos;t see your call until the round starts.</li>
+              <li><b>Opening call</b> — when you take a seat you pick UP, DOWN or <em>decide later</em>. A call puts your whole vault on that side at the opening price (50¢ a share) the moment trading opens. You can change it until then, and switch or sell any time while the round is live — switching sides sells your current position and buys the other side in one step. Other players can&apos;t see your call until the round starts.</li>
               <li><b>Open</b> — the asset&apos;s spot price when enrollment locks. BTC, ETH and SOL are all recorded so parlay legs resolve over the same window.</li>
               <li><b>Live price</b> — the UP price is the chance the asset finishes above the open, given the move so far and the time left, so positions gain or lose value as the asset moves.</li>
               <li><b>Close</b> — the price sample nearest the deadline (the arena is polled every few seconds while anyone watches; otherwise the one-minute candle at the deadline).</li>

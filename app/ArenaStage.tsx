@@ -13,7 +13,7 @@
  */
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import type { Entrant, Round } from "@/lib/royale";
+import { paidPlaces, type Entrant, type Round } from "@/lib/royale";
 import { avatarDataUrl } from "@/lib/avatars";
 import { displayName } from "@/lib/username";
 
@@ -29,7 +29,7 @@ type Props = {
 
 type FeedKind = "trade" | "rank" | "cutline" | "round" | "champion" | "elim" | "info";
 type FeedEvent = { id: string; at: number; text: string; kind: FeedKind };
-type PodState = "winner" | "eliminated" | "below" | "line" | "safe";
+type PodState = "winner" | "eliminated" | "below" | "line" | "safe" | "ready" | "money" | "nomoney" | "bot";
 
 type Snapshot = {
   roundId: string;
@@ -52,7 +52,11 @@ const STATE_LABEL: Record<PodState, string> = {
   eliminated: "Eliminated",
   below: "Below cut",
   line: "On the line",
-  safe: "Safe"
+  safe: "Safe",
+  ready: "Ready",
+  money: "In the money",
+  nomoney: "Out of the money",
+  bot: "Bot"
 };
 
 export default function ArenaStage({ round, standings, survivors, yesPrice, spot, wallet }: Props) {
@@ -65,12 +69,19 @@ export default function ArenaStage({ round, standings, survivors, yesPrice, spot
     () => (isComplete ? standings.find((e) => e.id === round.championId) ?? standings[0] ?? null : null),
     [isComplete, standings, round.championId]
   );
+  // A single round has no elimination that matters — only who gets paid —
+  // so it shows prize places; a royale shows its survival cut.
+  const single = round.config.format === "single";
   // The cut only means something while a live round has more players than survivor slots.
-  const cutActive = isLive && alive.length > survivors;
+  const cutActive = !single && isLive && alive.length > survivors;
   const lineBankroll = cutActive ? alive[survivors - 1]?.bankroll ?? null : null;
+  const places = paidPlaces(round);
+  const humanRank = useMemo(() => new Map(standings.filter((e) => !e.isBot).map((e, i) => [e.id, i] as const)), [standings]);
 
   const stateOf = (e: Entrant, aliveIdx: number): PodState => {
     if (champion?.id === e.id) return "winner";
+    if (round.status === "enrolling") return "ready";
+    if (single && isLive) return e.isBot ? "bot" : (humanRank.get(e.id) ?? 99) < places ? "money" : "nomoney";
     if (e.eliminatedRound !== null) return "eliminated";
     if (!cutActive) return "safe";
     if (aliveIdx >= survivors) return "below";
@@ -145,7 +156,7 @@ export default function ArenaStage({ round, standings, survivors, yesPrice, spot
       if (newLeader && !eliminated.has(newLeader) && !throttled(`lead-${newLeader}`)) {
         push(`rank1-${newLeader}-${t}`, `${name(newLeader)} took the lead`, "rank");
       }
-      if (survivors > 1) {
+      if (survivors > 1 && !single) {
         below.forEach((id) => {
           if (!p.below.has(id) && !eliminated.has(id) && !throttled(`below-${id}`)) push(`below-${id}-${t}`, `${name(id)} dropped below the cut`, "cutline");
         });
@@ -224,6 +235,8 @@ export default function ArenaStage({ round, standings, survivors, yesPrice, spot
                 Top {survivors} of {alive.length} survive
                 {lineBankroll != null && <> · line <b>${lineBankroll.toFixed(2)}</b></>}
               </span>
+            ) : single && isLive ? (
+              <span className="mr-legend-cut">{places === 1 ? "Winner takes the pool" : `Top ${places} players split the pool`}</span>
             ) : (
               <span className="mr-legend-cut muted">
                 {round.status === "enrolling" ? `${standings.length}/${round.config.capacity} seats taken` :
@@ -365,7 +378,11 @@ function ago(t: number): string {
 /** Even spacing on a circle, rank #1 at 12 o'clock, clockwise by rank. */
 function pinFor(i: number, total: number): React.CSSProperties {
   const angle = -Math.PI / 2 + (i / Math.max(1, total)) * Math.PI * 2;
-  // Flatter vertically so pods at 12 and 6 o'clock stay inside the stage.
+  // Flatter vertically, and clamped so a pod never crosses the stage edge on
+  // a short stage (--pod-hx / --pod-hy are half a pod plus a margin).
   const rx = 40, ry = 33;
-  return { left: `${50 + Math.cos(angle) * rx}%`, top: `${50 + Math.sin(angle) * ry}%` };
+  return {
+    left: `clamp(var(--pod-hx), ${50 + Math.cos(angle) * rx}%, calc(100% - var(--pod-hx)))`,
+    top: `clamp(var(--pod-hy), ${50 + Math.sin(angle) * ry}%, calc(100% - var(--pod-hy)))`
+  };
 }

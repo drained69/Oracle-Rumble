@@ -9,6 +9,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { cancelArena, checkSeatFunds, enrollWithEscrow, newRound, prepareWallet, seatStepText, type SeatStep } from "@/lib/round-client";
 import { shortPk, USERNAME_MAX, validateUsername } from "@/lib/username";
+import { hostAmountError } from "@/lib/royale";
 import { avatarDataUrl } from "@/lib/avatars";
 import { useEscrowStatus, useWalletIdentity } from "@/lib/use-wallet";
 import SiteHeader from "@/app/SiteHeader";
@@ -132,9 +133,7 @@ export default function ArenasDirectory() {
   const vaultNum = Number(hVault) || 0;
   const hostSeat = entryNum + vaultNum;
   const poolIfFull = entryNum * hCapacity;
-  const hostInputError =
-    entryNum <= 0 ? "Entry must be greater than 0." :
-    vaultNum <= 0 ? "Vault must be greater than 0." : "";
+  const hostInputError = hostAmountError(entryNum, vaultNum);
 
   const doHostAndJoin = useCallback(async () => {
     if (hostInputError) { setToast(hostInputError); return; }
@@ -377,6 +376,7 @@ function PlayPanel({
         <h3>No arenas open</h3>
         <p>Open one in under a minute, then share the invite link with the players you want in the room.</p>
         <button className="btn-cta" onClick={onSwitchToHost}>Host an arena</button>
+        <a className="jc-practice" href="/a/PUBLIC">New here? Play a free practice round against bots →</a>
       </div>
     );
   }
@@ -506,23 +506,6 @@ function HostPanel({
         </label>
       ) : null}
 
-      {/* Seat 1 is a real position — say which way it goes before any deposit. */}
-      <div className="jc-field host-call">
-        <span className="jc-field-label">Your call on {hAsset}</span>
-        <div className="gm-seg call-seg" role="radiogroup" aria-label="Your opening call">
-          <button role="radio" aria-checked={hCall === "YES"} className={`opt up ${hCall === "YES" ? "on" : ""}`} onClick={() => setHCall("YES")}>▲ Up</button>
-          <button role="radio" aria-checked={hCall === "NO"} className={`opt down ${hCall === "NO" ? "on" : ""}`} onClick={() => setHCall("NO")}>▼ Down</button>
-          <button role="radio" aria-checked={hCall === "LATER"} className={`opt ${hCall === "LATER" ? "on" : ""}`} onClick={() => setHCall("LATER")}>Decide later</button>
-        </div>
-        <p className={`jc-help call-help ${hCall ? "" : "need"}`} role="status">
-          {!hCall
-            ? `You take seat 1: pick UP if you think ${hAsset} finishes the round above its opening price, DOWN if below — or decide once trading opens.`
-            : hCall === "LATER"
-              ? `Your vault stays in cash. The round opens at ${hAsset}'s live price; you pick UP or DOWN once trading starts.`
-              : `Your whole ${usd2.format(Number(hVault) || 0)} vault goes on ${hCall === "YES" ? "UP" : "DOWN"} at ${hAsset}'s opening price when trading starts — each share pays $1 if ${hAsset} closes ${hCall === "YES" ? "higher" : "lower"}. You can switch any time during the round.`}
-        </p>
-      </div>
-
       <div className="gm-seg" role="radiogroup" aria-label="Start mode">
         <button role="radio" aria-checked={hMode === "quick"} className={`opt ${hMode === "quick" ? "on" : ""}`} onClick={() => setHMode("quick")}>Quick</button>
         <button role="radio" aria-checked={hMode === "scheduled"} className={`opt ${hMode === "scheduled" ? "on" : ""}`} onClick={() => setHMode("scheduled")}>Scheduled</button>
@@ -587,22 +570,39 @@ function HostPanel({
       <div className="jc-host-inputs">
         <label className="gm-num">
           <span>Entry (USDC)</span>
-          <input value={hEntry} onChange={(e) => setHEntry(e.target.value.replace(/[^0-9.]/g, ""))} inputMode="decimal" aria-describedby="entry-help" />
-          <em id="entry-help">Goes into the shared prize pool</em>
+          <input value={hEntry} onChange={(e) => setHEntry(e.target.value.replace(/[^0-9]/g, "").slice(0, 3))} inputMode="numeric" aria-describedby="entry-help" />
+          <em id="entry-help">Into the shared prize pool · $1–100</em>
         </label>
         <label className="gm-num">
           <span>Vault (USDC)</span>
-          <input value={hVault} onChange={(e) => setHVault(e.target.value.replace(/[^0-9.]/g, ""))} inputMode="decimal" aria-describedby="vault-help" />
-          <em id="vault-help">Your trading bankroll — withdrawable</em>
+          <input value={hVault} onChange={(e) => setHVault(e.target.value.replace(/[^0-9]/g, "").slice(0, 3))} inputMode="numeric" aria-describedby="vault-help" />
+          <em id="vault-help">Your trading bankroll · $5–500</em>
         </label>
       </div>
 
       <div className="jc-host-preview">
         <div><span>Seat cost</span><b>{usd2.format(hostSeat)}</b></div>
         <div><span>Pool if full</span><b className="plasma">{usd2.format(poolIfFull)}</b></div>
-        <div><span>Payout</span><b>{hCapacity <= 2 ? "Winner" : "Top 3"}</b></div>
+        <div><span>Prize</span><b>{hCapacity <= 2 ? "Winner takes all" : "Top 3 split"}</b></div>
       </div>
 
+
+      {/* Seat 1 is a real position — say which way it goes before any deposit. */}
+      <div className="jc-field host-call">
+        <span className="jc-field-label">Your call on {hAsset}</span>
+        <div className="gm-seg call-seg" role="radiogroup" aria-label="Your opening call">
+          <button role="radio" aria-checked={hCall === "YES"} className={`opt up ${hCall === "YES" ? "on" : ""}`} onClick={() => setHCall("YES")}>▲ Up</button>
+          <button role="radio" aria-checked={hCall === "NO"} className={`opt down ${hCall === "NO" ? "on" : ""}`} onClick={() => setHCall("NO")}>▼ Down</button>
+          <button role="radio" aria-checked={hCall === "LATER"} className={`opt ${hCall === "LATER" ? "on" : ""}`} onClick={() => setHCall("LATER")}>Decide later</button>
+        </div>
+        <p className={`jc-help call-help ${hCall ? "" : "need"}`} role="status">
+          {!hCall
+            ? `You take seat 1: pick UP if you think ${hAsset} finishes the round above its opening price, DOWN if below — or decide once trading opens.`
+            : hCall === "LATER"
+              ? `Your vault stays in cash. The round opens at ${hAsset}'s live price; you pick UP or DOWN once trading starts.`
+              : `Your whole ${usd2.format(Number(hVault) || 0)} vault goes on ${hCall === "YES" ? "UP" : "DOWN"} at ${hAsset}'s opening price when trading starts — each share pays $1 if ${hAsset} closes ${hCall === "YES" ? "higher" : "lower"}. You can switch any time during the round.`}
+        </p>
+      </div>
 
       {inputError && <p className="jc-error" role="alert">{inputError}</p>}
       {escrowKnown && !escrowActive && (
