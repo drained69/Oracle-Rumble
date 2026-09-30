@@ -16,6 +16,11 @@ import { useEscrowStatus, useWalletIdentity } from "@/lib/use-wallet";
 import SiteHeader from "@/app/SiteHeader";
 import UsernameModal from "@/app/UsernameModal";
 import PantaGraduationBanner from "@/app/PantaGraduationBanner";
+import AmbientLife from "@/app/AmbientLife";
+import PriceTicker from "@/app/PriceTicker";
+import ActivityFeed from "@/app/ActivityFeed";
+import SeatRing from "@/app/SeatRing";
+import CountUp from "@/app/CountUp";
 
 const usd = new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 0 });
 const usd2 = new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 2 });
@@ -242,6 +247,7 @@ export default function ArenasDirectory() {
 
   return (
     <main className="game-main jumper">
+      <AmbientLife />
       <div className="game-grid-bg" aria-hidden="true" />
       <div className="game-scanlines" aria-hidden="true" />
 
@@ -255,10 +261,12 @@ export default function ArenasDirectory() {
         onNav={(k) => setTab(k === "arenas" ? "play" : "host")}
       />
 
+      <PriceTicker />
+
       <section className="jumper-stage">
         <div className="jumper-tagline">
           <p className="jt-eyebrow">Prediction-market battle royale · Solana</p>
-          <h1>
+          <h1 className="jt-title" data-text="Call it. Outplay the room.">
             <span className="hl-a">Call it.</span><br />
             <span className="hl-b">Outplay</span> the room.
           </h1>
@@ -274,9 +282,24 @@ export default function ArenasDirectory() {
           </ol>
 
           <div className="jumper-stats" aria-live="polite">
-            <div><span>In prize pools</span><b className="plasma">{usd.format(totals.pool)}</b></div>
-            <div><span>Players alive</span><b className="neon">{totals.alive}</b></div>
-            <div><span>Live rounds</span><b className="gold">{totals.live}</b></div>
+            <div>
+              <span>In prize pools</span>
+              <b className="plasma">
+                <CountUp value={totals.pool} format={(n) => usd.format(n)} />
+              </b>
+            </div>
+            <div>
+              <span>Players alive</span>
+              <b className="neon">
+                <CountUp value={totals.alive} format={(n) => Math.round(n).toString()} />
+              </b>
+            </div>
+            <div>
+              <span>Live rounds</span>
+              <b className="gold">
+                <CountUp value={totals.live} format={(n) => Math.round(n).toString()} />
+              </b>
+            </div>
           </div>
 
           <ul className="jt-trust">
@@ -284,6 +307,8 @@ export default function ArenasDirectory() {
             <li>Live price oracle</li>
             <li>No house cut</li>
           </ul>
+
+          <ActivityFeed />
         </div>
 
         <div className="jumper-card">
@@ -400,7 +425,10 @@ function PlayPanel({
             {featured.arenaCode} · Round {featured.roundNumber}/{featured.roundLimit}
           </span>
         </div>
-        <div className="jc-featured-q">{featured.marketQuestion}</div>
+        <div className="jc-featured-row">
+          <div className="jc-featured-q">{featured.marketQuestion}</div>
+          <SeatRing taken={featured.humans} capacity={featured.capacity} compact />
+        </div>
         <div className="jc-featured-meta">
           <div><span>Pool</span><b className="plasma">{usd2.format(featured.prizePoolUsdc)}</b></div>
           <div><span>Seat</span><b>{usd2.format(featured.entryUsdc + featured.startingBankroll)}</b></div>
