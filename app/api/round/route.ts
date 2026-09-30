@@ -88,6 +88,7 @@ function seatDepositors(round: Round, sync: SeatSync): boolean {
     const pending = round.escrow?.pendingSeats?.[wallet];
     const res = seatPlayer(round, wallet, pending?.nickname ?? "", {
       openingCall: pending?.openingCall ?? null,
+      openingCallPct: pending?.openingCallPct,
       restored: true
     });
     if (res.ok && round.escrow?.pendingSeats) delete round.escrow.pendingSeats[wallet];

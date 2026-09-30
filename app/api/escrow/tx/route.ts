@@ -3,7 +3,7 @@ import { sessionWallet } from "@/lib/session";
 import { PublicKey } from "@solana/web3.js";
 import { buildDepositTx, buildWithdrawTx, escrowReady, playerBalances, readPlayerEntry, readVault, verifyPlayerDeposited } from "@/lib/escrow-server";
 import { getActiveRound, getLatestRound, mutateActiveRound } from "@/lib/round-store";
-import { normalizeArenaCode, type Side } from "@/lib/royale";
+import { normalizeArenaCode, normalizeCallPct, type Side } from "@/lib/royale";
 import { validateUsername } from "@/lib/username";
 
 /** Cap on remembered pending seats per arena (anti-spam). */
@@ -34,6 +34,7 @@ export async function POST(request: Request) {
     roundVault?: string;
     nickname?: string;
     openingCall?: Side | null;
+    openingCallPct?: number;
   };
   if (!escrowReady()) {
     return NextResponse.json({ escrow: "inactive" });
@@ -139,12 +140,14 @@ export async function POST(request: Request) {
         if (r.status !== "enrolling" || !r.escrow) return;
         const pending = (r.escrow.pendingSeats ??= {});
         if (!pending[body.wallet] && Object.keys(pending).length >= MAX_PENDING_SEATS) return;
-        pending[body.wallet] = { nickname: name.ok ? name.value : "", openingCall };
+        pending[body.wallet] = { nickname: name.ok ? name.value : "", openingCall, openingCallPct: normalizeCallPct(body.openingCallPct) };
       }).catch(() => { /* best effort — enroll carries the same data */ });
     }
 
     const seatUsdc = round.config.entryUsdc + round.config.startingBankroll;
-    const call = body.openingCall === "YES" ? "UP" : body.openingCall === "NO" ? "DOWN" : "decide later";
+    const call = body.openingCall === "YES" || body.openingCall === "NO"
+      ? `${body.openingCall === "YES" ? "UP" : "DOWN"} (${normalizeCallPct(body.openingCallPct)}% of vault)`
+      : "decide later";
     const memo = `Oracle Rumble arena ${arena}: ${seatUsdc.toFixed(2)} USDC seat, ${round.config.asset} opening call ${call}`;
     const res = body.action === "deposit"
       ? await buildDepositTx(wallet, roundVault, memo)

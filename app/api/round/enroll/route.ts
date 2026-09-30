@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { requireWallet } from "@/lib/session";
 import { getActiveRound, getLatestRound, mutateActiveRound } from "@/lib/round-store";
-import { normalizeArenaCode, redactOpeningCalls, seatPlayer, type Side } from "@/lib/royale";
+import { normalizeArenaCode, normalizeCallPct, redactOpeningCalls, seatPlayer, type Side } from "@/lib/royale";
 import { confirmSignature, escrowReady, verifyPlayerDeposited } from "@/lib/escrow-server";
 import { validateUsername } from "@/lib/username";
 
@@ -32,7 +32,7 @@ async function waitForDeposit(wallet: string, roundVault: string, signature?: st
 }
 
 /**
- * POST /api/round/enroll  { wallet, nickname, arena?, escrowSignature?, openingCall? }
+ * POST /api/round/enroll  { wallet, nickname, arena?, escrowSignature?, openingCall?, openingCallPct? }
  *
  * Enroll a wallet into an arena's current enrolling round.
  *
@@ -54,6 +54,7 @@ export async function POST(request: Request) {
     arena?: string;
     escrowSignature?: string;
     openingCall?: Side | null;
+    openingCallPct?: number;
   };
   if (!body?.wallet) return NextResponse.json({ error: "wallet required" }, { status: 400 });
   // Only the wallet itself (signed-in session) may act for its seat.
@@ -116,7 +117,8 @@ export async function POST(request: Request) {
     if (already) { entrantId = already.id; return; } // seated by the keeper meanwhile
     const res = seatPlayer(r, body.wallet, nickname, {
       signature: body.escrowSignature,
-      openingCall
+      openingCall,
+      openingCallPct: normalizeCallPct(body.openingCallPct)
     });
     if (!res.ok) {
       enrollError = res.reason;

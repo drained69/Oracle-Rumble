@@ -1,8 +1,9 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { availableFor, buyPriceOf, hostAmountError, paidPlaces, payoutShares, sellPriceOf, tradingOpen, TRADE_CUTOFF_MS, TRADE_SPREAD } from "@/lib/royale";
+import { availableFor, buyPriceOf, DEFAULT_OPENING_CALL_PCT, hostAmountError, paidPlaces, payoutShares, sellPriceOf, tradingOpen, TRADE_CUTOFF_MS, TRADE_SPREAD } from "@/lib/royale";
 import { useEscapeKey } from "@/lib/use-escape";
+import CallSizePicker, { callSizeText } from "@/app/CallSizePicker";
 import { getRound, enrollWithEscrow, tradeRound, newRound, placeParlayApi, claimFromEscrow, serverSettleArena, cancelArena, checkSeatFunds, setOpeningCall, prepareWallet, seatStepText, type OpeningCall, type RoundView, type SeatStep } from "@/lib/round-client";
 import { useEscrowStatus, useWalletIdentity } from "@/lib/use-wallet";
 import SiteHeader from "@/app/SiteHeader";
@@ -67,7 +68,7 @@ export default function ArenaView({ arenaCode }: { arenaCode: string }) {
   const [side, setSide] = useState<"YES" | "NO">("YES");
   const [betMode, setBetMode] = useState<"single" | "parlay">("single");
   const [parlayLegs, setParlayLegs] = useState<{ marketId: string; side: "YES" | "NO" }[]>([]);
-  const [parlayStake, setParlayStake] = useState("5");
+  const [parlayStake, setParlayStake] = useState("");
   const [busy, setBusy] = useState(false);
   // Which wallet step a seat/host request is waiting on (null = idle).
   const [seatStep, setSeatStep] = useState<SeatStep | null>(null);
@@ -75,6 +76,8 @@ export default function ArenaView({ arenaCode }: { arenaCode: string }) {
   const [showEnroll, setShowEnroll] = useState(false);
   // UP / DOWN / decide-later pick in the seat modal ("" = not chosen yet).
   const [callPick, setCallPick] = useState<"YES" | "NO" | "LATER" | "">("");
+  const [callPct, setCallPct] = useState<number>(DEFAULT_OPENING_CALL_PCT);
+  const [hCallPct, setHCallPct] = useState<number>(DEFAULT_OPENING_CALL_PCT);
   const [showHost, setShowHost] = useState(false);
   const [hAsset, setHAsset] = useState<"BTC" | "ETH" | "SOL">("SOL");
   const [hHorizon, setHHorizon] = useState<"MIN5" | "MIN15" | "HOUR" | "DAY">("MIN5");
@@ -201,7 +204,7 @@ export default function ArenaView({ arenaCode }: { arenaCode: string }) {
       const r = await enrollWithEscrow(wallet, nick, arenaCode, call, (step, name) => {
         setSeatStep(step);
         setToast(seatStepText(step, seatUsd, call, name).toast);
-      });
+      }, callPct);
       const seated = !!(r.entrantId || r.already);
       if (seated) {
         const callText = call ? ` · opening call ${call === "YES" ? "UP" : "DOWN"}` : "";
@@ -217,15 +220,17 @@ export default function ArenaView({ arenaCode }: { arenaCode: string }) {
       }
       await refresh();
     } finally { setBusy(false); setSeatStep(null); }
-  }, [wallet, nickname, arenaCode, refresh, round, saveUsername, callPick]);
+  }, [wallet, nickname, arenaCode, refresh, round, saveUsername, callPick, callPct]);
 
-  const doChangeCall = useCallback(async (call: OpeningCall) => {
+  const doChangeCall = useCallback(async (call: OpeningCall, pct?: number) => {
     if (!wallet) return;
     setBusy(true);
     try {
-      const r = await setOpeningCall(wallet, arenaCode, call);
+      const r = await setOpeningCall(wallet, arenaCode, call, pct);
       if (r.error) setToast(r.error);
-      else setToast(call ? `Opening call set to ${call === "YES" ? "UP" : "DOWN"}.` : "You'll pick UP or DOWN once trading opens.");
+      else setToast(call
+        ? `Opening call: ${call === "YES" ? "UP" : "DOWN"} with ${r.pct === 100 ? "your whole vault" : `${r.pct ?? pct ?? 100}% of your vault`}.`
+        : "You'll pick UP or DOWN once trading opens.");
       await refresh();
     } finally { setBusy(false); }
   }, [wallet, arenaCode, refresh]);
@@ -386,24 +391,19 @@ export default function ArenaView({ arenaCode }: { arenaCode: string }) {
     if (parlayLegs.length < 2) return setToast("Add at least 2 legs.");
     const v = Number(parlayStake);
     if (!v || v <= 0) return setToast("Enter a stake.");
+    if (me && v > me.cash + 1e-9) return setToast(`You have ${usd2.format(me.cash)} in cash for a parlay.`);
     setBusy(true);
     try {
       const r = await placeParlayApi(wallet, parlayLegs, v, arenaCode);
       if (r.error) setToast(r.error);
       else {
-        setToast(`Parlay placed · ${parlayLegs.length} legs.`);
-        // Parlays are a client-space bundle over N Panta single-market
-        // orders. Firing the full lifecycle per leg is scoped for a
-        // follow-up; today the parlay stakes are drawn from the round
-        // vault (game state), not from real on-chain USDC, so we don't
-        // synthesize attribution here — a mock signature would be
-        // rejected by Panta in live mode and would only inflate the
-        // demo-mode counter dishonestly.
+        setToast(`Parlay placed · ${parlayLegs.length} legs, ${usd2.format(v)} staked.`);
         setParlayLegs([]);
+        setParlayStake("");
         await refresh();
       }
     } finally { setBusy(false); }
-  }, [wallet, enrolled, parlayLegs, parlayStake, arenaCode, refresh]);
+  }, [wallet, enrolled, parlayLegs, parlayStake, arenaCode, refresh, me]);
 
   const hostSeat = (Number(hEntry) || 0) + (Number(hVault) || 0);
   const hostError = hostAmountError(Number(hEntry) || 0, Number(hVault) || 0);
@@ -466,7 +466,7 @@ export default function ArenaView({ arenaCode }: { arenaCode: string }) {
       let enrollError = "";
       let refundable = false;
       try {
-        const r = await enrollWithEscrow(wallet, nick, v.arena, call, onStep);
+        const r = await enrollWithEscrow(wallet, nick, v.arena, call, onStep, hCallPct);
         // A signed deposit means the room is funded — never tear it down.
         if (r.error && !(r.entrantId || r.already)) { enrollError = r.error; refundable = !!r.refundable || !!r.deposited; }
       } catch (err) {
@@ -488,7 +488,7 @@ export default function ArenaView({ arenaCode }: { arenaCode: string }) {
       setInviteInfo({ code: v.arena, url });
       setToast(`Arena ${v.arena} is open. Share the link.`);
     } finally { setBusy(false); setSeatStep(null); }
-  }, [hAsset, hHorizon, hFormat, hEntry, hVault, hCapacity, hRounds, wallet, escrow, username, hCall, hostSeat, hostError]);
+  }, [hAsset, hHorizon, hFormat, hEntry, hVault, hCapacity, hRounds, wallet, escrow, username, hCall, hCallPct, hostSeat, hostError]);
 
   const doCopyInvite = useCallback(async (url?: string) => {
     const link = url ?? currentInviteUrl;
@@ -933,7 +933,7 @@ export default function ArenaView({ arenaCode }: { arenaCode: string }) {
                         </>
                       ) : (
                         <div className="parlay-build">
-                          <p className="pb-hint">Stack BTC, ETH and SOL up-or-down calls into one bet. Each leg resolves on that asset&apos;s move over this round. Every leg must land — longer odds, bigger payout.</p>
+                          <p className="pb-hint">Stack BTC, ETH and SOL up-or-down calls into one bet — every leg must land, over this round. The three usually move together, so legs in the same direction pay modestly, and legs that split (say BTC UP + ETH DOWN) pay far more.</p>
                           <div className="pb-board">
                             {parlayBoard.map((m) => {
                               const sel = parlayLegs.find((l) => l.marketId === m.id);
@@ -949,24 +949,48 @@ export default function ArenaView({ arenaCode }: { arenaCode: string }) {
                               );
                             })}
                           </div>
-                          <label className="field">
-                            Stake from your vault (USDC)
-                            <div className="field-input">
-                              <span className="curr">$</span>
-                              <input value={parlayStake} onChange={(e) => setParlayStake(e.target.value.replace(/[^0-9.]/g, ""))} inputMode="decimal" />
-                              <button type="button" className="max" onClick={() => setParlayStake(String(Math.floor(me!.cash)))}>MAX</button>
-                            </div>
-                          </label>
-                          <div className="summary">
-                            <span>Legs</span><b>{parlayLegs.length}</b>
-                            <span>Combined odds</span><b>{parlayLegs.length >= 2 ? `${parlayQuote.impliedOdds.toFixed(2)}×` : "—"}</b>
-                            <span>Variance fee</span><b>{parlayLegs.length >= 2 ? usd2.format(parlayQuote.feeUsdc) : "—"}</b>
-                            <span>Pays if all land</span><b className="accent">{parlayLegs.length >= 2 ? usd.format(parlayQuote.potentialPayoutUsdc) : "—"}</b>
-                            <span>If one leg voids</span><b>{parlayLegs.length >= 2 ? usd.format(parlayQuote.halfPayoutIfOneVoidUsdc) : "—"}</b>
-                          </div>
-                          <button className="btn primary full" onClick={doPlaceParlay} disabled={busy || parlayLegs.length < 2}>
-                            {parlayLegs.length < 2 ? "Pick at least 2 legs" : `Place ${parlayLegs.length}-leg parlay`}
-                          </button>
+                          {(() => {
+                            const cash = me!.cash;
+                            const stake = Number(parlayStake || 0);
+                            const over = stake > cash + 1e-9;
+                            const ready = parlayLegs.length >= 2;
+                            const mySide = me!.side ? (me!.side === "YES" ? yesPrice : 100 - yesPrice) : 0;
+                            return (
+                              <>
+                                <label className="field">
+                                  <span className="field-head">
+                                    Stake from your vault cash (USDC)
+                                    <em>{usd2.format(cash)} available</em>
+                                  </span>
+                                  <div className={`field-input ${over ? "bad" : ""}`}>
+                                    <span className="curr">$</span>
+                                    <input value={parlayStake} placeholder={cash > 0 ? cash.toFixed(2) : "0.00"} onChange={(e) => setParlayStake(e.target.value.replace(/[^0-9.]/g, ""))} inputMode="decimal" aria-invalid={over} />
+                                    <button type="button" className="max" onClick={() => setParlayStake(String(Math.floor(cash * 100) / 100))}>MAX</button>
+                                  </div>
+                                </label>
+                                {cash < 0.01 && me!.side && me!.shares > 0 && (
+                                  <p className="pb-cash-note">
+                                    Your vault is all in your {me!.side === "YES" ? "UP" : "DOWN"} position.{" "}
+                                    <button type="button" className="link-btn" onClick={doSell} disabled={busy}>
+                                      Sell it for {usd2.format(me!.shares * (sellPriceOf(mySide) / 100))} to free cash
+                                    </button>
+                                  </p>
+                                )}
+                                <div className="summary">
+                                  <span>Legs</span><b>{parlayLegs.length}</b>
+                                  <span>Chance all land</span><b>{ready ? `${parlayQuote.combinedPrice.toFixed(1)}%` : "—"}</b>
+                                  <span>Pays</span><b>{ready ? `${parlayQuote.impliedOdds.toFixed(2)}× your stake` : "—"}</b>
+                                  <span>Variance fee</span><b>{ready ? usd2.format(parlayQuote.feeUsdc) : "—"}</b>
+                                  <span>Pays if all land</span><b className="accent">{ready ? usd2.format(parlayQuote.potentialPayoutUsdc) : "—"}</b>
+                                  <span>If one leg voids</span><b>{ready ? usd2.format(parlayQuote.halfPayoutIfOneVoidUsdc) : "—"}</b>
+                                </div>
+                                {over && <p className="jc-error" role="alert">That&apos;s more than the {usd2.format(cash)} cash in your vault.</p>}
+                                <button className="btn primary full" onClick={doPlaceParlay} disabled={busy || !ready || !stake || over}>
+                                  {!ready ? "Pick at least 2 legs" : !stake ? "Enter a stake" : `Place ${parlayLegs.length}-leg parlay`}
+                                </button>
+                              </>
+                            );
+                          })()}
                         </div>
                       )}
                     </>
@@ -981,9 +1005,12 @@ export default function ArenaView({ arenaCode }: { arenaCode: string }) {
                           <button className={!me!.openingCall ? "seg-opt on" : "seg-opt"} onClick={() => doChangeCall(null)} disabled={busy} aria-pressed={!me!.openingCall}>Decide later</button>
                         </div>
                       </div>
+                      {me!.openingCall && (
+                        <CallSizePicker value={me!.openingCallPct ?? 100} onChange={(p) => doChangeCall(me!.openingCall ?? null, p)} vault={me!.cash} disabled={busy} />
+                      )}
                       <p className="call-note">
                         {me!.openingCall
-                          ? <>Your whole {usd2.format(me!.cash)} vault goes on <b className={me!.openingCall === "YES" ? "up" : "down"}>{me!.openingCall === "YES" ? "UP" : "DOWN"}</b> at the opening price (50¢ a share) the moment trading opens. You can switch or cash out any time while the round is live.</>
+                          ? <>{callSizeText(me!.openingCallPct ?? 100, me!.cash).stake.replace(/^./, (c) => c.toUpperCase())} goes on <b className={me!.openingCall === "YES" ? "up" : "down"}>{me!.openingCall === "YES" ? "UP" : "DOWN"}</b> at the opening price (50¢ a share) the moment trading opens. {callSizeText(me!.openingCallPct ?? 100, me!.cash).rest} You can switch or sell any time while the round is live.</>
                           : <>No call yet — your vault stays in cash until you trade. You&apos;ll get UP and DOWN buttons the moment the round goes live.</>}
                       </p>
                       {!isPublic && currentInviteUrl && (
@@ -1134,9 +1161,12 @@ export default function ArenaView({ arenaCode }: { arenaCode: string }) {
                   <button type="button" className={`call-later ${callPick === "LATER" ? "on" : ""}`} onClick={() => setCallPick("LATER")} aria-pressed={callPick === "LATER"}>
                     {callPick === "LATER" ? "✓ " : ""}Decide when trading opens
                   </button>
+                  {(callPick === "YES" || callPick === "NO") && (
+                    <CallSizePicker value={callPct} onChange={setCallPct} vault={vault} disabled={busy} />
+                  )}
                   <p className="call-explain" role="status">
                     {callPick === "YES" || callPick === "NO"
-                      ? <>When enrollment locks, your whole {usd2.format(vault)} vault buys <b className={callPick === "YES" ? "up" : "down"}>{callPick === "YES" ? "UP" : "DOWN"}</b> at the opening price — 50¢ a share, each paying $1 if you&apos;re right. You can switch sides or cash out any time during the round, and change this call until it starts.</>
+                      ? <>When enrollment locks, {callSizeText(callPct, vault).stake} buys <b className={callPick === "YES" ? "up" : "down"}>{callPick === "YES" ? "UP" : "DOWN"}</b> at the opening price — 50¢ a share, each paying $1 if you&apos;re right. {callSizeText(callPct, vault).rest} You can switch sides or sell any time during the round, and change this call until it starts.</>
                       : callPick === "LATER"
                         ? <>Your {usd2.format(vault)} vault stays in cash. Once the round is live you pick UP or DOWN, and how much, yourself.</>
                         : <>Pick the direction you think {asset} moves. Nothing is placed until trading opens.</>}
@@ -1146,13 +1176,16 @@ export default function ArenaView({ arenaCode }: { arenaCode: string }) {
                 <ol className="seat-steps" aria-label="How this round plays">
                   <li><b>Enrollment</b> {round.status === "enrolling" && deadline > 0 ? <>closes in <span className="mono">{fmtClock(timeLeft)}</span></> : "open"}</li>
                   <li><b>{liveMin} min</b> of trading on the live {asset} price{rounds > 1 ? `, ${rounds} rounds` : ""}</li>
-                  <li><b>Top finishers</b> split the pool · everyone withdraws their vault</li>
+                  <li><b>Top finishers</b> split the pool · everyone is paid out after the round</li>
                 </ol>
 
                 <dl className="seat-breakdown">
                   <div><dt>Entry → shared prize pool</dt><dd>{usd2.format(round.config.entryUsdc)}</dd></div>
                   <div><dt>Vault → your trading bankroll</dt><dd>{usd2.format(vault)}</dd></div>
-                  <div className="total"><dt>Total deposit</dt><dd>{usd2.format(seat)} USDC</dd></div>
+                  <div className="total">
+                    <dt>{round.escrow ? "Total deposit" : "Practice seat"}</dt>
+                    <dd>{round.escrow ? `${usd2.format(seat)} USDC` : "free — no USDC moves"}</dd>
+                  </div>
                 </dl>
 
                 <label>
@@ -1240,12 +1273,15 @@ export default function ArenaView({ arenaCode }: { arenaCode: string }) {
                     <button role="radio" aria-checked={hCall === "LATER"} className={hCall === "LATER" ? "seg-opt on" : "seg-opt"} onClick={() => setHCall("LATER")}>Decide later</button>
                   </div>
                 </div>
+                {(hCall === "YES" || hCall === "NO") && (
+                  <CallSizePicker value={hCallPct} onChange={setHCallPct} vault={Number(hVault) || 0} disabled={busy} />
+                )}
                 <p className={`host-call-help ${hCall ? "" : "need"}`} role="status">
                   {!hCall
                     ? `You take seat 1. UP = ${hAsset} finishes the round above its opening price, DOWN = below.`
                     : hCall === "LATER"
                       ? "Your vault stays in cash until you trade once the round is live."
-                      : `Your whole ${usd2.format(Number(hVault) || 0)} vault goes on ${hCall === "YES" ? "UP" : "DOWN"} at the opening price when trading starts.`}
+                      : `${callSizeText(hCallPct, Number(hVault) || 0).stake.replace(/^./, (c) => c.toUpperCase())} goes on ${hCall === "YES" ? "UP" : "DOWN"} at the opening price when trading starts. ${callSizeText(hCallPct, Number(hVault) || 0).rest ?? ""}`}
                 </p>
 
                 <div className="host-field">

@@ -225,7 +225,7 @@ function ActiveCard({ i, now }: { i: PortfolioItem; now: number }) {
       ) : i.status === "enrolling" ? (
         <p className="pf-line">
           {me.openingCall
-            ? <>Opening call <b className={me.openingCall === "YES" ? "up" : "down"}>{sideWord(me.openingCall)}</b> — your whole {usd.format(me.cash)} vault goes on it when trading opens.</>
+            ? <>Opening call <b className={me.openingCall === "YES" ? "up" : "down"}>{sideWord(me.openingCall)}</b> — {(me.openingCallPct ?? 100) >= 100 ? `your whole ${usd.format(me.cash)} vault goes` : `${usd.format((me.cash * (me.openingCallPct ?? 100)) / 100)} of your ${usd.format(me.cash)} vault goes`} on it when trading opens.</>
             : <>No opening call — you&apos;ll pick UP or DOWN once trading opens. Vault {usd.format(me.cash)}.</>}
         </p>
       ) : (

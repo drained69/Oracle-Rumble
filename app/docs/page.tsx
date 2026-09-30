@@ -198,7 +198,7 @@ withdraw  = prize share + vault pot × (your final vault ÷ all final vaults)`}<
               <b> DOWN</b> (a NO share) pays $1 if it closes below. A dead-flat close pays 50¢ each way.
             </p>
             <ul>
-              <li><b>Opening call</b> — when you take a seat you pick UP, DOWN or <em>decide later</em>. A call puts your whole vault on that side at the opening price (50¢ a share) the moment trading opens. You can change it until then, and switch or sell any time while the round is live — switching sides sells your current position and buys the other side in one step. Other players can&apos;t see your call until the round starts.</li>
+              <li><b>Opening call</b> — when you take a seat you pick UP, DOWN or <em>decide later</em>. A call puts a quarter, half (the default) or all of your vault on that side at the opening price (50¢ a share) the moment trading opens; the rest stays in cash for trades and parlays. You can change it until then, and switch or sell any time while the round is live — switching sides sells your current position and buys the other side in one step. Other players can&apos;t see your call until the round starts.</li>
               <li><b>Open</b> — the asset&apos;s spot price when enrollment locks. BTC, ETH and SOL are all recorded so parlay legs resolve over the same window.</li>
               <li><b>Live price</b> — the UP price is the chance the asset finishes above the open, given the move so far and the time left, so positions gain or lose value as the asset moves.</li>
               <li><b>Close</b> — the price sample nearest the deadline (the arena is polled every few seconds while anyone watches; otherwise the one-minute candle at the deadline).</li>
@@ -241,7 +241,8 @@ withdraw  = prize share + vault pot × (your final vault ÷ all final vaults)`}<
 
           <Section id="parlays" title="Parlays & cash-out">
             <ul>
-              <li><b>Up to 3 legs</b> — one UP/DOWN call each on BTC, ETH and SOL, paid from your vault. Every leg resolves on its asset&apos;s move over the round.</li>
+              <li><b>Up to 3 legs</b> — one UP/DOWN call each on BTC, ETH and SOL, paid from your vault cash. Every leg resolves on its asset&apos;s move over the round.</li>
+              <li><b>Priced together</b> — BTC, ETH and SOL usually move together over a few minutes, so a parlay is priced on the chance that all its legs land <em>jointly</em>, not by multiplying the legs as if they were independent. Legs in the same direction (BTC UP + ETH UP) pay modestly; legs that split (BTC UP + ETH DOWN) pay far more. Cash-outs use the same pricing.</li>
               <li><b>Correlation block</b> — one leg per asset.</li>
               <li><b>Variance fee</b> — the fee scales with the combined risk of the legs.</li>
               <li><b>Void fallback</b> — a leg voided at resolution counts as 0.5× instead of killing the ticket.</li>

@@ -17,7 +17,7 @@
 import { useCallback, useEffect, useState } from "react";
 import type { ParlayTicket } from "@/lib/royale";
 import { cashOutParlayApi } from "@/lib/round-client";
-import { CASHOUT_FEE_RATE, CASHOUT_FEE_CAP_USDC } from "@/lib/parlay";
+import { quoteCashOut } from "@/lib/parlay";
 import { useEscapeKey } from "@/lib/use-escape";
 
 const usd = new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 2 });
@@ -66,26 +66,22 @@ export default function PantaCashOutModal({
           yesPricesByMarket = j.prices ?? {};
         } catch { /* fall back to entry prices */ }
         if (cancelled) return;
-        // Cheap client-side mirror of quoteCashOut.
-        let prob = 1;
-        const legs = ticket.legs.map((l) => {
-          const yes = yesPricesByMarket[l.marketId];
-          const sideNow = yes !== undefined ? (l.side === "YES" ? yes : 100 - yes) : (l.side === "YES" ? l.entryPrice : 100 - l.entryPrice);
-          const clamped = Math.max(1, Math.min(99, sideNow));
-          prob *= clamped / 100;
-          return { marketId: l.marketId, side: l.side, entryPrice: l.entryPrice, currentSidePrice: clamped, question: l.question };
+        // Same function the server settles the cash-out with (joint pricing).
+        const q = quoteCashOut({
+          ticketId: ticket.id,
+          shares: ticket.shares,
+          originalStake: ticket.stake,
+          legs: ticket.legs.map((l) => ({ marketId: l.marketId, question: l.question, side: l.side, entryPrice: l.entryPrice })),
+          currentYesPrices: yesPricesByMarket
         });
-        const fair = ticket.shares * prob;
-        const fee = Math.min(fair * CASHOUT_FEE_RATE, CASHOUT_FEE_CAP_USDC);
-        const net = Math.max(0, fair - fee);
         setQuote({
-          liveCombinedPrice: Math.max(0.01, prob * 100),
-          fairValueUsdc: Math.round(fair * 100) / 100,
-          cashoutFeeUsdc: Math.round(fee * 100) / 100,
-          netCashoutUsdc: Math.round(net * 100) / 100,
-          originalStakeUsdc: ticket.stake,
-          pnlUsdc: Math.round((net - ticket.stake) * 100) / 100,
-          legs
+          liveCombinedPrice: q.liveCombinedPrice,
+          fairValueUsdc: q.fairValueUsdc,
+          cashoutFeeUsdc: q.cashoutFeeUsdc,
+          netCashoutUsdc: q.netCashoutUsdc,
+          originalStakeUsdc: q.originalStakeUsdc,
+          pnlUsdc: q.pnlUsdc,
+          legs: q.legs.map((l) => ({ marketId: l.marketId, side: l.side, entryPrice: l.entryPrice, currentSidePrice: l.currentSidePrice, question: l.question }))
         });
       } catch { /* ignore */ }
     })();
@@ -119,8 +115,8 @@ export default function PantaCashOutModal({
         <h2>{phase === "done" ? "Cashed out" : "Cash out parlay"}</h2>
         <p className="sub">
           {phase === "done"
-            ? <>Ticket closed early. Payout credited to your vault.</>
-            : <>Close this ticket now at the live mid-price. {ticket.legs.length}-leg parlay — parlayit-style early exit.</>}
+            ? <>Ticket closed early. The payout is back in your vault cash.</>
+            : <>Close this {ticket.legs.length}-leg parlay now at what it&apos;s worth with BTC, ETH and SOL where they are right now.</>}
         </p>
 
         <div className="cashout-legs">
@@ -145,7 +141,7 @@ export default function PantaCashOutModal({
 
         <div className="cashout-summary">
           <div><span>Original stake</span><b>{quote ? usd.format(quote.originalStakeUsdc) : "—"}</b></div>
-          <div><span>Live combined price</span><b>{quote ? `${quote.liveCombinedPrice.toFixed(1)}¢` : "…"}</b></div>
+          <div><span>Chance every leg lands</span><b>{quote ? `${quote.liveCombinedPrice.toFixed(1)}¢` : "…"}</b></div>
           <div><span>Fair value</span><b>{quote ? usd.format(quote.fairValueUsdc) : "…"}</b></div>
           <div><span>Cashout fee (2%)</span><b>{quote ? usd.format(quote.cashoutFeeUsdc) : "…"}</b></div>
           <div className="net"><span>You receive</span><b className="up">{quote ? usd.format(quote.netCashoutUsdc) : "…"}</b></div>
@@ -158,7 +154,7 @@ export default function PantaCashOutModal({
         {error && <p className="pcm-error" style={{ marginTop: 12 }}>{error}</p>}
 
         <p className="disclaimer" style={{ marginTop: 12 }}>
-          Cashout resolves against the round vault. Panta v1 has no sell endpoint on the primary book — this is the parlayit early-exit design implemented on the game layer.
+          The payout goes back into your vault cash. Legs are priced together, since BTC, ETH and SOL tend to move together.
         </p>
 
         <div className="pcm-actions">

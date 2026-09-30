@@ -57,6 +57,7 @@ function myView(round: Round, me: Entrant, yes: number | null, showCall: boolean
     avgPrice: Math.round(e.avgPrice),
     markPrice,
     openingCall: showCall ? me.openingCall ?? null : null,
+    openingCallPct: showCall && me.openingCall ? me.openingCallPct ?? 100 : null,
     openParlays: me.parlays.filter((t) => t.status === "open").length,
     place: idx >= 0 && (done || me.eliminatedRound === null) ? idx + 1 : null,
     players: done ? round.entrants.length : order.length,

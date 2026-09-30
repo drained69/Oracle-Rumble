@@ -3927,3 +3927,19 @@ a.pf-code:hover { background: rgba(34, 211, 238, 0.08); }
 .summary b em.muted { font-style: normal; font-weight: 500; font-size: 11px; color: var(--text-3); margin-left: 6px; }
 .enroll-cta.locked-note { border-color: rgba(251, 146, 60, 0.35); }
 .enroll-cta.locked-note b { color: var(--xp); }
+
+/* Opening-call size picker (25% / half / all of the vault) */
+.call-size { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin: 10px 0 6px; }
+.call-size-k { font-family: 'JetBrains Mono', monospace; font-size: 10px; font-weight: 700; letter-spacing: 1.1px; text-transform: uppercase; color: var(--text-3); }
+.call-size-opts { display: flex; gap: 6px; flex: 1; min-width: 0; }
+.call-size-opt {
+  flex: 1; min-width: 0; display: flex; flex-direction: column; align-items: center; gap: 1px;
+  padding: 6px 8px; border-radius: 10px; border: 1px solid var(--border); background: var(--surface);
+  color: var(--text-2); font-weight: 700; font-size: 12.5px; cursor: pointer;
+}
+.call-size-opt em { font-style: normal; font-weight: 500; font-size: 11px; color: var(--text-3); }
+.call-size-opt.on { border-color: var(--neon); color: var(--text); background: rgba(192, 132, 252, 0.1); }
+.call-size-opt.on em { color: var(--text-2); }
+.call-size-opt:disabled { opacity: 0.6; cursor: default; }
+.pb-cash-note { color: var(--text-2); font-size: 12.5px; line-height: 1.5; margin: -4px 0 10px; }
+.pb-cash-note .link-btn { color: var(--plasma); text-decoration: underline; text-underline-offset: 3px; background: none; border: 0; padding: 0; cursor: pointer; font: inherit; }

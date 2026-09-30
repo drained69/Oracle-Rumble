@@ -29,6 +29,8 @@
  * and server never disagree on price or correlation rules.
  */
 
+import { jointProbability } from "@/lib/joint-prob";
+
 export const PARLAY_MIN_LEGS = 2;
 export const PARLAY_MAX_LEGS = 5;
 
@@ -141,8 +143,8 @@ export function quoteParlay(legs: ParlayLeg[], stakeUsdc: number, ttlMs = 15_000
   const feeUsdc = Math.min(feeSum, feeCap);
   const netStakeUsdc = Math.max(0, safeStake - feeUsdc);
 
-  let prob = 1;
-  for (const l of legs) prob *= Math.max(1, Math.min(99, l.price)) / 100;
+  // Legs on correlated assets are priced jointly, not multiplied as if independent.
+  const prob = jointProbability(legs.map((l) => ({ marketId: l.marketId, side: l.side, prob: Math.max(1, Math.min(99, l.price)) / 100 })));
   const combinedPrice = Math.max(0.01, prob * 100);
 
   const shares = netStakeUsdc / (combinedPrice / 100);
@@ -178,7 +180,7 @@ export type CashOutLegState = {
 export type CashOutQuote = {
   legs: CashOutLegState[];
   shares: number;              // ticket.shares (payout units if all land)
-  liveCombinedPrice: number;   // cents — product of current side probabilities × 100
+  liveCombinedPrice: number;   // cents — joint probability that every leg lands × 100
   fairValueUsdc: number;       // shares × prob — mid-price
   cashoutFeeRate: number;
   cashoutFeeUsdc: number;
@@ -193,7 +195,7 @@ export type CashOutQuote = {
 /**
  * Price the early-exit cashout for an already-placed parlay ticket.
  *
- *   fair value = shares × Π(currentSideProb)
+ *   fair value = shares × P(every leg lands | current prices)   (joint, correlated)
  *   cashout fee = min(fair × rate, cap)
  *   net = fair − cashout fee
  *
@@ -225,7 +227,6 @@ export function quoteCashOut(args: {
   }
 
   const legState: CashOutLegState[] = [];
-  let prob = 1;
   let missing = 0;
   for (const leg of args.legs) {
     const yes = args.currentYesPrices[leg.marketId];
@@ -235,16 +236,16 @@ export function quoteCashOut(args: {
       // so the mark stays stable — same convention as parlayMarkValue.
       const sideNow = leg.side === "YES" ? leg.entryPrice : 100 - leg.entryPrice;
       const clamped = Math.max(1, Math.min(99, sideNow));
-      prob *= clamped / 100;
       legState.push({ marketId: leg.marketId, question: leg.question, side: leg.side, entryPrice: leg.entryPrice, currentSidePrice: clamped });
       continue;
     }
     const sideNow = leg.side === "YES" ? yes : 100 - yes;
     const clamped = Math.max(1, Math.min(99, sideNow));
-    prob *= clamped / 100;
     legState.push({ marketId: leg.marketId, question: leg.question, side: leg.side, entryPrice: leg.entryPrice, currentSidePrice: clamped });
   }
 
+  // Same joint pricing as placement, on the legs' current prices.
+  const prob = jointProbability(legState.map((l) => ({ marketId: l.marketId, side: l.side, prob: l.currentSidePrice / 100 })));
   const liveCombinedPrice = Math.max(0.01, prob * 100);
   const fairValueUsdc = shares * prob;
   const rawFee = fairValueUsdc * CASHOUT_FEE_RATE;

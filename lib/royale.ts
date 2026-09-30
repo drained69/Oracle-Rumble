@@ -18,6 +18,8 @@
  * until then the prize pool is an accounting figure, flagged as such in the UI.
  */
 
+import { jointProbability } from "@/lib/joint-prob";
+
 export type RoundStatus =
   | "enrolling"   // accepting entrants, before lock
   | "live"        // trading window open
@@ -45,10 +47,12 @@ export type Entrant = {
   parlays: ParlayTicket[];// open + settled parlay tickets bought from the vault
   /**
    * The direction picked when taking the seat — YES = UP, NO = DOWN. Placed
-   * with the whole vault the moment the round goes live, then cleared. Null
-   * means the player decides once trading opens.
+   * the moment the round goes live, then cleared. Null means the player
+   * decides once trading opens.
    */
   openingCall?: Side | null;
+  /** Share of the vault the opening call uses (25/50/100; unset = 100). */
+  openingCallPct?: number;
 };
 
 /** One leg of a placed parlay — an UP/DOWN call on a board market. */
@@ -239,7 +243,7 @@ export type RoundEscrowRecord = {
    * tx. If the deposit lands but the enroll request never arrives, the keeper
    * seats the wallet from its on-chain entry using these.
    */
-  pendingSeats?: Record<string, { nickname: string; openingCall: Side | null }>;
+  pendingSeats?: Record<string, { nickname: string; openingCall: Side | null; openingCallPct?: number }>;
 };
 
 /**
@@ -440,6 +444,7 @@ export type SeatOptions = {
   /** Deposit tx signature, logged in the escrow history. */
   signature?: string;
   openingCall?: Side | null;
+  openingCallPct?: number;
   /**
    * Seated from an on-chain deposit whose enroll request never arrived
    * (dropped connection, closed tab). Doesn't restart the enrollment clock.
@@ -458,6 +463,7 @@ export function seatPlayer(round: Round, wallet: string, nickname: string, opts:
   const name = uniqueNickname(round, wallet, (nickname || `${wallet.slice(0, 4)}_${wallet.slice(-4)}`).slice(0, 16));
   const entrant = makeEntrant(round, wallet, name, false);
   entrant.openingCall = opts.openingCall ?? null;
+  entrant.openingCallPct = normalizeCallPct(opts.openingCallPct);
   const res = enroll(round, entrant);
   if (!res.ok) return { ok: false, reason: res.reason ?? "Could not take a seat." };
   // A hosted arena's clock starts once its first seat (the host's) is
@@ -485,7 +491,7 @@ export function seatPlayer(round: Round, wallet: string, nickname: string, opts:
 export function redactOpeningCalls(round: Round, viewer?: string | null): Round {
   const hideCalls = round.status === "enrolling";
   const entrants = hideCalls
-    ? round.entrants.map((e) => (e.wallet === viewer || !e.openingCall ? e : { ...e, openingCall: null }))
+    ? round.entrants.map((e) => (e.wallet === viewer || !e.openingCall ? e : { ...e, openingCall: null, openingCallPct: undefined }))
     : round.entrants;
   const escrow = round.escrow?.pendingSeats
     ? (({ pendingSeats: _omit, ...rest }) => rest)(round.escrow)
@@ -493,7 +499,15 @@ export function redactOpeningCalls(round: Round, viewer?: string | null): Round 
   return { ...round, entrants, escrow };
 }
 
-/** Place every seated player's opening call (whole vault) as the round goes live. */
+/** Opening-call sizes a player can pick (% of the vault). */
+export const OPENING_CALL_SIZES = [25, 50, 100] as const;
+export const DEFAULT_OPENING_CALL_PCT = 50;
+export function normalizeCallPct(v: unknown): number {
+  const n = Number(v);
+  return (OPENING_CALL_SIZES as readonly number[]).includes(n) ? n : DEFAULT_OPENING_CALL_PCT;
+}
+
+/** Place every seated player's opening call (their chosen share of the vault) as the round goes live. */
 export function placeOpeningCalls(round: Round, yesPrice: number): void {
   for (const e of round.entrants) {
     const call = e.openingCall;
@@ -501,7 +515,8 @@ export function placeOpeningCalls(round: Round, yesPrice: number): void {
     e.openingCall = null;
     if (e.isBot || e.shares > 0 || e.cash <= 0) continue;
     const price = call === "YES" ? yesPrice : 100 - yesPrice;
-    const stake = e.cash;
+    const pct = e.openingCallPct ?? 100;
+    const stake = Math.floor(e.cash * pct) / 100;
     if (buyShares(e, call, stake, price, yesPrice).ok) {
       logEvent(round, `${e.nickname} bought ${sideWord(call)} $${stake.toFixed(2)} at ${price}¢ (opening call).`);
     }
@@ -594,12 +609,11 @@ export function liquidate(entrant: Entrant, markYesPrice: number, spread = 0): v
  */
 export function parlayMarkValue(t: ParlayTicket, priceMap?: PriceMap): number {
   if (t.status !== "open") return 0;
-  let prob = 1;
-  for (const leg of t.legs) {
+  const prob = jointProbability(t.legs.map((leg) => {
     const yes = priceMap?.[leg.marketId];
     const sideNow = yes === undefined ? leg.entryPrice : leg.side === "YES" ? yes : 100 - yes;
-    prob *= Math.max(1, Math.min(99, sideNow)) / 100;
-  }
+    return { marketId: leg.marketId, side: leg.side, prob: Math.max(1, Math.min(99, sideNow)) / 100 };
+  }));
   return t.shares * prob;
 }
 

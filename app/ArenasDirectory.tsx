@@ -9,7 +9,8 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { cancelArena, checkSeatFunds, enrollWithEscrow, newRound, prepareWallet, seatStepText, type SeatStep } from "@/lib/round-client";
 import { shortPk, USERNAME_MAX, validateUsername } from "@/lib/username";
-import { hostAmountError } from "@/lib/royale";
+import { DEFAULT_OPENING_CALL_PCT, hostAmountError } from "@/lib/royale";
+import CallSizePicker, { callSizeText } from "@/app/CallSizePicker";
 import { avatarDataUrl } from "@/lib/avatars";
 import { useEscrowStatus, useWalletIdentity } from "@/lib/use-wallet";
 import SiteHeader from "@/app/SiteHeader";
@@ -88,6 +89,7 @@ export default function ArenasDirectory() {
   const [hStartInMin, setHStartInMin] = useState(15);
   // The host's own opening call (they take seat 1 like everyone else).
   const [hCall, setHCall] = useState<"YES" | "NO" | "LATER" | "">("");
+  const [hCallPct, setHCallPct] = useState<number>(DEFAULT_OPENING_CALL_PCT);
   const [inviteInfo, setInviteInfo] = useState<{ code: string; url: string } | null>(null);
 
   useEffect(() => {
@@ -188,7 +190,7 @@ export default function ArenasDirectory() {
       let enrollError = "";
       let refundable = false;
       try {
-        const r = await enrollWithEscrow(wallet, hostName || shortPk(wallet).replace("…", ""), v.arena, call, onStep);
+        const r = await enrollWithEscrow(wallet, hostName || shortPk(wallet).replace("…", ""), v.arena, call, onStep, hCallPct);
         // A signed deposit means the room is funded — never tear it down;
         // the seat is registered from the on-chain entry if this call lags.
         if (r.error && !(r.entrantId || r.already)) { enrollError = r.error; refundable = !!r.refundable || !!r.deposited; }
@@ -211,7 +213,7 @@ export default function ArenasDirectory() {
       setToast(`Arena ${v.arena} is open — you're in seat 1. Share the link.`);
       refresh();
     } finally { setHostStep(""); }
-  }, [hostInputError, escrow, wallet, username, nameDraft, saveUsername, hostSeat, hMode, hStartInMin, hAsset, hHorizon, hFormat, entryNum, vaultNum, hCapacity, hRounds, hCall, refresh]);
+  }, [hostInputError, escrow, wallet, username, nameDraft, saveUsername, hostSeat, hMode, hStartInMin, hAsset, hHorizon, hFormat, entryNum, vaultNum, hCapacity, hRounds, hCall, hCallPct, refresh]);
 
   const doCopy = useCallback(async (url: string) => {
     try { await navigator.clipboard.writeText(url); setToast("Invite link copied."); }
@@ -322,7 +324,7 @@ export default function ArenasDirectory() {
                 hCapacity={hCapacity} setHCapacity={setHCapacity}
                 hEntry={hEntry} setHEntry={setHEntry}
                 hVault={hVault} setHVault={setHVault}
-                hCall={hCall} setHCall={setHCall}
+                hCall={hCall} setHCall={setHCall} hCallPct={hCallPct} setHCallPct={setHCallPct}
                 hostSeat={hostSeat} poolIfFull={poolIfFull}
                 inputError={hostInputError}
                 wallet={wallet} escrowActive={!!escrow?.active} escrowKnown={escrow != null}
@@ -440,7 +442,7 @@ function HostPanel({
   hMode, setHMode, hStartInMin, setHStartInMin,
   hAsset, setHAsset, hHorizon, setHHorizon,
   hFormat, setHFormat, hRounds, setHRounds,
-  hCapacity, setHCapacity, hEntry, setHEntry, hVault, setHVault, hCall, setHCall,
+  hCapacity, setHCapacity, hEntry, setHEntry, hVault, setHVault, hCall, setHCall, hCallPct, setHCallPct,
   hostSeat, poolIfFull, inputError, wallet, escrowActive, escrowKnown,
   username, nameDraft, setNameDraft, onEditUsername, onConnect, step, onSubmit
 }: {
@@ -454,6 +456,7 @@ function HostPanel({
   hEntry: string; setHEntry: (v: string) => void;
   hVault: string; setHVault: (v: string) => void;
   hCall: "YES" | "NO" | "LATER" | ""; setHCall: (v: "YES" | "NO" | "LATER") => void;
+  hCallPct: number; setHCallPct: (v: number) => void;
   hostSeat: number; poolIfFull: number; inputError: string;
   wallet: string | null; escrowActive: boolean; escrowKnown: boolean;
   username: string; nameDraft: string; setNameDraft: (v: string) => void;
@@ -595,12 +598,15 @@ function HostPanel({
           <button role="radio" aria-checked={hCall === "NO"} className={`opt down ${hCall === "NO" ? "on" : ""}`} onClick={() => setHCall("NO")}>▼ Down</button>
           <button role="radio" aria-checked={hCall === "LATER"} className={`opt ${hCall === "LATER" ? "on" : ""}`} onClick={() => setHCall("LATER")}>Decide later</button>
         </div>
+        {(hCall === "YES" || hCall === "NO") && (
+          <CallSizePicker value={hCallPct} onChange={setHCallPct} vault={Number(hVault) || 0} disabled={busy} />
+        )}
         <p className={`jc-help call-help ${hCall ? "" : "need"}`} role="status">
           {!hCall
             ? `You take seat 1: pick UP if you think ${hAsset} finishes the round above its opening price, DOWN if below — or decide once trading opens.`
             : hCall === "LATER"
               ? `Your vault stays in cash. The round opens at ${hAsset}'s live price; you pick UP or DOWN once trading starts.`
-              : `Your whole ${usd2.format(Number(hVault) || 0)} vault goes on ${hCall === "YES" ? "UP" : "DOWN"} at ${hAsset}'s opening price when trading starts — each share pays $1 if ${hAsset} closes ${hCall === "YES" ? "higher" : "lower"}. You can switch any time during the round.`}
+              : `${callSizeText(hCallPct, Number(hVault) || 0).stake.replace(/^./, (c) => c.toUpperCase())} goes on ${hCall === "YES" ? "UP" : "DOWN"} at ${hAsset}'s opening price when trading starts — each share pays $1 if ${hAsset} closes ${hCall === "YES" ? "higher" : "lower"}. ${callSizeText(hCallPct, Number(hVault) || 0).rest ?? ""} You can switch any time during the round.`}
         </p>
       </div>
 

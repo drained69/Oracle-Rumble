@@ -35,6 +35,7 @@ export type PortfolioItem = {
     avgPrice: number;        // cents
     markPrice: number | null; // cents, current price of the side held
     openingCall: Side | null; // only returned to the wallet itself
+    openingCallPct: number | null; // % of the vault the call uses
     openParlays: number;
     /** Place among players still in (live) or overall finishing place (done). */
     place: number | null;
