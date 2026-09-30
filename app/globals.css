@@ -3920,3 +3920,10 @@ a.pf-code:hover { background: rgba(34, 211, 238, 0.08); }
 @media (max-width: 640px) { .how-grid, .arena-main .how-grid { grid-template-columns: 1fr; } }
 .final-board .fb-row.fb-head span { font: inherit; color: var(--text-3); text-shadow: none; }
 .final-board .fb-row.fb-head { padding-top: 6px; padding-bottom: 6px; }
+
+/* Trade panel: last-call line, spread note, locked state */
+.last-call { color: var(--text-3); font-size: 12px; line-height: 1.5; margin: 0 0 12px; }
+.last-call b { color: var(--text-2); }
+.summary b em.muted { font-style: normal; font-weight: 500; font-size: 11px; color: var(--text-3); margin-left: 6px; }
+.enroll-cta.locked-note { border-color: rgba(251, 146, 60, 0.35); }
+.enroll-cta.locked-note b { color: var(--xp); }

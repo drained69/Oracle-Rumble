@@ -510,21 +510,40 @@ export function placeOpeningCalls(round: Round, yesPrice: number): void {
 
 // ── bankroll / trading ────────────────────────────────────────────────
 
+// ── trading rules ─────────────────────────────────────────────────────
+
 /**
- * Buy `usdc` worth of `side` shares at `priceCents` (0..100). Shares are
- * `usdc / (price/100)`. A player may hold only one side at a time; buying
- * the opposite side first liquidates the current position at `markPrice`.
+ * Cents added to the buy price and taken off the sell price of a single
+ * trade. Makes flipping sides cost something, so re-trading every small lag
+ * in the price feed doesn't pay. Opening calls and settlement don't pay it.
  */
-export function buyShares(entrant: Entrant, side: Side, usdc: number, priceCents: number, markYesPrice: number): { ok: boolean; reason?: string } {
+export const TRADE_SPREAD = 1;
+/** Trading, parlays and cash-outs close this long before the deadline ("last call"). */
+export const TRADE_CUTOFF_MS = 30_000;
+
+export const buyPriceOf = (sideCents: number) => Math.min(99, Math.round(sideCents) + TRADE_SPREAD);
+export const sellPriceOf = (sideCents: number) => Math.max(0, Math.round(sideCents) - TRADE_SPREAD);
+
+/** Can players still trade in this round right now? */
+export function tradingOpen(round: Round, now = Date.now()): boolean {
+  return round.status === "live" && now < round.liveDeadline - TRADE_CUTOFF_MS;
+}
+
+/**
+ * Buy `usdc` of `side` at `priceCents` (the execution price, spread
+ * included). Switching sides sells the current position first at the mark
+ * less `spread`.
+ */
+export function buyShares(entrant: Entrant, side: Side, usdc: number, priceCents: number, markYesPrice: number, spread = 0): { ok: boolean; reason?: string } {
   if (entrant.eliminatedRound !== null) return { ok: false, reason: "Eliminated." };
   if (usdc <= 0) return { ok: false, reason: "Amount must be positive." };
   // Switching sides sells the current position first, so its value counts
   // towards what can be bought.
-  if (usdc > availableFor(entrant, side, markYesPrice) + 1e-9) return { ok: false, reason: "Insufficient bankroll." };
+  if (usdc > availableFor(entrant, side, markYesPrice, spread) + 1e-9) return { ok: false, reason: "Insufficient bankroll." };
   const price = Math.max(1, Math.min(99, priceCents));
 
   if (entrant.side && entrant.side !== side && entrant.shares > 0) {
-    liquidate(entrant, markYesPrice);
+    liquidate(entrant, markYesPrice, spread);
   }
   usdc = Math.min(usdc, entrant.cash);
   const newShares = usdc / (price / 100);
@@ -537,11 +556,14 @@ export function buyShares(entrant: Entrant, side: Side, usdc: number, priceCents
   return { ok: true };
 }
 
-/** USDC a player can put on `side` now: cash, plus the current position if it's the other side. */
-export function availableFor(entrant: Entrant, side: Side, markYesPrice: number): number {
+/**
+ * USDC a player can put on `side` now: cash, plus what the current position
+ * sells for (mark less `spread`) if it's the other side.
+ */
+export function availableFor(entrant: Entrant, side: Side, markYesPrice: number, spread = 0): number {
   if (!entrant.side || entrant.side === side || entrant.shares <= 0) return entrant.cash;
   const mark = entrant.side === "YES" ? markYesPrice : 100 - markYesPrice;
-  return entrant.cash + entrant.shares * (mark / 100);
+  return entrant.cash + entrant.shares * (Math.max(0, mark - spread) / 100);
 }
 
 /**
@@ -553,11 +575,11 @@ export function paidPlaces(round: Round): number {
   return funded <= 2 ? 1 : Math.min(3, humanCount(round));
 }
 
-/** Sell the entire current position at the live mark. */
-export function liquidate(entrant: Entrant, markYesPrice: number): void {
+/** Sell the entire current position at the live mark, less `spread` (0 at settlement). */
+export function liquidate(entrant: Entrant, markYesPrice: number, spread = 0): void {
   if (!entrant.side || entrant.shares <= 0) return;
   const mark = entrant.side === "YES" ? markYesPrice : 100 - markYesPrice;
-  entrant.cash += entrant.shares * (mark / 100);
+  entrant.cash += entrant.shares * (Math.max(0, mark - spread) / 100);
   entrant.shares = 0;
   entrant.side = null;
   entrant.avgPrice = 0;

@@ -11,7 +11,7 @@
 import { PANTA_LIVE, pantaFetch, type PantaMarket } from "@/lib/panta";
 import { markets as directionMarkets, findMockMarket } from "@/lib/arena-data";
 import { ASSET_SYMBOLS, assetOfMarketId, getAsset, type AssetSymbol } from "@/lib/assets";
-import { resolvedCents, spotPrices, spotPricesAt, upCents, type Spots } from "@/lib/oracle";
+import { freshSpots, resolvedCents, spotPrices, spotPricesAt, upCents, type Spots } from "@/lib/oracle";
 import {
   advance,
   botTick,
@@ -24,6 +24,7 @@ import {
   placeOpeningCalls,
   PUBLIC_ARENA,
   settle,
+  TRADE_CUTOFF_MS,
   type PriceMap,
   type Round,
   type RoundConfig,
@@ -99,6 +100,38 @@ export async function livePricing(round: Round | null): Promise<Pricing> {
     : undefined;
   const priceMap = oraclePriceMap(round, spots, now);
   return { yesPrice: priceMap[round.config.marketId] ?? 50, priceMap, spots, closeSpots };
+}
+
+/** A move bigger than this (fraction) since the last sample counts as a sharp jump. */
+const JUMP = 0.003;
+/** How recent that last sample must be for the jump check. */
+const JUMP_WINDOW_MS = 10_000;
+
+/**
+ * Pricing for a trade, on quotes taken right now (not the few-seconds-old
+ * cache), plus a reason to refuse the trade for a moment when the price
+ * isn't settled: the exchanges disagree, or the asset just jumped since the
+ * last sample. That's when someone watching a faster feed could otherwise
+ * buy at a price that hasn't caught up with the move.
+ */
+export async function tradePricing(round: Round, assets: AssetSymbol[]): Promise<Pricing & { pause: string | null }> {
+  if (!isDirectionRound(round)) return { ...(await livePricing(round)), pause: null };
+  const now = Date.now();
+  const { spots: fresh, divergent } = await freshSpots(assets);
+  const spots: Spots = { ...(await spotPrices()), ...fresh };
+  let pause: string | null = null;
+  for (const a of assets) {
+    if (!fresh[a]) { pause = `${a}'s price is unavailable for a moment`; break; }
+    if (divergent.includes(a)) { pause = `${a} is moving fast and exchanges disagree`; break; }
+    const last = round.oracle?.last?.[a];
+    const lastAt = round.oracle?.lastAt ?? 0;
+    if (last && now - lastAt < JUMP_WINDOW_MS && Math.abs(fresh[a]! - last) / last > JUMP) {
+      pause = `${a} just moved sharply`;
+      break;
+    }
+  }
+  const priceMap = oraclePriceMap(round, spots, now);
+  return { yesPrice: priceMap[round.config.marketId] ?? 50, priceMap, spots, pause };
 }
 
 /** The round market's UP price after a tick, for the response. */
@@ -345,7 +378,7 @@ export function tick(round: Round, pricing: Pricing): Round {
     const yesPrice = direction ? priceMap[round.config.marketId] ?? 50 : pricing.yesPrice;
     // The keeper runs on every page poll; pace the bots so how often they
     // trade doesn't depend on how many people are watching.
-    const botsAct = !round.botTickAt || now - round.botTickAt >= BOT_TICK_MS;
+    const botsAct = (!round.botTickAt || now - round.botTickAt >= BOT_TICK_MS) && now < round.liveDeadline - TRADE_CUTOFF_MS;
     if (botsAct) round.botTickAt = now;
     for (const e of round.entrants) {
       if (e.isBot && botsAct) botTick(e, yesPrice);

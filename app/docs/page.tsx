@@ -210,8 +210,20 @@ withdraw  = prize share + vault pot × (your final vault ÷ all final vaults)`}<
             <p>
               Buying UP or DOWN moves USDC from your vault into shares at the current price; selling
               closes the position at the live mark. Your vault value — cash plus marked positions —
-              decides your rank and is what the cut line compares. Trading closes at the deadline.
+              decides your rank and is what the cut line compares.
             </p>
+            <p>Every player trades on the same prices, and three rules keep it fair:</p>
+            <ul>
+              <li><b>1¢ spread</b> — you buy 1¢ above and sell 1¢ below the market price. Changing your mind
+                is allowed any time, but flipping back and forth costs something, so re-trading every small
+                lag in the price doesn&apos;t pay. Opening calls and settlement don&apos;t pay the spread.</li>
+              <li><b>Last call</b> — trading, parlays and cash-outs close 30 seconds before the deadline, so
+                nobody can pile onto a near-certain outcome in the final seconds.</li>
+              <li><b>Live quotes</b> — each trade is priced on BTC/ETH/SOL quotes taken at that moment from
+                Coinbase and Kraken. While the asset is jumping, or the two exchanges disagree, trading pauses
+                for a few seconds until the price settles. If the price moved more than 5¢ from the one you
+                were shown, the trade isn&apos;t filled and you see the new price instead.</li>
+            </ul>
             <p>
               When the arena runs on a real Panta market you can switch on <b>Also fill on Panta</b>.
               The same order is then placed on Panta&apos;s primary book from your wallet, in six steps

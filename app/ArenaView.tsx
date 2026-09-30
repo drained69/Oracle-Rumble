@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { availableFor, hostAmountError, paidPlaces, payoutShares } from "@/lib/royale";
+import { availableFor, buyPriceOf, hostAmountError, paidPlaces, payoutShares, sellPriceOf, tradingOpen, TRADE_CUTOFF_MS, TRADE_SPREAD } from "@/lib/royale";
 import { useEscapeKey } from "@/lib/use-escape";
 import { getRound, enrollWithEscrow, tradeRound, newRound, placeParlayApi, claimFromEscrow, serverSettleArena, cancelArena, checkSeatFunds, setOpeningCall, prepareWallet, seatStepText, type OpeningCall, type RoundView, type SeatStep } from "@/lib/round-client";
 import { useEscrowStatus, useWalletIdentity } from "@/lib/use-wallet";
@@ -163,6 +163,7 @@ export default function ArenaView({ arenaCode }: { arenaCode: string }) {
 
   const me = useMemo(() => (wallet ? standings.find((e) => e.wallet === wallet) ?? null : null), [standings, wallet]);
   const enrolled = !!me;
+  const tradeOpen = !!round && tradingOpen(round, now);
   const aliveCount = standings.filter((e) => e.eliminatedRound === null).length;
 
   const deadline = round?.status === "enrolling" ? round.enrollDeadline : round?.status === "live" ? round.liveDeadline : 0;
@@ -300,7 +301,7 @@ export default function ArenaView({ arenaCode }: { arenaCode: string }) {
     if (!enrolled) return setToast("Enroll in the round first.");
     const v = Number(amount);
     if (!v || v <= 0) return setToast("Enter an amount.");
-    if (me && v > availableFor(me, side, yesPrice) + 1e-9) return setToast(`You have ${usd2.format(availableFor(me, side, yesPrice))} available for ${side === "YES" ? "UP" : "DOWN"}.`);
+    if (me && v > availableFor(me, side, yesPrice, TRADE_SPREAD) + 1e-9) return setToast(`You have ${usd2.format(availableFor(me, side, yesPrice, TRADE_SPREAD))} available for ${side === "YES" ? "UP" : "DOWN"}.`);
     setBusy(true);
     try {
       // Kick the Panta order lifecycle in parallel when opted in and the
@@ -317,10 +318,12 @@ export default function ArenaView({ arenaCode }: { arenaCode: string }) {
           setPantaOrder({ step: "error", error: err instanceof Error ? err.message : String(err) });
         });
       }
-      const r = await tradeRound({ wallet, action: "buy", side, usdc: v, arena: arenaCode });
-      if (r.error) setToast(r.error);
-      else {
-        setToast(`Bought ${side === "YES" ? "UP" : "DOWN"} for ${usd2.format(v)}.`);
+      const r = await tradeRound({ wallet, action: "buy", side, usdc: v, arena: arenaCode, quotedYes: yesPrice });
+      if (r.error) {
+        setToast(r.error);
+        if (r.repriced || r.retry || r.closed) await refresh();
+      } else {
+        setToast(`${r.fill ?? `Bought ${side === "YES" ? "UP" : "DOWN"}.`} Stake ${usd2.format(v)}.`);
         setAmount("");
         await refresh();
       }
@@ -335,11 +338,13 @@ export default function ArenaView({ arenaCode }: { arenaCode: string }) {
     if (!wallet || !enrolled) return;
     setBusy(true);
     try {
-      const r = await tradeRound({ wallet, action: "sell", arena: arenaCode });
-      if (r.error) setToast(r.error);
-      else { setToast("Sold — your position is back in cash."); await refresh(); }
+      const r = await tradeRound({ wallet, action: "sell", arena: arenaCode, quotedYes: yesPrice });
+      if (r.error) {
+        setToast(r.error);
+        if (r.repriced || r.retry || r.closed) await refresh();
+      } else { setToast(`${r.fill ?? "Sold."} Your position is back in cash.`); await refresh(); }
     } finally { setBusy(false); }
-  }, [wallet, enrolled, arenaCode, refresh]);
+  }, [wallet, enrolled, arenaCode, refresh, yesPrice]);
 
   // ── parlay builder ────────────────────────────────────────────────
   const toggleLeg = useCallback((marketId: string, legSide: "YES" | "NO") => {
@@ -827,7 +832,7 @@ export default function ArenaView({ arenaCode }: { arenaCode: string }) {
                             <span className="pr-stake">stake {usd2.format(t.stake)}</span>
                             <button
                               className="btn secondary sm"
-                              disabled={round?.status !== "live"}
+                              disabled={!tradeOpen}
                               onClick={() => setCashoutTicket(t)}
                             >
                               Cash out →
@@ -838,8 +843,16 @@ export default function ArenaView({ arenaCode }: { arenaCode: string }) {
                     </div>
                   )}
 
-                  {round?.status === "live" ? (
+                  {round?.status === "live" && !tradeOpen ? (
+                    <div className="enroll-cta locked-note" role="status">
+                      <p><b>Last call has passed.</b> Positions are locked for the final {TRADE_CUTOFF_MS / 1000} seconds — the round settles in <b className="mono">{fmtClock(Math.max(0, round.liveDeadline - now))}</b>.</p>
+                    </div>
+                  ) : round?.status === "live" ? (
                     <>
+                      <p className="last-call">
+                        Trading closes in <b className="mono">{fmtClock(Math.max(0, round.liveDeadline - TRADE_CUTOFF_MS - now))}</b> — last call is {TRADE_CUTOFF_MS / 1000}s before the end.
+                        Each trade buys {TRADE_SPREAD}¢ above and sells {TRADE_SPREAD}¢ below the market price.
+                      </p>
                       <div className="bet-mode">
                         <button className={betMode === "single" ? "bm on" : "bm"} onClick={() => setBetMode("single")}>Single trade</button>
                         <button className={betMode === "parlay" ? "bm on" : "bm"} onClick={() => setBetMode("parlay")}>Parlay</button>
@@ -857,11 +870,14 @@ export default function ArenaView({ arenaCode }: { arenaCode: string }) {
                             <button className={side === "NO" ? "side no on" : "side no"} onClick={() => setSide("NO")} aria-pressed={side === "NO"}>▼ DOWN <b>{100 - yesPrice}¢</b></button>
                           </div>
                           {(() => {
-                            const avail = availableFor(me!, side, yesPrice);
+                            const avail = availableFor(me!, side, yesPrice, TRADE_SPREAD);
                             const stake = Number(amount || 0);
-                            const price = side === "YES" ? yesPrice : 100 - yesPrice;
+                            const market = side === "YES" ? yesPrice : 100 - yesPrice;
+                            const price = buyPriceOf(market);
                             const over = stake > avail + 1e-9;
                             const switching = !!me!.side && me!.side !== side && me!.shares > 0;
+                            const mySide = me!.side ? (me!.side === "YES" ? yesPrice : 100 - yesPrice) : 0;
+                            const sellValue = me!.side ? me!.shares * (sellPriceOf(mySide) / 100) : 0;
                             return (
                               <>
                                 <label className="field">
@@ -876,7 +892,7 @@ export default function ArenaView({ arenaCode }: { arenaCode: string }) {
                                   </div>
                                 </label>
                                 <div className="summary">
-                                  <span>Entry price</span><b>{price}¢</b>
+                                  <span>Buy price</span><b>{price}¢ <em className="muted">market {market}¢ + {TRADE_SPREAD}¢</em></b>
                                   <span>Shares</span><b>{(stake / (price / 100)).toFixed(2)}</b>
                                   <span>Pays if {asset} closes {side === "YES" ? "higher" : "lower"}</span><b className="accent">{usd2.format(stake / (price / 100))}</b>
                                 </div>
@@ -885,7 +901,9 @@ export default function ArenaView({ arenaCode }: { arenaCode: string }) {
                                   <button className="btn primary full" onClick={doBuy} disabled={busy || !stake || over}>
                                     {switching ? `Switch to ${side === "YES" ? "UP" : "DOWN"}` : `Buy ${side === "YES" ? "UP" : "DOWN"}`}
                                   </button>
-                                  <button className="btn secondary" onClick={doSell} disabled={busy || !me!.side}>Sell all</button>
+                                  <button className="btn secondary" onClick={doSell} disabled={busy || !me!.side} title={me!.side ? `Sells at ${sellPriceOf(mySide)}¢ (market less ${TRADE_SPREAD}¢)` : "No position to sell"}>
+                                    {me!.side ? `Sell all · ${usd2.format(sellValue)}` : "Sell all"}
+                                  </button>
                                 </div>
                               </>
                             );

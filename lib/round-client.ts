@@ -306,10 +306,24 @@ export async function claimFromEscrow(
   }
 }
 
-export async function tradeRound(args: { wallet: string; action: "buy" | "sell"; side?: "YES" | "NO"; usdc?: number; arena?: string }): Promise<{ round?: Round; entrant?: Entrant; yesPrice?: number; standings?: Entrant[]; error?: string }> {
+export type TradeResult = {
+  round?: Round; entrant?: Entrant; yesPrice?: number; standings?: Entrant[];
+  /** e.g. "Bought UP at 44¢." */
+  fill?: string;
+  error?: string;
+  /** The price moved from the one shown; `yesPrice` is the new one. */
+  repriced?: boolean;
+  /** Price momentarily unsettled — try again in a few seconds. */
+  retry?: boolean;
+  /** Last call passed; trading is closed for this round. */
+  closed?: boolean;
+};
+
+/** `quotedYes` is the UP price the player was looking at — the server refuses a fill far from it. */
+export async function tradeRound(args: { wallet: string; action: "buy" | "sell"; side?: "YES" | "NO"; usdc?: number; arena?: string; quotedYes?: number }): Promise<TradeResult> {
   try {
     const { data } = await postAsWallet("/api/round/trade", args.wallet, args);
-    return data as { round?: Round; entrant?: Entrant; yesPrice?: number; standings?: Entrant[]; error?: string };
+    return data as TradeResult;
   } catch {
     return { error: "network error — try again" };
   }

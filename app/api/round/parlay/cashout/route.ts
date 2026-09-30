@@ -1,8 +1,9 @@
 import { NextResponse } from "next/server";
 import { requireWallet } from "@/lib/session";
 import { getActiveRound, mutateActiveRound } from "@/lib/round-store";
-import { markToMarket, normalizeArenaCode, standings, redactOpeningCalls, logEvent } from "@/lib/royale";
-import { livePricing, pantaPriceToCents } from "@/lib/round-keeper";
+import { markToMarket, normalizeArenaCode, standings, redactOpeningCalls, logEvent, tradingOpen, TRADE_CUTOFF_MS } from "@/lib/royale";
+import { pantaPriceToCents, tradePricing } from "@/lib/round-keeper";
+import { assetOfMarketId, type AssetSymbol } from "@/lib/assets";
 import { quoteCashOut } from "@/lib/parlay";
 import { findMockMarket } from "@/lib/arena-data";
 import { PANTA_LIVE, pantaFetch, type PantaMarket } from "@/lib/panta";
@@ -45,10 +46,13 @@ export async function POST(request: Request) {
   if (!ticket) return NextResponse.json({ error: "ticket not found" }, { status: 404 });
   if (ticket.status !== "open") return NextResponse.json({ error: `ticket is ${ticket.status}, not open` }, { status: 409 });
 
-  if (Date.now() >= peek.liveDeadline) return NextResponse.json({ error: "the round is settling — cash-out is closed" }, { status: 409 });
+  if (!tradingOpen(peek)) return NextResponse.json({ error: `Cash-out is closed for the last ${TRADE_CUTOFF_MS / 1000} seconds of the round.` }, { status: 409 });
   // Direction legs are priced by the round's oracle, the same prices the
   // ticket settles against.
-  const pricing = await livePricing(peek);
+  const pricing = await tradePricing(peek, ticket.legs.map((l) => assetOfMarketId(l.marketId)).filter((a): a is AssetSymbol => !!a));
+  if (pricing.pause) {
+    return NextResponse.json({ error: `${pricing.pause} — cash-out pauses for a few seconds while the price settles. Try again shortly.`, retry: true }, { status: 409 });
+  }
 
   // Fetch live YES prices for every leg's market. Reuses the same source
   // policy as /api/round/parlay: synthetic dir- ids are priced from the
@@ -87,7 +91,7 @@ export async function POST(request: Request) {
 
   let mutationError: string | undefined;
   const { round, error } = await mutateActiveRound(arena, (r) => {
-    if (r.status !== "live") { mutationError = "round is not live"; return; }
+    if (!tradingOpen(r)) { mutationError = "Cash-out has closed for this round."; return; }
     const e = r.entrants.find((x) => x.wallet === body.wallet);
     if (!e) { mutationError = "not enrolled in this round"; return; }
     const t = e.parlays.find((x) => x.id === body.ticketId);

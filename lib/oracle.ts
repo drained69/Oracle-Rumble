@@ -100,6 +100,40 @@ export async function spotPrices(): Promise<Spots> {
   return cached && now - cached.at < STALE_MS ? cached.spots : {};
 }
 
+/** Two exchanges further apart than this (fraction) means a fast move is still landing. */
+const DIVERGENCE = 0.0015;
+
+/**
+ * Uncached quotes for `assets`, taken at trade time from Coinbase and Kraken
+ * in parallel. `spots` uses Coinbase (Kraken if Coinbase failed);
+ * `divergent` lists assets whose two quotes disagree by more than 0.15% —
+ * one venue hasn't caught up with a move yet, so the price isn't settled.
+ */
+export async function freshSpots(assets: AssetSymbol[]): Promise<{ spots: Spots; divergent: AssetSymbol[] }> {
+  const want = [...new Set(assets)];
+  const [cb, kr] = await Promise.all([
+    Promise.all(want.map(async (sym) => {
+      try {
+        const d = (await getJson(`https://api.exchange.coinbase.com/products/${sym}-USD/ticker`)) as { price?: string };
+        return [sym, positive(d.price)] as const;
+      } catch { return [sym, null] as const; }
+    })),
+    fromKraken(want)
+  ]);
+  const spots: Spots = {};
+  const divergent: AssetSymbol[] = [];
+  for (const [sym, c] of cb) {
+    const k = kr[sym];
+    const p = c ?? k;
+    if (p) spots[sym] = p;
+    if (c && k && Math.abs(c - k) / c > DIVERGENCE) divergent.push(sym);
+  }
+  // Refresh the shared cache with what we just saw.
+  const cached = _g.__or_spots;
+  if (Object.keys(spots).length) _g.__or_spots = { at: Date.now(), spots: { ...(cached?.spots ?? {}), ...spots } };
+  return { spots, divergent };
+}
+
 /**
  * Price at a past moment, from Coinbase 1-minute candles (the close of the
  * last full minute before `atMs`). Used when a round's deadline passed with

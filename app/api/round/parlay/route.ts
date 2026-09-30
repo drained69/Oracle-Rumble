@@ -1,11 +1,11 @@
 import { NextResponse } from "next/server";
 import { requireWallet } from "@/lib/session";
 import { getActiveRound, mutateActiveRound } from "@/lib/round-store";
-import { markToMarket, normalizeArenaCode, placeParlay, standings, type ParlayLegState, type ParlayTicket, redactOpeningCalls, logEvent } from "@/lib/royale";
-import { livePricing, pantaPriceToCents } from "@/lib/round-keeper";
+import { markToMarket, normalizeArenaCode, placeParlay, standings, tradingOpen, TRADE_CUTOFF_MS, type ParlayLegState, type ParlayTicket, redactOpeningCalls, logEvent } from "@/lib/royale";
+import { pantaPriceToCents, tradePricing } from "@/lib/round-keeper";
 import { quoteParlay, validateParlay, type ParlayLeg } from "@/lib/parlay";
 import { findMockMarket } from "@/lib/arena-data";
-import { assetOfMarketId } from "@/lib/assets";
+import { assetOfMarketId, type AssetSymbol } from "@/lib/assets";
 import { PANTA_LIVE, pantaFetch, type PantaMarket } from "@/lib/panta";
 
 /**
@@ -38,12 +38,11 @@ export async function POST(request: Request) {
 
   const peek = await getActiveRound(arena);
   if (!peek) return NextResponse.json({ error: "no active round in this arena", arena }, { status: 404 });
-  if (peek.status !== "live" || Date.now() >= peek.liveDeadline) {
-    return NextResponse.json({ error: "parlays can only be placed while the round is live" }, { status: 409 });
+  if (!tradingOpen(peek)) {
+    return NextResponse.json({ error: peek.status === "live"
+      ? `Trading is closed for the last ${TRADE_CUTOFF_MS / 1000} seconds of the round.`
+      : "parlays can only be placed while the round is live" }, { status: 409 });
   }
-  // Direction legs are priced by the round's oracle (UP odds over the rest
-  // of this round), the same prices they settle against.
-  const { yesPrice: yes, priceMap } = await livePricing(peek);
 
   // Refresh each leg's price + metadata. Our own BTC/ETH/SOL board markets are
   // synthetic — price them from the board, never the Panta sandbox (which
@@ -65,6 +64,14 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: "Each leg must be UP or DOWN." }, { status: 422 });
     }
   }
+
+  // Direction legs are priced by the round's oracle (UP odds over the rest
+  // of this round) on quotes taken now; pause while a leg's asset is jumping.
+  const pricing = await tradePricing(peek, body.legs.map((l) => assetOfMarketId(l.marketId)).filter((a): a is AssetSymbol => !!a));
+  if (pricing.pause) {
+    return NextResponse.json({ error: `${pricing.pause} — trading pauses for a few seconds while the price settles. Try again shortly.`, retry: true }, { status: 409 });
+  }
+  const { yesPrice: yes, priceMap } = pricing;
 
   const refreshed: ParlayLeg[] = [];
   const legState: ParlayLegState[] = [];
@@ -106,7 +113,7 @@ export async function POST(request: Request) {
 
   let placeError: string | undefined;
   const { round, error } = await mutateActiveRound(arena, (r) => {
-    if (r.status !== "live" || Date.now() >= r.liveDeadline) { placeError = "round is not live"; return; }
+    if (!tradingOpen(r)) { placeError = "Trading has closed for this round."; return; }
     const entrant = r.entrants.find((e) => e.wallet === body.wallet);
     if (!entrant) { placeError = "not enrolled in this round"; return; }
 
