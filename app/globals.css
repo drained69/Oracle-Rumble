@@ -4024,83 +4024,6 @@ a.pf-code:hover { background: rgba(34, 211, 238, 0.08); }
   to   { transform: translateY(100vh); }
 }
 
-/* ── Live price ticker (under HUD) ────────────────────────────────── */
-.live-ticker {
-  position: relative;
-  z-index: 3;
-  display: flex;
-  align-items: center;
-  gap: 24px;
-  padding: 6px clamp(16px, 4vw, 32px);
-  height: 30px;
-  border-bottom: 1px solid var(--border);
-  background: linear-gradient(90deg, rgba(11, 14, 23, 0.85), rgba(15, 19, 27, 0.92) 30%, rgba(15, 19, 27, 0.92) 70%, rgba(11, 14, 23, 0.85));
-  backdrop-filter: blur(6px);
-  overflow-x: auto;
-  scrollbar-width: none;
-  font-family: 'JetBrains Mono', monospace;
-  font-size: 11px;
-  letter-spacing: 1.2px;
-  white-space: nowrap;
-}
-.live-ticker::-webkit-scrollbar { display: none; }
-.lt-tag {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  color: var(--plasma);
-  font-weight: 700;
-  font-size: 10px;
-  letter-spacing: 1.8px;
-}
-.lt-dot {
-  width: 6px; height: 6px;
-  background: var(--plasma);
-  border-radius: 50%;
-  box-shadow: 0 0 0 3px rgba(34, 211, 238, 0.2), 0 0 8px var(--plasma);
-  animation: neonPulse 1.4s ease-in-out infinite;
-}
-.lt-row {
-  display: inline-flex;
-  align-items: baseline;
-  gap: 8px;
-  color: var(--text-2);
-}
-.lt-row b {
-  color: var(--text);
-  font-weight: 800;
-  letter-spacing: 1.4px;
-  font-size: 11px;
-}
-.lt-row em {
-  font-style: normal;
-  color: var(--text);
-  font-weight: 600;
-  font-family: 'JetBrains Mono', monospace;
-}
-.lt-chg {
-  font-weight: 700;
-  font-size: 10.5px;
-}
-.lt-row.up .lt-chg { color: var(--plasma); }
-.lt-row.down .lt-chg { color: var(--danger, #f43f5e); }
-.lt-tail {
-  margin-left: auto;
-  color: var(--text-3);
-  font-size: 9px;
-  letter-spacing: 1.4px;
-  opacity: 0.7;
-}
-
-/* Trim the jumper-stage viewport height so the new ticker still fits. */
-.game-main.jumper .jumper-stage {
-  padding-top: 16px;
-  padding-bottom: 16px;
-}
-.game-main.jumper .jumper-card {
-  max-height: min(720px, calc(100vh - 172px));
-}
-
 /* ── Room activity feed (in tagline column) ───────────────────────── */
 .room-feed {
   margin-top: 22px;
@@ -4406,11 +4329,8 @@ a.pf-code:hover { background: rgba(34, 211, 238, 0.08); }
   }
 }
 
-/* ── Narrow-screen: keep the ticker tidy and hide the room feed to
- *    preserve the no-scroll layout on mobile. ─────────────────────── */
+/* ── Narrow-screen: hide the room feed to preserve the no-scroll
+ *    layout on mobile. ────────────────────────────────────────────── */
 @media (max-width: 900px) {
-  .live-ticker { gap: 14px; padding-left: 12px; padding-right: 12px; }
-  .lt-tail { display: none; }
   .room-feed { display: none; }
-  .game-main.jumper .jumper-card { max-height: min(720px, calc(100vh - 156px)); }
 }

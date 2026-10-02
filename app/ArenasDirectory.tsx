@@ -17,7 +17,6 @@ import SiteHeader from "@/app/SiteHeader";
 import UsernameModal from "@/app/UsernameModal";
 import PantaGraduationBanner from "@/app/PantaGraduationBanner";
 import AmbientLife from "@/app/AmbientLife";
-import PriceTicker from "@/app/PriceTicker";
 import ActivityFeed from "@/app/ActivityFeed";
 import SeatRing from "@/app/SeatRing";
 import CountUp from "@/app/CountUp";
@@ -260,8 +259,6 @@ export default function ArenasDirectory() {
         onEditUsername={() => setShowUsername(true)}
         onNav={(k) => setTab(k === "arenas" ? "play" : "host")}
       />
-
-      <PriceTicker />
 
       <section className="jumper-stage">
         <div className="jumper-tagline">
