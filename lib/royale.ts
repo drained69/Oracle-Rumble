@@ -126,12 +126,15 @@ export const HOST_LIMITS = {
 /** Why a host's entry/vault amounts would be changed by the server, or "". */
 export function hostAmountError(entry: number, vault: number): string {
   const L = HOST_LIMITS;
-  if (!Number.isInteger(entry) || entry < L.entryUsdc.min || entry > L.entryUsdc.max) {
-    return `Entry must be a whole number of USDC from ${L.entryUsdc.min} to ${L.entryUsdc.max}.`;
-  }
-  if (!Number.isInteger(vault) || vault < L.startingBankroll.min || vault > L.startingBankroll.max) {
-    return `Vault must be a whole number of USDC from ${L.startingBankroll.min} to ${L.startingBankroll.max}.`;
-  }
+  const e = amountErrorFor("Entry", entry, L.entryUsdc.min, L.entryUsdc.max);
+  if (e) return e;
+  return amountErrorFor("Vault", vault, L.startingBankroll.min, L.startingBankroll.max);
+}
+
+function amountErrorFor(label: string, n: number, min: number, max: number): string {
+  if (!Number.isFinite(n) || !Number.isInteger(n)) return `${label} must be a whole dollar amount.`;
+  if (n < min) return `${label} must be at least $${min}.`;
+  if (n > max) return `${label} must be $${max} or less.`;
   return "";
 }
 
