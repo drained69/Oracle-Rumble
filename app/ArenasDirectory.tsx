@@ -268,14 +268,15 @@ export default function ArenasDirectory() {
             <span className="hl-b">Outplay</span> the room.
           </h1>
           <p className="jt-lead">
-            Everyone pays the same seat, calls UP or DOWN on the same live market, and is ranked by
-            vault value. The top finishers take the pool — in a royale, the bottom half is cut each round.
+            Everyone pays the same seat and gets the same trading vault. Call UP or DOWN on a live
+            BTC, ETH or SOL market, switch sides as the price moves, and stack cross-asset parlays.
+            Top finishers claim the pool — in a royale, the bottom half is cut each round.
           </p>
 
           <ol className="jt-steps">
-            <li><b>01</b><span>Take a seat — entry funds the pool, the vault is your bankroll.</span></li>
-            <li><b>02</b><span>Call UP or DOWN on BTC, ETH or SOL. The round opens at the live price and pays out on the real move.</span></li>
-            <li><b>03</b><span>Survive the cut. Top finishers claim the pool to their wallet.</span></li>
+            <li><b>01</b><span>Take a seat — your entry funds the shared pool, your vault is the bankroll you trade with.</span></li>
+            <li><b>02</b><span>Call UP or DOWN at the live price on BTC, ETH or SOL. Switch sides, size up, or stack a parlay as the market moves.</span></li>
+            <li><b>03</b><span>Finish on top. The pool pays out to the top finishers&apos; wallets — in a royale, the bottom half is cut each round.</span></li>
           </ol>
 
           <div className="jumper-stats" aria-live="polite">
