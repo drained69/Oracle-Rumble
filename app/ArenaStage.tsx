@@ -13,7 +13,8 @@
  */
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import { paidPlaces, type Entrant, type Round } from "@/lib/royale";
+import { paidPlaces, scorePlace, type Entrant, type Round } from "@/lib/royale";
+import { changeOf } from "@/lib/predictions";
 import { avatarDataUrl } from "@/lib/avatars";
 import { displayName } from "@/lib/username";
 
@@ -29,7 +30,7 @@ type Props = {
 
 type FeedKind = "trade" | "rank" | "cutline" | "round" | "champion" | "elim" | "info";
 type FeedEvent = { id: string; at: number; text: string; kind: FeedKind };
-type PodState = "winner" | "eliminated" | "below" | "line" | "safe" | "ready" | "money" | "nomoney" | "bot";
+type PodState = "winner" | "eliminated" | "below" | "line" | "safe" | "ready" | "picking" | "money" | "nomoney" | "bot";
 
 type Snapshot = {
   roundId: string;
@@ -54,6 +55,7 @@ const STATE_LABEL: Record<PodState, string> = {
   line: "On the line",
   safe: "Safe",
   ready: "Ready",
+  picking: "Picking",
   money: "In the money",
   nomoney: "Out of the money",
   bot: "Bot"
@@ -70,8 +72,11 @@ export default function ArenaStage({ round, standings, survivors, yesPrice, spot
     [isComplete, standings, round.championId]
   );
   // A single round has no elimination that matters — only who gets paid —
-  // so it shows prize places; a royale shows its survival cut.
-  const single = round.config.format === "single";
+  // so it shows prize places; a royale shows its survival cut. Predictions
+  // is a single round scored on right answers.
+  const picks = round.config.format === "predictions";
+  const single = round.config.format !== "royale";
+  const totalQs = round.predictions?.questions.length ?? 0;
   // The cut only means something while a live round has more players than survivor slots.
   const cutActive = !single && isLive && alive.length > survivors;
   const lineBankroll = cutActive ? alive[survivors - 1]?.bankroll ?? null : null;
@@ -80,7 +85,9 @@ export default function ArenaStage({ round, standings, survivors, yesPrice, spot
 
   const stateOf = (e: Entrant, aliveIdx: number): PodState => {
     if (champion?.id === e.id) return "winner";
-    if (round.status === "enrolling") return "ready";
+    if (round.status === "enrolling") return picks && Object.keys(e.picks ?? {}).length < totalQs ? "picking" : "ready";
+    if (picks && isLive) return e.isBot ? "bot" : scorePlace(round, e, true) <= places ? "money" : "nomoney";
+    if (picks && isComplete) return e.isBot ? "bot" : e.prizeUsdc > 0 ? "money" : "nomoney";
     if (single && isLive) return e.isBot ? "bot" : (humanRank.get(e.id) ?? 99) < places ? "money" : "nomoney";
     if (e.eliminatedRound !== null) return "eliminated";
     if (!cutActive) return "safe";
@@ -245,6 +252,29 @@ export default function ArenaStage({ round, standings, survivors, yesPrice, spot
             )}
           </div>
 
+          {picks ? (
+            <div className={`mr-orb picks ${isLive ? "live" : ""}`} role="img" aria-label={coinsLabel(round)}>
+              <div className="mr-orb-ring" aria-hidden="true" />
+              <div className="mr-orb-core">
+                <span className="mr-orb-q">{closed ? "Closing moves" : round.oracle?.open ? "Moves vs open" : "Predictions"}</span>
+                {round.oracle?.open ? (
+                  <span className="mr-orb-coins">
+                    {(["BTC", "ETH", "SOL"] as const).map((a) => {
+                      const c = changeOf(round.oracle?.open?.[a], (round.oracle?.close ?? round.oracle?.last)?.[a]);
+                      return (
+                        <span key={a} className={c === null ? "" : c > 0 ? "up" : c < 0 ? "down" : ""}>
+                          <b>{a}</b> {c === null ? "—" : `${c > 0 ? "▲" : c < 0 ? "▼" : "•"} ${Math.abs(c * 100).toFixed(2)}%`}
+                        </span>
+                      );
+                    })}
+                  </span>
+                ) : (
+                  <span className="mr-orb-move">{totalQs} picks · BTC ETH SOL</span>
+                )}
+                <span className="mr-orb-move">{round.status === "enrolling" ? "prices lock at the start" : isLive ? "most right answers wins" : ""}</span>
+              </div>
+            </div>
+          ) : (
           <div
             className={`mr-orb ${yesPrice >= 50 ? "up" : "down"} ${isLive ? "live" : ""}`}
             role="img"
@@ -271,6 +301,7 @@ export default function ArenaStage({ round, standings, survivors, yesPrice, spot
               </span>
             </div>
           </div>
+          )}
 
           {cutAngle != null && (
             <div className="mr-cut-ray" style={{ transform: `rotate(${cutAngle}deg)` }} aria-hidden="true">
@@ -284,7 +315,8 @@ export default function ArenaStage({ round, standings, survivors, yesPrice, spot
               const state = stateOf(e, aIdx);
               const isMe = !!wallet && e.wallet === wallet;
               const pnl = e.bankroll - round.config.startingBankroll;
-              const rank = i + 1;
+              const rank = picks && round.status !== "enrolling" ? scorePlace(round, e) : i + 1;
+              const made = Object.keys(e.picks ?? {}).length;
               const cls = [
                 "mr-pod", `s-${state}`, isMe ? "me" : "",
                 rankMove[e.id] ? `rank-${rankMove[e.id]}` : "",
@@ -295,7 +327,9 @@ export default function ArenaStage({ round, standings, survivors, yesPrice, spot
                   key={e.id}
                   className={cls}
                   style={pinFor(i, pods.length)}
-                  aria-label={`Rank ${rank}, ${displayName(e)}${isMe ? " (you)" : ""}, ${STATE_LABEL[state]}, vault $${e.bankroll.toFixed(2)}, P&L ${pnl >= 0 ? "+" : "-"}$${Math.abs(pnl).toFixed(2)}${e.side ? `, holding ${e.side === "YES" ? "UP" : "DOWN"}` : ""}`}
+                  aria-label={picks
+                    ? `Rank ${rank}, ${displayName(e)}${isMe ? " (you)" : ""}, ${STATE_LABEL[state]}, ${round.status === "enrolling" ? `${made} of ${totalQs} picks made` : `${e.score ?? 0} of ${totalQs} right`}`
+                    : `Rank ${rank}, ${displayName(e)}${isMe ? " (you)" : ""}, ${STATE_LABEL[state]}, vault $${e.bankroll.toFixed(2)}, P&L ${pnl >= 0 ? "+" : "-"}$${Math.abs(pnl).toFixed(2)}${e.side ? `, holding ${e.side === "YES" ? "UP" : "DOWN"}` : ""}`}
                 >
                   <span className="mr-pod-rank">{state === "eliminated" ? "OUT" : `#${rank}`}</span>
                   {/* eslint-disable-next-line @next/next/no-img-element */}
@@ -305,9 +339,18 @@ export default function ArenaStage({ round, standings, survivors, yesPrice, spot
                     {isMe && <em>you</em>}
                     {e.isBot && <em className="bot">bot</em>}
                   </span>
-                  <span className="mr-pod-bank">${e.bankroll.toFixed(2)}</span>
-                  <span className={`mr-pod-pnl ${pnl >= 0 ? "up" : "down"}`}>{pnl >= 0 ? "+" : "−"}${Math.abs(pnl).toFixed(2)}</span>
-                  {e.side && state !== "eliminated" && (
+                  {picks ? (
+                    <>
+                      <span className="mr-pod-bank">{round.status === "enrolling" ? `${made}/${totalQs}` : `${e.score ?? 0}/${totalQs}`}</span>
+                      <span className="mr-pod-pnl">{round.status === "enrolling" ? "picked" : isComplete && e.prizeUsdc > 0 ? `+$${e.prizeUsdc.toFixed(2)}` : "right"}</span>
+                    </>
+                  ) : (
+                    <>
+                      <span className="mr-pod-bank">${e.bankroll.toFixed(2)}</span>
+                      <span className={`mr-pod-pnl ${pnl >= 0 ? "up" : "down"}`}>{pnl >= 0 ? "+" : "−"}${Math.abs(pnl).toFixed(2)}</span>
+                    </>
+                  )}
+                  {!picks && e.side && state !== "eliminated" && (
                     <span className={`mr-pod-side ${e.side === "YES" ? "yes" : "no"}`}>{e.side === "YES" ? "▲ UP" : "▼ DOWN"}</span>
                   )}
                   <span className={`mr-pod-state s-${state}`}>{STATE_LABEL[state]}</span>
@@ -325,7 +368,10 @@ export default function ArenaStage({ round, standings, survivors, yesPrice, spot
             <div className="mr-champ-spot" role="status">
               <div className="mr-champ-title">Champion</div>
               <div className="mr-champ-name">{displayName(champion)}</div>
-              <div className="mr-champ-prize">{champion.prizeUsdc > 0 ? `+$${champion.prizeUsdc.toFixed(2)} prize` : "Last trader standing"}</div>
+              <div className="mr-champ-prize">
+                {picks ? `${champion.score ?? 0}/${totalQs} right${champion.prizeUsdc > 0 ? ` · +$${champion.prizeUsdc.toFixed(2)}` : ""}`
+                  : champion.prizeUsdc > 0 ? `+$${champion.prizeUsdc.toFixed(2)} prize` : "Last trader standing"}
+              </div>
             </div>
           )}
           {isCancelled && (
@@ -336,7 +382,7 @@ export default function ArenaStage({ round, standings, survivors, yesPrice, spot
         <aside className="mr-feed" aria-label="Arena activity">
           <div className="mr-feed-head">Activity</div>
           <ul className="mr-feed-list" aria-live="polite">
-            {feed.length === 0 && <li className="empty">Activity appears here as players trade.</li>}
+            {feed.length === 0 && <li className="empty">{picks ? "Activity appears here as players take their seats." : "Activity appears here as players trade."}</li>}
             {feed.map((ev) => (
               <li key={ev.id} className={`fe fe-${ev.kind}`}>
                 <span className="fe-dot" aria-hidden="true" />
@@ -360,8 +406,8 @@ function usdPrice(n: number): string {
 
 function kindOf(line: string): FeedKind {
   if (/bought|liquidated|parlay|cashed out/i.test(line)) return "trade";
-  if (/ wins \$|takes .* USDC/i.test(line)) return "champion";
-  if (/ settled|locked|opened|closed at| live —/i.test(line)) return "round";
+  if (/ wins \$|takes .* USDC| and split \$/i.test(line)) return "champion";
+  if (/ settled|locked|opened|closed at| live —|^Results:|^Closing prices/i.test(line)) return "round";
   if (/cancelled|eliminated/i.test(line)) return "elim";
   return "info";
 }
@@ -373,6 +419,17 @@ function ago(t: number): string {
   if (s < 3600) return `${Math.floor(s / 60)}m`;
   if (s < 86400) return `${Math.floor(s / 3600)}h`;
   return `${Math.floor(s / 86400)}d`;
+}
+
+/** Screen-reader line for the predictions orb: each coin's move so far. */
+function coinsLabel(round: Round): string {
+  const o = round.oracle;
+  if (!o?.open) return "Predictions round — prices are taken when picks lock";
+  const now = o.close ?? o.last ?? {};
+  return (["BTC", "ETH", "SOL"] as const).map((a) => {
+    const c = changeOf(o.open[a], now[a]);
+    return c === null ? `${a} unavailable` : `${a} ${c >= 0 ? "up" : "down"} ${Math.abs(c * 100).toFixed(2)}%`;
+  }).join(", ");
 }
 
 /** Even spacing on a circle, rank #1 at 12 o'clock, clockwise by rank. */

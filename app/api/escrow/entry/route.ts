@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { escrowReady, readPlayerEntry, readVault } from "@/lib/escrow-server";
 import { getLatestRound } from "@/lib/round-store";
-import { normalizeArenaCode } from "@/lib/royale";
+import { normalizeArenaCode, seatCostUsdc } from "@/lib/royale";
 
 export const dynamic = "force-dynamic";
 
@@ -28,7 +28,7 @@ export async function GET(request: Request) {
     readVault(round.escrow.roundVault)
   ]);
   if (!entry) return NextResponse.json({ deposited: false });
-  const seat = vault ? vault.entryUsdc + vault.vaultUsdc : round.config.entryUsdc + round.config.startingBankroll;
+  const seat = vault ? vault.entryUsdc + vault.vaultUsdc : seatCostUsdc(round.config);
   return NextResponse.json({
     deposited: true,
     seatUsdc: seat,

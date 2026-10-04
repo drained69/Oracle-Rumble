@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { STORE_ENABLED, withKeeperLock } from "@/lib/round-store";
 import { advanceToNext, bootstrapRound, livePricing, oraclePriceMap, pickMarket, tick, yesAfterTick, type Pricing } from "@/lib/round-keeper";
-import { PUBLIC_ARENA, cutLine, humanCount, newArenaCode, normalizeArenaCode, redactOpeningCalls, seatPlayer, standings, type Round, logEvent } from "@/lib/royale";
+import { PICKS_PRACTICE_ARENA, chainVaultUsdc, cutLine, humanCount, isPracticeArena, newArenaCode, normalizeArenaCode, redactOpeningCalls, seatCostUsdc, seatPlayer, standings, type Round, logEvent } from "@/lib/royale";
 import { escrowReady, initArenaOnChain, playerBalances } from "@/lib/escrow-server";
 import { sessionWallet } from "@/lib/session";
 import { limitByIp, overLimit } from "@/lib/rate-limit";
@@ -29,11 +29,14 @@ async function currentWithTick(arena: string, allowBootstrap: boolean): Promise<
   // Phase 1 — unlocked peek + external I/O (kept out of the lock).
   const peek = await import("@/lib/round-store").then((m) => m.getActiveRound(arena));
   const pricing = await livePricing(peek);
-  const mayAdvance = peek?.status === "live";
+  // Only a royale has a next round.
+  const mayAdvance = peek?.status === "live" && peek.config.format === "royale";
   const nextMarket = mayAdvance ? await pickMarket(peek?.config.marketId) : null;
-  // Only the walk-in PUBLIC arena auto-boots. Hosted arenas stay empty when done.
-  // The walk-in practice arena runs quick single rounds.
-  const bootRound = !peek && allowBootstrap ? await bootstrapRound({ format: "single" }, arena) : null;
+  // Only the walk-in practice arenas auto-boot. Hosted arenas stay empty when
+  // done. PUBLIC runs quick single rounds, PICKS runs predictions.
+  const bootRound = !peek && allowBootstrap
+    ? await bootstrapRound({ format: arena === PICKS_PRACTICE_ARENA ? "predictions" : "single" }, arena)
+    : null;
   // Paid-but-unseated wallets (escrow arenas while enrolling).
   const sync = await unseatedDepositors(peek);
 
@@ -44,7 +47,7 @@ async function currentWithTick(arena: string, allowBootstrap: boolean): Promise<
       const latest = await ctx.getLatest();
       // Hold a finished result on screen briefly — except an empty practice
       // round, which is simply replaced.
-      const emptyPractice = arena === PUBLIC_ARENA && !!latest && humanCount(latest) === 0;
+      const emptyPractice = isPracticeArena(arena) && !!latest && humanCount(latest) === 0;
       if (latest && !emptyPractice && (latest.status === "complete" || latest.status === "cancelled")
           && latest.endedAt && Date.now() - latest.endedAt < HOLD_MS) {
         return latest;
@@ -89,6 +92,7 @@ function seatDepositors(round: Round, sync: SeatSync): boolean {
     const res = seatPlayer(round, wallet, pending?.nickname ?? "", {
       openingCall: pending?.openingCall ?? null,
       openingCallPct: pending?.openingCallPct,
+      picks: pending?.picks,
       restored: true
     });
     if (res.ok && round.escrow?.pendingSeats) delete round.escrow.pendingSeats[wallet];
@@ -101,12 +105,13 @@ export async function GET(request: Request) {
   try {
     const url = new URL(request.url);
     const arena = normalizeArenaCode(url.searchParams.get("arena"));
-    const viewer = url.searchParams.get("wallet");
-    const allowBootstrap = arena === PUBLIC_ARENA;
+    // Only the signed-in wallet sees its own hidden picks / opening call.
+    const viewer = sessionWallet(request);
+    const allowBootstrap = isPracticeArena(arena);
     const { round, pricing, pricedId } = await currentWithTick(arena, allowBootstrap);
     if (!round) {
-      const status = arena === PUBLIC_ARENA ? 503 : 404;
-      const error = arena === PUBLIC_ARENA
+      const status = isPracticeArena(arena) ? 503 : 404;
+      const error = isPracticeArena(arena)
         ? "no market available to open a round"
         : `arena ${arena} not found`;
       return NextResponse.json({ round: null, arena, error }, { status });
@@ -163,9 +168,9 @@ export async function POST(request: Request) {
   const wantArena = body.arena ? normalizeArenaCode(body.arena) : "";
   // Default: mint a brand-new arena for every host call. The client can force
   // a specific code (including PUBLIC) with the host secret.
-  const arena = wantArena && forceOk ? wantArena : (wantArena === PUBLIC_ARENA ? PUBLIC_ARENA : newArenaCode());
+  const arena = wantArena && forceOk ? wantArena : (isPracticeArena(wantArena) ? wantArena : newArenaCode());
 
-  const onChain = escrowReady() && arena !== PUBLIC_ARENA;
+  const onChain = escrowReady() && !isPracticeArena(arena);
   // Every on-chain arena costs the operator an InitRound (fee + rent), so
   // hosting one needs a signed-in, funded wallet and is rate-limited.
   const limited = limitByIp(request, "host", 12, 10 * 60_000);
@@ -184,7 +189,7 @@ export async function POST(request: Request) {
   fresh.config.host = host ?? "";
 
   if (onChain) {
-    const seat = fresh.config.entryUsdc + fresh.config.startingBankroll;
+    const seat = seatCostUsdc(fresh.config);
     const bal = await playerBalances(new PublicKey(host!));
     if (bal.usdc + 1e-9 < seat) {
       return NextResponse.json({ error: `This seat costs ${seat.toFixed(2)} USDC but your wallet holds ${bal.usdc.toFixed(2)} devnet USDC. Get test USDC at faucet.circle.com (Solana Devnet).` }, { status: 402 });
@@ -201,7 +206,7 @@ export async function POST(request: Request) {
   if (onChain) {
     const res = await initArenaOnChain({
       entryUsdc: fresh.config.entryUsdc,
-      vaultUsdc: fresh.config.startingBankroll,
+      vaultUsdc: chainVaultUsdc(fresh.config),
       capacity: fresh.config.capacity,
       enrollmentSec: fresh.config.enrollmentSec,
       liveSec: fresh.config.liveSec,

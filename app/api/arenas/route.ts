@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { recentArenas, STORE_ENABLED } from "@/lib/round-store";
-import { humanCount, PUBLIC_ARENA } from "@/lib/royale";
+import { humanCount, isPracticeArena } from "@/lib/royale";
 
 export const dynamic = "force-dynamic";
 
@@ -15,7 +15,7 @@ export async function GET() {
   try {
     const all = await recentArenas(30);
     const items = all
-      .filter(({ arenaCode }) => arenaCode !== PUBLIC_ARENA)
+      .filter(({ arenaCode }) => !isPracticeArena(arenaCode))
       .map(({ arenaCode, latest }) => {
       const humans = humanCount(latest);
       const bots = latest.entrants.length - humans;

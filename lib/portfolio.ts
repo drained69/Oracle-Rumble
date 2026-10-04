@@ -1,6 +1,6 @@
 /** Shape of GET /api/portfolio — a wallet's arenas, positions and claims. */
 
-import type { RoundStatus, Side } from "@/lib/royale";
+import type { RoundFormat, RoundStatus, Side } from "@/lib/royale";
 
 export type PortfolioAction =
   | "claim"     // settled: withdraw remaining vault + prize (or a refund)
@@ -15,7 +15,7 @@ export type PortfolioItem = {
   status: RoundStatus | "unknown";
   question: string;
   asset: string;
-  format: "single" | "royale";
+  format: RoundFormat;
   roundNumber: number;
   roundLimit: number;
   createdAt: number;
@@ -44,6 +44,14 @@ export type PortfolioItem = {
     survivors: number;
     eliminatedRound: number | null;
     prizeUsdc: number;
+    /** Predictions: right answers so far (live) or final; null in other formats. */
+    score: number | null;
+    /** Predictions: how many questions the round has. */
+    questions: number;
+    /** Predictions: how many picks this wallet has made (own wallet only). */
+    picksMade: number | null;
+    /** Predictions, live: would this score be paid if the round ended now? */
+    inMoney: boolean | null;
   };
   chain: null | {
     roundVault: string;

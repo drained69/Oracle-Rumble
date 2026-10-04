@@ -19,6 +19,7 @@
  */
 
 import { jointProbability } from "@/lib/joint-prob";
+import { answersFor, normalizePicks, resultsLine, scorePicks, type Picks, type PredictionsState } from "@/lib/predictions";
 
 export type RoundStatus =
   | "enrolling"   // accepting entrants, before lock
@@ -53,6 +54,10 @@ export type Entrant = {
   openingCall?: Side | null;
   /** Share of the vault the opening call uses (25/50/100; unset = 100). */
   openingCallPct?: number;
+  /** Predictions arena: this player's answers (question id → option id). */
+  picks?: Picks;
+  /** Predictions arena: right answers so far (live) or final. */
+  score?: number;
 };
 
 /** One leg of a placed parlay — an UP/DOWN call on a board market. */
@@ -90,9 +95,11 @@ export type PriceMap = Record<string, number>;
 /**
  * Single Round is a quick match — one market, one settlement, pay the top
  * finishers. Royale is 2–4 rounds — each settlement cuts the bottom half and
- * survivors carry the bankroll they earned into the next round.
+ * survivors carry the bankroll they earned into the next round. Predictions
+ * is a call contest with no trading: five hidden picks on BTC, ETH and SOL,
+ * most right answers wins (lib/predictions.ts).
  */
-export type RoundFormat = "single" | "royale";
+export type RoundFormat = "single" | "royale" | "predictions";
 
 export type RoundConfig = {
   marketId: string;
@@ -124,10 +131,11 @@ export const HOST_LIMITS = {
 } as const;
 
 /** Why a host's entry/vault amounts would be changed by the server, or "". */
-export function hostAmountError(entry: number, vault: number): string {
+export function hostAmountError(entry: number, vault: number, format: RoundFormat = "single"): string {
   const L = HOST_LIMITS;
   const e = amountErrorFor("Entry", entry, L.entryUsdc.min, L.entryUsdc.max);
   if (e) return e;
+  if (format === "predictions") return ""; // no trading vault
   return amountErrorFor("Vault", vault, L.startingBankroll.min, L.startingBankroll.max);
 }
 
@@ -147,10 +155,11 @@ const clamp = (n: number, lo: number, hi: number) =>
  * bigger vault, which is the core fairness rule of Market Royale.
  */
 export function normalizeConfig(base: RoundConfig, patch: Partial<RoundConfig>): RoundConfig {
-  const format: RoundFormat = patch.format === "single" ? "single" : patch.format === "royale" ? "royale" : base.format;
+  const format: RoundFormat = patch.format === "single" || patch.format === "royale" || patch.format === "predictions"
+    ? patch.format : base.format;
   const L = HOST_LIMITS;
   const capacity = clamp(patch.capacity ?? base.capacity, L.capacity.min, L.capacity.max);
-  const roundLimit = format === "single"
+  const roundLimit = format !== "royale"
     ? 1
     : clamp(patch.roundLimit ?? base.roundLimit, L.royaleRounds.min, L.royaleRounds.max);
   // Only the host-tunable rules are taken from `patch` — never arbitrary
@@ -160,13 +169,31 @@ export function normalizeConfig(base: RoundConfig, patch: Partial<RoundConfig>):
     host: typeof patch.host === "string" ? patch.host.slice(0, 64) : base.host,
     format,
     entryUsdc: clamp(patch.entryUsdc ?? base.entryUsdc, L.entryUsdc.min, L.entryUsdc.max),
-    startingBankroll: clamp(patch.startingBankroll ?? base.startingBankroll, L.startingBankroll.min, L.startingBankroll.max),
+    // A predictions arena has nothing to trade, so no vault.
+    startingBankroll: format === "predictions" ? 0 : clamp(patch.startingBankroll ?? base.startingBankroll, L.startingBankroll.min, L.startingBankroll.max),
     capacity,
     minEntrants: clamp(patch.minEntrants ?? base.minEntrants, 2, capacity),
     enrollmentSec: clamp(patch.enrollmentSec ?? base.enrollmentSec, L.enrollmentSec.min, L.enrollmentSec.max),
     liveSec: clamp(patch.liveSec ?? base.liveSec, L.liveSec.min, L.liveSec.max),
     roundLimit
   };
+}
+
+/**
+ * The escrow program needs a nonzero vault per seat. A predictions arena has
+ * no trading vault, so its on-chain vault is one base unit (0.000001 USDC),
+ * returned to every player at settlement.
+ */
+export const PICKS_CHAIN_VAULT_USDC = 0.000001;
+
+/** Vault amount per seat in the on-chain escrow. */
+export function chainVaultUsdc(config: RoundConfig): number {
+  return config.format === "predictions" ? PICKS_CHAIN_VAULT_USDC : config.startingBankroll;
+}
+
+/** What one seat deposits into the escrow: entry plus vault. */
+export function seatCostUsdc(config: RoundConfig): number {
+  return config.entryUsdc + chainVaultUsdc(config);
 }
 
 // Market-Royale prize split of the shared pool among the top finishers.
@@ -197,6 +224,32 @@ export function computePayouts(prizePoolUsdc: number, rankedWinnerIds: string[],
     assigned += part;
   }
   out[rankedWinnerIds[0]] = (pool - assigned) / 1e6; // 1st gets the remainder
+  return out;
+}
+
+/**
+ * Like computePayouts, but finishers can tie: `groups` lists the ranked
+ * players best first, tied players in one group. A group shares the prize of
+ * every place it covers equally (two players tied for 1st split 1st + 2nd).
+ * Integer micro-USDC; the parts re-sum to the pool exactly.
+ */
+export function computeGroupPayouts(prizePoolUsdc: number, groups: string[][], fundedPlayers: number): Record<string, number> {
+  const pool = Math.max(0, Math.round(prizePoolUsdc * 1e6));
+  const out: Record<string, number> = {};
+  const total = groups.reduce((n, g) => n + g.length, 0);
+  if (pool === 0 || total === 0) return out;
+  const places = fundedPlayers <= 2 ? 1 : Math.min(3, total);
+  const amounts: number[] = [];
+  for (let i = 1; i < places; i++) amounts[i] = Math.floor(pool * SPLIT_3[i]);
+  amounts[0] = pool - amounts.slice(1).reduce((a, b) => a + b, 0);
+  let k = 0;
+  for (const g of groups) {
+    const share = amounts.slice(k, k + g.length).reduce((a, b) => a + b, 0);
+    k += g.length;
+    if (share <= 0 || g.length === 0) continue;
+    const each = Math.floor(share / g.length);
+    g.forEach((id, i) => { out[id] = (each + (i === 0 ? share - each * g.length : 0)) / 1e6; });
+  }
   return out;
 }
 
@@ -246,7 +299,7 @@ export type RoundEscrowRecord = {
    * tx. If the deposit lands but the enroll request never arrives, the keeper
    * seats the wallet from its on-chain entry using these.
    */
-  pendingSeats?: Record<string, { nickname: string; openingCall: Side | null; openingCallPct?: number }>;
+  pendingSeats?: Record<string, { nickname: string; openingCall: Side | null; openingCallPct?: number; picks?: Picks }>;
 };
 
 /**
@@ -289,10 +342,19 @@ export type Round = {
   botTickAt?: number;     // ms — bots decide at a fixed pace, not once per page poll
   /** On-chain escrow record; undefined = ledger-only arena. */
   escrow?: RoundEscrowRecord;
+  /** Predictions arena: the questions, and their answers once closed. */
+  predictions?: PredictionsState;
 };
 
 /** The reserved code for the walk-in public arena that always has a live round. */
 export const PUBLIC_ARENA = "PUBLIC";
+/** Walk-in practice arena for the Predictions format. */
+export const PICKS_PRACTICE_ARENA = "PICKS";
+
+/** Free, ledger-only walk-in arenas that always have a round open. */
+export function isPracticeArena(code: string): boolean {
+  return code === PUBLIC_ARENA || code === PICKS_PRACTICE_ARENA;
+}
 
 /**
  * Generate a short shareable arena code — 6 chars from Crockford's base32
@@ -448,6 +510,8 @@ export type SeatOptions = {
   signature?: string;
   openingCall?: Side | null;
   openingCallPct?: number;
+  /** Predictions arena: the player's answers. */
+  picks?: unknown;
   /**
    * Seated from an on-chain deposit whose enroll request never arrived
    * (dropped connection, closed tab). Doesn't restart the enrollment clock.
@@ -465,17 +529,22 @@ export function seatPlayer(round: Round, wallet: string, nickname: string, opts:
   const firstPlayer = humanCount(round) === 0;
   const name = uniqueNickname(round, wallet, (nickname || `${wallet.slice(0, 4)}_${wallet.slice(-4)}`).slice(0, 16));
   const entrant = makeEntrant(round, wallet, name, false);
-  entrant.openingCall = opts.openingCall ?? null;
-  entrant.openingCallPct = normalizeCallPct(opts.openingCallPct);
+  if (round.predictions) {
+    entrant.picks = normalizePicks(round.predictions.questions, opts.picks);
+    entrant.score = 0;
+  } else {
+    entrant.openingCall = opts.openingCall ?? null;
+    entrant.openingCallPct = normalizeCallPct(opts.openingCallPct);
+  }
   const res = enroll(round, entrant);
   if (!res.ok) return { ok: false, reason: res.reason ?? "Could not take a seat." };
   // A hosted arena's clock starts once its first seat (the host's) is
   // confirmed, so wallet approval time never eats into it.
-  if (firstPlayer && !opts.restored && round.arenaCode !== PUBLIC_ARENA) {
+  if (firstPlayer && !opts.restored && !isPracticeArena(round.arenaCode)) {
     round.enrollDeadline = Math.max(round.enrollDeadline, Date.now() + round.config.enrollmentSec * 1000);
   }
   // Practice arena: the first player's seat starts the countdown from now.
-  if (firstPlayer && round.arenaCode === PUBLIC_ARENA) {
+  if (firstPlayer && isPracticeArena(round.arenaCode)) {
     round.enrollDeadline = Date.now() + round.config.enrollmentSec * 1000;
   }
   if (round.escrow) {
@@ -487,14 +556,20 @@ export function seatPlayer(round: Round, wallet: string, nickname: string, opts:
 }
 
 /**
- * Public copy of a round for a given viewer. Opening calls stay private while
- * enrolling (only the viewer sees their own), and the keeper's pending-seat
- * notes are never sent to browsers.
+ * Public copy of a round for a given viewer. Opening calls and predictions
+ * picks stay private while enrolling (only the viewer sees their own), and
+ * the keeper's pending-seat notes are never sent to browsers.
  */
 export function redactOpeningCalls(round: Round, viewer?: string | null): Round {
   const hideCalls = round.status === "enrolling";
   const entrants = hideCalls
-    ? round.entrants.map((e) => (e.wallet === viewer || !e.openingCall ? e : { ...e, openingCall: null, openingCallPct: undefined }))
+    ? round.entrants.map((e) => {
+      if (e.wallet === viewer || (!e.openingCall && !e.picks)) return e;
+      // Keep how many questions are answered (not which way) so the room
+      // can see who is ready.
+      const answered = e.picks ? Object.fromEntries(Object.keys(e.picks).map((k) => [k, ""])) : undefined;
+      return { ...e, openingCall: null, openingCallPct: undefined, picks: answered };
+    })
     : round.entrants;
   const escrow = round.escrow?.pendingSeats
     ? (({ pendingSeats: _omit, ...rest }) => rest)(round.escrow)
@@ -544,7 +619,7 @@ export const sellPriceOf = (sideCents: number) => Math.max(0, Math.round(sideCen
 
 /** Can players still trade in this round right now? */
 export function tradingOpen(round: Round, now = Date.now()): boolean {
-  return round.status === "live" && now < round.liveDeadline - TRADE_CUTOFF_MS;
+  return round.status === "live" && round.config.format !== "predictions" && now < round.liveDeadline - TRADE_CUTOFF_MS;
 }
 
 /**
@@ -736,11 +811,53 @@ export function settle(round: Round, finalYesPrice: number, priceMap?: PriceMap)
 }
 
 /**
+ * Settle a Predictions round at the closing prices: score every player's
+ * picks, rank by score, and split the pool among the best human scores —
+ * players who tie share the places they cover equally.
+ */
+export function settlePredictions(round: Round, close: Record<string, number>): void {
+  const st = round.predictions;
+  const answers = answersFor(st?.questions ?? [], round.oracle?.open ?? {}, close);
+  if (st) st.answers = answers;
+  for (const e of round.entrants) e.score = scorePicks(e.picks, answers);
+  for (const e of round.entrants) e.rank = scorePlace(round, e);
+  const humans = standings(round).filter((e) => !e.isBot);
+  const groups: Entrant[][] = [];
+  for (const e of humans) {
+    const last = groups[groups.length - 1];
+    if (last && (last[0].score ?? 0) === (e.score ?? 0)) last.push(e);
+    else groups.push([e]);
+  }
+  const funded = round.config.entryUsdc > 0 ? Math.round(round.prizePoolUsdc / round.config.entryUsdc) : humans.length;
+  const payouts = computeGroupPayouts(round.prizePoolUsdc, groups.map((g) => g.map((e) => e.id)), funded);
+  for (const e of round.entrants) e.prizeUsdc = payouts[e.id] ?? 0;
+
+  round.status = "complete";
+  round.endedAt = Date.now();
+  const total = st?.questions.length ?? 0;
+  if (st) logEvent(round, `Results: ${resultsLine(st.questions, answers)}.`);
+  const top = groups[0] ?? [];
+  round.championId = top[0]?.id ?? standings(round)[0]?.id ?? null;
+  const won = top.reduce((s, e) => s + e.prizeUsdc, 0);
+  if (humans.length === 1) {
+    logEvent(round, `${humans[0].nickname} scored ${humans[0].score ?? 0}/${total} — the only player who paid in, so their $${won.toFixed(2)} entry comes back.`);
+  } else if (top.length === 1) {
+    logEvent(round, `${top[0].nickname} wins $${won.toFixed(2)} with ${top[0].score ?? 0}/${total} right.`);
+  } else if (top.length > 1) {
+    const names = top.length === 2 ? `${top[0].nickname} and ${top[1].nickname}` : `${top.length} players`;
+    logEvent(round, `${names} tie on ${top[0].score ?? 0}/${total} and split $${won.toFixed(2)}.`);
+  } else {
+    logEvent(round, "Predictions complete.");
+  }
+}
+
+/**
  * Overall finishing order across every entrant: survivors first, then whoever
  * was cut later, then higher final bankroll, then earlier entry. Used to award
  * the prize split at the final.
  */
 export function finishingOrder(round: Round): Entrant[] {
+  if (round.config.format === "predictions") return [...round.entrants].sort(byScore);
   return [...round.entrants].sort((a, b) => {
     const aAlive = a.eliminatedRound === null;
     const bAlive = b.eliminatedRound === null;
@@ -810,7 +927,19 @@ export function advance(round: Round, nextMarket: { marketId: string; marketQues
 
 // ── standings ─────────────────────────────────────────────────────────
 
+/** Predictions order: more right answers first; tie → earlier entry. */
+const byScore = (a: Entrant, b: Entrant) => ((b.score ?? 0) - (a.score ?? 0)) || (a.joinedAt - b.joinedAt);
+
+/**
+ * Place of each player counting ties (1, 1, 3…): one more than how many
+ * scored strictly higher. Predictions only; other formats rank by order.
+ */
+export function scorePlace(round: Round, e: Entrant, humansOnly = false): number {
+  return 1 + round.entrants.filter((x) => (!humansOnly || !x.isBot) && (x.score ?? 0) > (e.score ?? 0)).length;
+}
+
 export function standings(round: Round): Entrant[] {
+  if (round.config.format === "predictions") return [...round.entrants].sort(byScore);
   return [...round.entrants].sort((a, b) => {
     if ((a.eliminatedRound === null) !== (b.eliminatedRound === null)) {
       return a.eliminatedRound === null ? -1 : 1; // alive first

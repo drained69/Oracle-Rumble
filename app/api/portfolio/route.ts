@@ -3,7 +3,8 @@ import { PublicKey } from "@solana/web3.js";
 import { escrowReady, listWalletDeposits, type WalletDeposit } from "@/lib/escrow-server";
 import { latestRoundsForWallet } from "@/lib/round-store";
 import { livePricing, yesAfterTick } from "@/lib/round-keeper";
-import { cutLine, finishingOrder, markToMarket, standings, type Entrant, type Round } from "@/lib/royale";
+import { cutLine, finishingOrder, markToMarket, paidPlaces, scorePlace, standings, type Entrant, type Round } from "@/lib/royale";
+import { pickCount } from "@/lib/predictions";
 import { sessionWallet } from "@/lib/session";
 import { limitByIp } from "@/lib/rate-limit";
 import type { Portfolio, PortfolioAction, PortfolioItem } from "@/lib/portfolio";
@@ -16,6 +17,8 @@ const depositCache: Map<string, { at: number; deposits: WalletDeposit[] }> = (_g
 
 const round2 = (n: number) => Math.round(n * 100) / 100;
 const ACTIVE = new Set(["enrolling", "live", "settling", "advancing"]);
+/** Below this an entitlement isn't worth a withdrawal (a predictions seat's 1-unit vault). */
+const DUST_USDC = 0.0001;
 
 /** On-chain deposits of a wallet, cached briefly (getProgramAccounts is heavy). */
 async function deposits(wallet: string): Promise<WalletDeposit[]> {
@@ -32,7 +35,7 @@ function actionFor(round: Round | null, dep: WalletDeposit | undefined): { actio
   if (dep.claimed) return { action: "claimed", usdc: dep.entitlementUsdc };
   const seat = dep.vault ? dep.vault.entryUsdc + dep.vault.vaultUsdc : 0;
   if (dep.vault?.settled) {
-    return dep.settled && dep.entitlementUsdc > 0 ? { action: "claim", usdc: dep.entitlementUsdc } : { action: "none", usdc: 0 };
+    return dep.settled && dep.entitlementUsdc > DUST_USDC ? { action: "claim", usdc: dep.entitlementUsdc } : { action: "none", usdc: 0 };
   }
   const finished = !round || round.status === "complete" || round.status === "cancelled";
   if (!finished) return { action: "none", usdc: 0 };
@@ -47,6 +50,8 @@ function myView(round: Round, me: Entrant, yes: number | null, showCall: boolean
   const order = done ? finishingOrder(round) : standings(round).filter((x) => x.eliminatedRound === null);
   const idx = order.findIndex((x) => x.wallet === me.wallet);
   const markPrice = yes === null || !e.side ? null : e.side === "YES" ? yes : 100 - yes;
+  const predictions = round.config.format === "predictions";
+  const questions = round.predictions?.questions.length ?? 0;
   return {
     nickname: me.nickname,
     startingVault: round.config.startingBankroll,
@@ -59,11 +64,15 @@ function myView(round: Round, me: Entrant, yes: number | null, showCall: boolean
     openingCall: showCall ? me.openingCall ?? null : null,
     openingCallPct: showCall && me.openingCall ? me.openingCallPct ?? 100 : null,
     openParlays: me.parlays.filter((t) => t.status === "open").length,
-    place: idx >= 0 && (done || me.eliminatedRound === null) ? idx + 1 : null,
+    place: predictions ? scorePlace(round, me) : idx >= 0 && (done || me.eliminatedRound === null) ? idx + 1 : null,
     players: done ? round.entrants.length : order.length,
-    survivors: cutLine(round),
+    survivors: predictions ? paidPlaces(round) : cutLine(round),
     eliminatedRound: me.eliminatedRound,
-    prizeUsdc: round2(me.prizeUsdc)
+    prizeUsdc: round2(me.prizeUsdc),
+    score: predictions ? me.score ?? 0 : null,
+    questions,
+    picksMade: predictions && showCall ? pickCount(round.predictions?.questions, me.picks) : null,
+    inMoney: predictions && round.status === "live" ? scorePlace(round, me, true) <= paidPlaces(round) : null
   };
 }
 

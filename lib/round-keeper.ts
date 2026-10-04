@@ -10,7 +10,8 @@
 
 import { PANTA_LIVE, pantaFetch, type PantaMarket } from "@/lib/panta";
 import { markets as directionMarkets, findMockMarket } from "@/lib/arena-data";
-import { ASSET_SYMBOLS, assetOfMarketId, getAsset, type AssetSymbol } from "@/lib/assets";
+import { ASSET_SYMBOLS, assetOfMarketId, directionMarketId, getAsset, HORIZONS, type AssetSymbol, type Horizon } from "@/lib/assets";
+import { answersFor, predictionQuestions, randomPicks, scorePicks } from "@/lib/predictions";
 import { freshSpots, resolvedCents, spotPrices, spotPricesAt, upCents, type Spots } from "@/lib/oracle";
 import {
   advance,
@@ -21,9 +22,10 @@ import {
   humanCount,
   markToMarket,
   normalizeConfig,
+  isPracticeArena,
   placeOpeningCalls,
-  PUBLIC_ARENA,
   settle,
+  settlePredictions,
   TRADE_CUTOFF_MS,
   type PriceMap,
   type Round,
@@ -51,6 +53,20 @@ export type Pricing = {
 /** Is this round on one of our BTC/ETH/SOL direction markets (oracle-resolved)? */
 export function isDirectionRound(round: Round): boolean {
   return !!assetOfMarketId(round.config.marketId);
+}
+
+/** Assets whose open and close a round needs: all three for predictions, else its own. */
+function neededAssets(round: Round): AssetSymbol[] {
+  return round.config.format === "predictions" ? ASSET_SYMBOLS : [round.config.asset as AssetSymbol];
+}
+
+/** Update every player's live score in a predictions round ("if it closed now"). */
+function scoreLive(round: Round, spots: Spots): void {
+  const st = round.predictions;
+  const open = round.oracle?.open;
+  if (!st || !open) return;
+  const live = answersFor(st.questions, open, { ...(round.oracle?.last ?? {}), ...spots });
+  for (const e of round.entrants) e.score = scorePicks(e.picks, live);
 }
 
 /**
@@ -236,10 +252,12 @@ export async function pickMarket(excludeId?: string): Promise<MarketPick | null>
  * that asset's market; otherwise the keeper picks one.
  */
 export async function bootstrapRound(overrides?: Partial<RoundConfig> & { horizon?: string }, arenaCode?: string): Promise<Round | null> {
-  const wantAsset = overrides?.asset ? String(overrides.asset).toUpperCase() : undefined;
+  const predictions = overrides?.format === "predictions";
+  // A predictions round covers all three coins; its clock runs on BTC's market.
+  const wantAsset = predictions ? "BTC" : overrides?.asset ? String(overrides.asset).toUpperCase() : undefined;
   // A day-long market can't run as one arena round; it plays as the hour.
   const rawHorizon = overrides?.horizon ? String(overrides.horizon).toUpperCase() : undefined;
-  const wantHorizon = rawHorizon === "DAY" ? "HOUR" : rawHorizon;
+  const wantHorizon = rawHorizon === "DAY" ? "HOUR" : rawHorizon ?? (predictions ? "MIN5" : undefined);
   const market = await pickMarketForAsset(wantAsset, wantHorizon);
   if (!market) return null;
 
@@ -263,7 +281,15 @@ export async function bootstrapRound(overrides?: Partial<RoundConfig> & { horizo
   void _m; void _q; void _c; void _a; void _h;
   const config = normalizeConfig(base, rules);
   if (impliedLiveSec) config.liveSec = impliedLiveSec;
-  return createRound(config, 1, arenaCode);
+  if (config.format === "predictions") {
+    const hz = HORIZONS.find((h) => h.id === (marketHorizon ?? wantHorizon)) ?? HORIZONS[0];
+    config.marketId = directionMarketId("BTC", hz.id as Horizon);
+    config.asset = "BTC";
+    config.marketQuestion = `Predictions · BTC, ETH and SOL ${hz.label}`;
+  }
+  const round = createRound(config, 1, arenaCode);
+  if (config.format === "predictions") round.predictions = { questions: predictionQuestions(`${round.arenaCode}:${round.id}`) };
+  return round;
 }
 
 /**
@@ -319,15 +345,15 @@ export function tick(round: Round, pricing: Pricing): Round {
   // The walk-in practice arena never cancels for being empty: it waits for
   // its first player, whose seat starts a fresh enrollment clock.
   // (A leftover round with older practice settings is retired instead.)
-  if (round.status === "enrolling" && humanCount(round) === 0 && round.arenaCode === PUBLIC_ARENA && now >= round.enrollDeadline
-      && round.config.format === "single") {
+  if (round.status === "enrolling" && humanCount(round) === 0 && isPracticeArena(round.arenaCode) && now >= round.enrollDeadline
+      && round.config.format !== "royale") {
     round.enrollDeadline = now + round.config.enrollmentSec * 1000;
   }
 
   // A hosted arena starts empty while the host approves their seat deposit
   // in the wallet. Hold it open for that instead of cancelling on the first
   // deadline; the enroll route restarts the clock once the host is seated.
-  if (round.status === "enrolling" && humanCount(round) === 0 && round.arenaCode !== PUBLIC_ARENA) {
+  if (round.status === "enrolling" && humanCount(round) === 0 && !isPracticeArena(round.arenaCode)) {
     const graceEnd = round.createdAt + HOST_SEAT_GRACE_MS;
     if (now < graceEnd && round.enrollDeadline < graceEnd) round.enrollDeadline = graceEnd;
   }
@@ -342,7 +368,8 @@ export function tick(round: Round, pricing: Pricing): Round {
     }
     // The open price is the whole bet — wait (briefly) for the oracle
     // rather than open a round nobody can resolve.
-    if (direction && !pricing.spots[asset] && now < round.enrollDeadline + ORACLE_WAIT_MS) return round;
+    const need = neededAssets(round);
+    if (direction && need.some((a) => !pricing.spots[a]) && now < round.enrollDeadline + ORACLE_WAIT_MS) return round;
     // Thin backfill: only add bots to reach the minimum to run a game, and
     // never pad beyond the number of real players. A 5-human lobby runs
     // 5-handed; a solo host gets one opponent so the game can start. Real
@@ -350,6 +377,9 @@ export function tick(round: Round, pricing: Pricing): Round {
     const humans = humanCount(round);
     const backfillTarget = Math.max(round.config.minEntrants, humans);
     fillWithBots(round, backfillTarget);
+    if (round.predictions) {
+      for (const e of round.entrants) if (e.isBot && !e.picks) { e.picks = randomPicks(round.predictions.questions); e.score = 0; }
+    }
     if (round.entrants.length < round.config.minEntrants) {
       round.status = "cancelled";
       round.endedAt = now;
@@ -358,13 +388,37 @@ export function tick(round: Round, pricing: Pricing): Round {
     }
     round.status = "live";
     round.liveDeadline = now + round.config.liveSec * 1000;
-    logEvent(round, `Enrollment locked — ${round.entrants.length} entrants live on ${round.config.asset}.`);
-    if (direction && pricing.spots[asset]) {
-      openOracle(round, pricing.spots, now);
-      logEvent(round, `${asset} opened at ${usdFmt(pricing.spots[asset]!)} — UP wins if it closes higher.`);
+    logEvent(round, round.predictions
+      ? `Enrollment locked — ${round.entrants.length} players, picks revealed.`
+      : `Enrollment locked — ${round.entrants.length} entrants live on ${round.config.asset}.`);
+    if (round.predictions) {
+      if (pricing.spots.BTC || pricing.spots.ETH || pricing.spots.SOL) {
+        openOracle(round, pricing.spots, now);
+        logEvent(round, `Picks locked. Opening prices: ${need.map((a) => `${a} ${pricing.spots[a] ? usdFmt(pricing.spots[a]!) : "unavailable"}`).join(", ")}.`);
+      }
+    } else {
+      if (direction && pricing.spots[asset]) {
+        openOracle(round, pricing.spots, now);
+        logEvent(round, `${asset} opened at ${usdFmt(pricing.spots[asset]!)} — UP wins if it closes higher.`);
+      }
+      // UP/DOWN calls picked at the seat go in at the opening price.
+      placeOpeningCalls(round, direction ? 50 : pricing.yesPrice);
     }
-    // UP/DOWN calls picked at the seat go in at the opening price.
-    placeOpeningCalls(round, direction ? 50 : pricing.yesPrice);
+  }
+
+  if (round.status === "live" && round.predictions) {
+    // Nothing to trade: keep the live scores current, then settle at the close.
+    if (!round.oracle?.open && (pricing.spots.BTC || pricing.spots.ETH || pricing.spots.SOL)) openOracle(round, pricing.spots, now);
+    scoreLive(round, pricing.spots);
+    if (now < round.liveDeadline) return round;
+    const close = closeSample(round, pricing, prevSample, now);
+    if (!close && now < round.liveDeadline + ORACLE_WAIT_MS) return round;
+    const closeRec: Record<string, number> = {};
+    for (const [a, p] of Object.entries(close ?? {})) if (p) closeRec[a] = p;
+    round.oracle = { ...(round.oracle ?? { source: "coinbase", open: {}, openAt: now }), close: closeRec, closeAt: round.liveDeadline };
+    logEvent(round, `Closing prices: ${ASSET_SYMBOLS.map((a) => `${a} ${closeRec[a] ? usdFmt(closeRec[a]) : "unavailable"}`).join(", ")}.`);
+    settlePredictions(round, closeRec);
+    return round;
   }
 
   if (round.status === "live") {
@@ -415,6 +469,24 @@ export function tick(round: Round, pricing: Pricing): Round {
   }
 
   return round;
+}
+
+/**
+ * Closing prices of every coin a predictions round needs: the sample nearest
+ * the deadline (this tick, the previous tick, or the 1-minute candle when the
+ * arena went unwatched). Null when none of them has all the prices yet.
+ */
+function closeSample(round: Round, pricing: Pricing, prevSample: { spots: Record<string, number>; at: number } | null, now: number): Spots | null {
+  const need = neededAssets(round);
+  const full = (s: Spots | Record<string, number> | undefined) => !!s && need.every((a) => (s as Record<string, number | undefined>)[a]);
+  const after = now - round.liveDeadline;
+  const before = prevSample && prevSample.at <= round.liveDeadline ? round.liveDeadline - prevSample.at : Infinity;
+  if (full(pricing.spots) && after <= CLOSE_FRESH_MS && after <= before) return pricing.spots;
+  if (prevSample && full(prevSample.spots) && before <= CLOSE_FRESH_MS) return prevSample.spots as Spots;
+  if (full(pricing.spots) && after <= CLOSE_FRESH_MS) return pricing.spots;
+  if (full(pricing.closeSpots)) return pricing.closeSpots!;
+  // Past the oracle wait: settle on whatever is known (missing coins void their questions).
+  return now >= round.liveDeadline + ORACLE_WAIT_MS ? (pricing.closeSpots ?? pricing.spots) : null;
 }
 
 /** Build the next round from a settled `advancing` round on a pre-picked market. */

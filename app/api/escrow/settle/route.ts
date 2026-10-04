@@ -130,7 +130,8 @@ async function settle(arena: string) {
   const recovered = allOnChain.filter((d) => d.claimed);
   const onChain = allOnChain.filter((d) => !d.claimed);
   const depositorSet = new Set(onChain.map((d) => d.wallet));
-  const seatUsdc = round.config.entryUsdc + round.config.startingBankroll;
+  // The seat as the escrow holds it (a predictions seat carries a 1-unit vault).
+  const seatUsdc = vault.entryUsdc + vault.vaultUsdc;
 
   // Players: remaining vault + prize share (includes players knocked out in
   // earlier royale rounds — they withdraw the vault they finished with).

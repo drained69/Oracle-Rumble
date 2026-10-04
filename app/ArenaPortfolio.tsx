@@ -37,6 +37,7 @@ function resultLine(i: PortfolioItem): string {
   if (!me) return i.chain ? "You paid a seat but weren't seated — it's refunded in full." : "";
   const place = me.place ? `${ordinal(me.place)} of ${me.players}` : "Finished";
   const prize = me.prizeUsdc > 0 ? ` · won ${usd.format(me.prizeUsdc)} from the pool` : "";
+  if (i.format === "predictions") return `${place} · ${me.score ?? 0}/${me.questions} right${prize || " · no prize this time"}`;
   const out = me.eliminatedRound ? ` · knocked out in round ${me.eliminatedRound}` : "";
   return `${place}${out}${prize} · vault finished at ${usd.format(me.cash)}`;
 }
@@ -190,7 +191,7 @@ export default function ArenaPortfolio({ wallet, onToast }: { wallet: string; on
                 <p className="pf-sub">
                   {i.action === "claimed" ? <>Withdrawn ✓ {usd.format(i.chain.entitlementUsdc)}</>
                     : i.action === "settling" ? <>Settling on chain — your payout opens here in a minute or two.</>
-                    : i.chain.claimsOpen ? <>Nothing to withdraw — the vault finished at $0.</>
+                    : i.chain.claimsOpen ? (i.format === "predictions" ? <>No prize this time — nothing to withdraw.</> : <>Nothing to withdraw — the vault finished at $0.</>)
                     : <>Waiting for settlement.</>}
                   {" · "}<a href={explorer(i.chain.roundVault)} target="_blank" rel="noopener noreferrer">Vault ↗</a>
                 </p>
@@ -222,6 +223,25 @@ function ActiveCard({ i, now }: { i: PortfolioItem; now: number }) {
 
       {!me ? (
         <p className="pf-line">Your deposit is in — your seat is being registered.</p>
+      ) : i.format === "predictions" ? (
+        i.status === "enrolling" ? (
+          <p className="pf-line">
+            {me.picksMade === null ? <>Your picks are hidden until the round locks.</>
+              : me.picksMade >= me.questions ? <>All {me.questions} picks made — you can change them until the round locks.</>
+              : <><b className="down">{me.picksMade} of {me.questions} picks made.</b> Finish them before the round locks — an empty pick scores nothing.</>}
+          </p>
+        ) : (
+          <div className="pf-grid">
+            <div><span>Right so far</span><b>{me.score ?? 0} / {me.questions}</b></div>
+            <div>
+              <span>Standing</span>
+              <b>
+                {me.place ? `${ordinal(me.place)} of ${me.players}` : "—"}
+                {me.inMoney !== null && <em className={me.inMoney ? "up" : "down"}>{me.inMoney ? " in the money" : " out of the money"}</em>}
+              </b>
+            </div>
+          </div>
+        )
       ) : i.status === "enrolling" ? (
         <p className="pf-line">
           {me.openingCall
@@ -252,7 +272,9 @@ function ActiveCard({ i, now }: { i: PortfolioItem; now: number }) {
       )}
       {me && i.status === "live" && (
         <p className="pf-sub">
-          {i.format === "royale" ? `Round ${i.roundNumber} of ${i.roundLimit} · top ${me.survivors} survive the cut` : "Single round · top finishers split the pool"}
+          {i.format === "royale" ? `Round ${i.roundNumber} of ${i.roundLimit} · top ${me.survivors} survive the cut`
+            : i.format === "predictions" ? "Predictions · most right answers take the pool"
+            : "Single round · top finishers split the pool"}
           {me.openParlays > 0 ? ` · ${me.openParlays} open parlay${me.openParlays === 1 ? "" : "s"}` : ""}
           {" · "}<a href={`/a/${i.arena}`}>Open arena →</a>
         </p>

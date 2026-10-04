@@ -1,6 +1,7 @@
 /** Browser helpers for the Market Royale round API — every call is arena-scoped. */
 
 import type { Entrant, Round, RoundConfig } from "@/lib/royale";
+import type { Picks } from "@/lib/predictions";
 import { ensureSession, sessionLost } from "@/lib/session-client";
 import { describeWalletError, ensureWalletFor, signAndSendAs, WalletError } from "@/lib/wallet";
 
@@ -153,9 +154,9 @@ export type EnrollResult = {
  * server responds with 402 { needsDeposit: true }; the caller must sign a
  * Deposit tx and re-post with the resulting signature.
  */
-export async function enrollRound(wallet: string, nickname: string, arena?: string, escrowSignature?: string, openingCall: OpeningCall = null, openingCallPct?: number): Promise<EnrollResult> {
+export async function enrollRound(wallet: string, nickname: string, arena?: string, escrowSignature?: string, openingCall: OpeningCall = null, openingCallPct?: number, picks?: Picks): Promise<EnrollResult> {
   try {
-    const { status, data: raw } = await postAsWallet("/api/round/enroll", wallet, { wallet, nickname, arena, escrowSignature, openingCall, openingCallPct });
+    const { status, data: raw } = await postAsWallet("/api/round/enroll", wallet, { wallet, nickname, arena, escrowSignature, openingCall, openingCallPct, picks });
     const data = raw as EnrollResult;
     if (status >= 500 && !data.error) return { pending: true, error: "server busy" };
     if (status === 202) return { ...data, pending: true };
@@ -172,10 +173,10 @@ export async function enrollRound(wallet: string, nickname: string, arena?: stri
  * the ticket, so this can safely be repeated. (If every try fails the
  * server's keeper still seats the wallet from its on-chain entry.)
  */
-async function finishSeat(wallet: string, nickname: string, arena: string | undefined, sig: string | undefined, openingCall: OpeningCall, openingCallPct?: number): Promise<EnrollResult> {
+async function finishSeat(wallet: string, nickname: string, arena: string | undefined, sig: string | undefined, openingCall: OpeningCall, openingCallPct?: number, picks?: Picks): Promise<EnrollResult> {
   let last: EnrollResult = {};
   for (let attempt = 0; attempt < 8; attempt++) {
-    last = await enrollRound(wallet, nickname, arena, sig, openingCall, openingCallPct);
+    last = await enrollRound(wallet, nickname, arena, sig, openingCall, openingCallPct, picks);
     if (!last.pending) return last;
     await new Promise((r) => setTimeout(r, 3_000));
   }
@@ -229,15 +230,15 @@ export function seatStepText(step: SeatStep, seatUsd: number, call?: OpeningCall
  */
 export async function enrollWithEscrow(
   wallet: string, nickname: string, arena?: string, openingCall: OpeningCall = null,
-  onStep?: (step: SeatStep, walletName?: string) => void, openingCallPct?: number
+  onStep?: (step: SeatStep, walletName?: string) => void, openingCallPct?: number, picks?: Picks
 ): Promise<EnrollResult> {
   // Attempt 1: plain enroll. Seats a ledger-only arena, a wallet that is
   // already seated, or one whose deposit already landed; otherwise 402.
   const auth = await ensureSession(wallet, () => onStep?.("signin"), (name) => onStep?.("waiting", name));
   if (!auth.ok) return { error: auth.error };
   onStep?.("seating");
-  const first = await enrollRound(wallet, nickname, arena, undefined, openingCall, openingCallPct);
-  if (first.pending) return finishSeat(wallet, nickname, arena, undefined, openingCall, openingCallPct);
+  const first = await enrollRound(wallet, nickname, arena, undefined, openingCall, openingCallPct, picks);
+  if (first.pending) return finishSeat(wallet, nickname, arena, undefined, openingCall, openingCallPct, picks);
   if (!first.needsDeposit) return first;
 
   // Build a Deposit tx from the server.
@@ -246,14 +247,14 @@ export async function enrollWithEscrow(
     txRes = await fetch("/api/escrow/tx", {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ action: "deposit", wallet, arena, nickname, openingCall, openingCallPct })
+      body: JSON.stringify({ action: "deposit", wallet, arena, nickname, openingCall, openingCallPct, picks })
     }).then((r) => r.json());
   } catch {
     return { error: "Couldn't reach the server to prepare your deposit — try again." };
   }
   if (txRes.escrow === "inactive") return { error: "escrow is inactive on the server" };
   // Already paid on chain → just claim the seat, no signing.
-  if (txRes.alreadyDeposited) return { ...(await finishSeat(wallet, nickname, arena, undefined, openingCall, openingCallPct)), deposited: true };
+  if (txRes.alreadyDeposited) return { ...(await finishSeat(wallet, nickname, arena, undefined, openingCall, openingCallPct, picks)), deposited: true };
   if (txRes.error || !txRes.base64) return { error: txRes.error ?? "could not build the deposit" };
 
   // Sign + broadcast via the connected wallet.
@@ -263,7 +264,7 @@ export async function enrollWithEscrow(
   catch (err) { return { error: err instanceof Error ? err.message : "The deposit failed in your wallet." }; }
 
   onStep?.("seating");
-  const done = await finishSeat(wallet, nickname, arena, sig, openingCall, openingCallPct);
+  const done = await finishSeat(wallet, nickname, arena, sig, openingCall, openingCallPct, picks);
   return { ...done, deposited: true, escrowSignature: sig };
 }
 
@@ -272,6 +273,16 @@ export async function setOpeningCall(wallet: string, arena: string, call: Openin
   try {
     const { data } = await postAsWallet("/api/round/call", wallet, { wallet, arena, call, pct });
     return data as { ok?: boolean; error?: string; needsAuth?: boolean; pct?: number | null };
+  } catch {
+    return { error: "network error" };
+  }
+}
+
+/** Change some or all of my predictions picks while the arena is still enrolling. */
+export async function setPicks(wallet: string, arena: string, picks: Picks): Promise<{ ok?: boolean; error?: string; needsAuth?: boolean; picks?: Picks }> {
+  try {
+    const { data } = await postAsWallet("/api/round/picks", wallet, { wallet, arena, picks });
+    return data as { ok?: boolean; error?: string; needsAuth?: boolean; picks?: Picks };
   } catch {
     return { error: "network error" };
   }

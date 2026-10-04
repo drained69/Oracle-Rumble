@@ -18,6 +18,7 @@ const PROGRAM_ID = process.env.NEXT_PUBLIC_ESCROW_PROGRAM_ID ?? "";
 const SECTIONS: { id: string; title: string }[] = [
   { id: "overview", title: "Overview" },
   { id: "rules", title: "Game rules" },
+  { id: "predictions", title: "Predictions arenas" },
   { id: "money", title: "Seats, pool & payouts" },
   { id: "escrow", title: "Non-custodial escrow" },
   { id: "recovery", title: "Cancellations & recovery" },
@@ -94,7 +95,8 @@ export default function DocsPage() {
               same seat and call whether BTC, ETH or SOL finishes the round <b>UP</b> or <b>DOWN</b>
               from its opening price. Everyone is ranked by vault value. A single round pays the prize
               pool to the top finishers; a royale cuts the bottom half each round until the finalists
-              split the pool.
+              split the pool. A <b>Predictions</b> arena has no trading at all: five hidden picks on
+              BTC, ETH and SOL, and the most right answers take the pool.
             </p>
             <ol>
               <li><b>Arena engine</b> — server-side rounds (enrolling → live → settling → advancing/complete) persisted in Postgres.</li>
@@ -113,6 +115,7 @@ export default function DocsPage() {
               <tbody>
                 <tr><td><b>Single</b></td><td>1</td><td>One trading window. Players are ranked by final vault value and the pool is paid out.</td></tr>
                 <tr><td><b>Royale</b></td><td>2–4</td><td>After each round the bottom half is eliminated. Survivors carry their vault into the next round until one player remains or the round limit is reached.</td></tr>
+                <tr><td><b>Predictions</b></td><td>1</td><td>No trading. Every player answers the same five questions before the start; at the close each right answer is a point and the top scores are paid. See <a href="#predictions">Predictions arenas</a>.</td></tr>
               </tbody>
             </table>
             <div className="lifecycle-strip">
@@ -129,6 +132,30 @@ export default function DocsPage() {
               <li><b>Settling</b> — at the deadline the asset&apos;s close is compared with its open: UP shares pay $1 if it closed higher, DOWN shares if lower (50¢ each if exactly flat). Players are ranked by vault value; ties go to whoever joined first.</li>
               <li><b>Cut</b> (royale) — the top <code>ceil(alive / 2)</code> players survive. Everyone else is eliminated and their vault is frozen at its final value until the end, when all players are paid out together.</li>
               <li><b>Complete</b> — the arena settles on-chain and every player can withdraw.</li>
+            </ul>
+          </Section>
+
+          <Section id="predictions" title="Predictions arenas">
+            <p>
+              A call contest with nothing to trade. Before the round starts, every player answers the same
+              five questions about how the three coins move over it:
+            </p>
+            <table className="docs-table">
+              <thead><tr><th>#</th><th>Question</th><th>Right answer</th></tr></thead>
+              <tbody>
+                <tr><td>1–3</td><td>BTC, ETH, SOL: up or down?</td><td>Up if the coin closes above its price at the lock, down if below.</td></tr>
+                <tr><td>4</td><td>Which does best?</td><td>The coin with the biggest % change — the biggest gain, or the smallest drop if all three fall.</td></tr>
+                <tr><td>5</td><td>A head-to-head, e.g. SOL or ETH</td><td>Whichever of the two has the better % change. The pair varies by arena.</td></tr>
+              </tbody>
+            </table>
+            <ul>
+              <li><b>Why relative questions</b> — BTC, ETH and SOL usually move together, so the three up/down calls often land or miss as one. &ldquo;Which does best&rdquo; and the head-to-head reward reading the market rather than calling everything the same way, and make ties much rarer.</li>
+              <li><b>Hidden picks</b> — nobody else can see your picks while enrollment is open (the server shows other players only how many questions they have answered, and the deposit memo never contains picks). You can change them until the round locks; then everyone&apos;s picks are revealed.</li>
+              <li><b>Judged on the lock price</b> — when enrollment locks, the live BTC, ETH and SOL prices are recorded. At the close (the timeframe: 5 minutes, 15 minutes or an hour) each coin is compared with its own opening price. While the round runs, the arena shows which answers are winning and everyone&apos;s live score.</li>
+              <li><b>Scoring</b> — one point per right answer. A question with an exact dead heat (or a missing price) scores for nobody. An unanswered question scores nothing.</li>
+              <li><b>Prizes</b> — the usual split of the pool: winner takes all in a duel, otherwise 62.5% / 23.44% / 14.06%. Players who tie share the places they cover equally — two players tied for first split first and second place.</li>
+              <li><b>Seat</b> — just the entry. The escrow program needs a vault per seat, so a predictions seat carries a 1-unit vault (0.000001 USDC) that is returned at settlement.</li>
+              <li><b>Practice</b> — the free walk-in arena at <a href="/a/PICKS">/a/PICKS</a> runs predictions rounds against bots.</li>
             </ul>
           </Section>
 
@@ -294,7 +321,7 @@ net  = fair − fee   → credited to your vault`}</pre>
               <li><b>Sign-in</b> — right after you connect, the wallet asks you to sign a free sign-in message (not a transaction). It proves the requests for your seat come from you; the session lasts a week on this browser and ends when you disconnect. If you skip it, you&apos;re asked again before your first seat or trade.</li>
               <li><b>After a reload</b> the page reconnects to your wallet without a prompt (for a site the wallet already trusts), so signing works straight away.</li>
               <li><b>Switching accounts</b> in the wallet switches the page to that account. If the wallet is on a different account from the one you&apos;re playing as, nothing is signed and the page tells you which account to switch to.</li>
-              <li><b>Escrow deposit, claim and recover</b> are legacy transactions built by the server, checked with a dry run on Solana {CLUSTER} before your wallet sees them, and signed by you. The wallet only signs; the app sends the transaction to {CLUSTER} itself, so it lands on the right network whatever network your wallet is set to. Approve within about a minute; an older transaction expires and nothing is taken. The deposit carries a memo with the arena, the seat amount and your opening call (UP, DOWN or decide later), visible in your wallet and on the explorer.</li>
+              <li><b>Escrow deposit, claim and recover</b> are legacy transactions built by the server, checked with a dry run on Solana {CLUSTER} before your wallet sees them, and signed by you. The wallet only signs; the app sends the transaction to {CLUSTER} itself, so it lands on the right network whatever network your wallet is set to. Approve within about a minute; an older transaction expires and nothing is taken. The deposit carries a memo with the arena, the seat amount and the game type, visible in your wallet and on the explorer. It never includes your opening call or picks, since those stay hidden until the round starts.</li>
               <li><b>Panta orders and claims</b> are v0 transactions compiled in your browser from Panta&apos;s instructions.</li>
               <li>You pay the network fee for every transaction you sign. Private keys never leave your wallet.</li>
             </ul>
@@ -314,6 +341,7 @@ net  = fair − fee   → credited to your vault`}</pre>
                 <tr><td><code>POST /api/auth/challenge</code> · <code>/verify</code></td><td>Wallet sign-in (message signature → session cookie)</td></tr>
                 <tr><td><code>POST /api/round/enroll</code></td><td>Take a seat (signed in); returns <code>needsDeposit</code> until your on-chain deposit exists, <code>pending</code> while it confirms</td></tr>
                 <tr><td><code>POST /api/round/call</code></td><td>Change your opening UP/DOWN call while enrolling</td></tr>
+                <tr><td><code>POST /api/round/picks</code></td><td>Change your predictions picks while enrolling (signed in)</td></tr>
                 <tr><td><code>POST /api/round/cancel</code></td><td>Cancel an arena whose host never funded seat #1</td></tr>
                 <tr><td><code>POST /api/round/trade</code></td><td>Buy UP/DOWN or sell inside the arena (signed in)</td></tr>
                 <tr><td><code>POST /api/round/parlay</code> · <code>/cashout</code></td><td>Place or cash out a parlay</td></tr>
@@ -353,7 +381,11 @@ net  = fair − fee   → credited to your vault`}</pre>
               </details>
               <details>
                 <summary>Do I have to pick UP or DOWN when I sit down?</summary>
-                <p>No — choose <em>decide later</em> and trade once the round is live. If you do pick, your whole vault goes on that side at the opening price, and you can still switch or sell during the round.</p>
+                <p>No — choose <em>decide later</em> and trade once the round is live. If you do pick, the share of your vault you choose (a quarter, half or all of it) goes on that side at the opening price, and you can still switch or sell during the round. Predictions arenas have no call: you answer five questions instead.</p>
+              </details>
+              <details>
+                <summary>In a Predictions arena, can anyone see my picks before the start?</summary>
+                <p>No. Until the round locks, other players only see how many of the five questions you have answered. Your picks aren&apos;t in the public deposit transaction either. Once the round starts, every player&apos;s picks are shown.</p>
               </details>
               <details>
                 <summary>What if I close the tab mid-round?</summary>

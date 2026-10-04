@@ -46,6 +46,7 @@ export async function POST(request: Request) {
   if (!ticket) return NextResponse.json({ error: "ticket not found" }, { status: 404 });
   if (ticket.status !== "open") return NextResponse.json({ error: `ticket is ${ticket.status}, not open` }, { status: 409 });
 
+  if (peek.config.format === "predictions") return NextResponse.json({ error: "This is a predictions arena — there's nothing to trade." }, { status: 409 });
   if (!tradingOpen(peek)) return NextResponse.json({ error: `Cash-out is closed for the last ${TRADE_CUTOFF_MS / 1000} seconds of the round.` }, { status: 409 });
   // Direction legs are priced by the round's oracle, the same prices the
   // ticket settles against.

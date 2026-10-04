@@ -38,6 +38,7 @@ export async function POST(request: Request) {
 
   const peek = await getActiveRound(arena);
   if (!peek) return NextResponse.json({ error: "no active round in this arena", arena }, { status: 404 });
+  if (peek.config.format === "predictions") return NextResponse.json({ error: "This is a predictions arena — there's nothing to trade." }, { status: 409 });
   if (!tradingOpen(peek)) {
     return NextResponse.json({ error: peek.status === "live"
       ? `Trading is closed for the last ${TRADE_CUTOFF_MS / 1000} seconds of the round.`

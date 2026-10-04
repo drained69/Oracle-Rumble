@@ -9,7 +9,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { cancelArena, checkSeatFunds, enrollWithEscrow, newRound, prepareWallet, seatStepText, type SeatStep } from "@/lib/round-client";
 import { shortPk, USERNAME_MAX, validateUsername } from "@/lib/username";
-import { DEFAULT_OPENING_CALL_PCT, hostAmountError } from "@/lib/royale";
+import { DEFAULT_OPENING_CALL_PCT, PICKS_CHAIN_VAULT_USDC, hostAmountError, type RoundFormat } from "@/lib/royale";
 import CallSizePicker, { callSizeText } from "@/app/CallSizePicker";
 import { avatarDataUrl } from "@/lib/avatars";
 import { useEscrowStatus, useWalletIdentity } from "@/lib/use-wallet";
@@ -31,7 +31,7 @@ type ArenaItem = {
   status: string;
   roundNumber: number;
   roundLimit: number;
-  format: "single" | "royale";
+  format: RoundFormat;
   asset: string;
   marketQuestion: string;
   capacity: number;
@@ -85,7 +85,7 @@ export default function ArenasDirectory() {
   const [hMode, setHMode] = useState<"quick" | "scheduled">("quick");
   const [hAsset, setHAsset] = useState<"BTC" | "ETH" | "SOL">("SOL");
   const [hHorizon, setHHorizon] = useState<"MIN5" | "MIN15" | "HOUR" | "DAY">("MIN5");
-  const [hFormat, setHFormat] = useState<"single" | "royale">("single");
+  const [hFormat, setHFormat] = useState<RoundFormat>("single");
   const [hRounds, setHRounds] = useState(2);
   const [hCapacity, setHCapacity] = useState(8);
   const [hEntry, setHEntry] = useState("2");
@@ -135,15 +135,17 @@ export default function ArenasDirectory() {
     if (r.needsUsername) setShowUsername(true);
   }, [toggleConnect]);
 
+  const picks = hFormat === "predictions";
   const entryNum = Number(hEntry) || 0;
   const vaultNum = Number(hVault) || 0;
-  const hostSeat = entryNum + vaultNum;
+  // A predictions seat is the entry (the escrow keeps a 1-unit vault, returned at the end).
+  const hostSeat = entryNum + (picks ? PICKS_CHAIN_VAULT_USDC : vaultNum);
   const poolIfFull = entryNum * hCapacity;
-  const hostInputError = hostAmountError(entryNum, vaultNum);
+  const hostInputError = hostAmountError(entryNum, vaultNum, hFormat);
 
   const doHostAndJoin = useCallback(async () => {
     if (hostInputError) { setToast(hostInputError); return; }
-    if (!hCall) { setToast(`Pick UP or DOWN on ${hAsset} (or decide later) before taking seat 1.`); return; }
+    if (!hCall && !picks) { setToast(`Pick UP or DOWN on ${hAsset} (or decide later) before taking seat 1.`); return; }
     // On-chain hosting needs the host's own seat deposit signature.
     if (escrow?.active && !wallet) {
       setToast("Connect a wallet first — hosting on-chain needs your seat deposit.");
@@ -157,7 +159,7 @@ export default function ArenasDirectory() {
       hostName = nameDraft.trim();
     }
 
-    const call = hCall === "LATER" ? null : hCall;
+    const call = picks || hCall === "LATER" || !hCall ? null : hCall;
     const onStep = (step: SeatStep, name?: string) => { setHostStep(step); setToast(seatStepText(step, hostSeat, call, name).toast); };
     try {
       // Check funds and the wallet BEFORE the operator pays for an on-chain
@@ -214,10 +216,12 @@ export default function ArenasDirectory() {
       }
 
       setInviteInfo({ code: v.arena, url });
-      setToast(`Arena ${v.arena} is open — you're in seat 1. Share the link.`);
+      setToast(picks
+        ? `Arena ${v.arena} is open — you're in seat 1. Make your picks in the arena, then share the link.`
+        : `Arena ${v.arena} is open — you're in seat 1. Share the link.`);
       refresh();
     } finally { setHostStep(""); }
-  }, [hostInputError, escrow, wallet, username, nameDraft, saveUsername, hostSeat, hMode, hStartInMin, hAsset, hHorizon, hFormat, entryNum, vaultNum, hCapacity, hRounds, hCall, hCallPct, refresh]);
+  }, [hostInputError, escrow, wallet, username, nameDraft, saveUsername, hostSeat, hMode, hStartInMin, hAsset, hHorizon, hFormat, entryNum, vaultNum, hCapacity, hRounds, hCall, hCallPct, refresh, picks]);
 
   const doCopy = useCallback(async (url: string) => {
     try { await navigator.clipboard.writeText(url); setToast("Invite link copied."); }
@@ -271,6 +275,7 @@ export default function ArenasDirectory() {
             Everyone pays the same seat and gets the same trading vault. Call UP or DOWN on a live
             BTC, ETH or SOL market, switch sides as the price moves, and stack cross-asset parlays.
             Top finishers claim the pool — in a royale, the bottom half is cut each round.
+            Or play Predictions: five hidden picks on BTC, ETH and SOL, no trading, most right answers wins.
           </p>
 
           <ol className="jt-steps">
@@ -332,6 +337,7 @@ export default function ArenasDirectory() {
             ) : inviteInfo ? (
               <InviteResult
                 info={inviteInfo}
+                picks={picks}
                 onCopy={doCopy}
                 onOpen={() => goTo(`/a/${inviteInfo.code}`)}
                 onReset={() => setInviteInfo(null)}
@@ -402,6 +408,7 @@ function PlayPanel({
         <p>Open one in under a minute, then share the invite link with the players you want in the room.</p>
         <button className="btn-cta" onClick={onSwitchToHost}>Host an arena</button>
         <a className="jc-practice" href="/a/PUBLIC">New here? Play a free practice round against bots →</a>
+        <a className="jc-practice" href="/a/PICKS">Or try Predictions free — five picks, no trading →</a>
       </div>
     );
   }
@@ -430,6 +437,7 @@ function PlayPanel({
         <div className="jc-featured-meta">
           <div><span>Pool</span><b className="plasma">{usd2.format(featured.prizePoolUsdc)}</b></div>
           <div><span>Seat</span><b>{usd2.format(featured.entryUsdc + featured.startingBankroll)}</b></div>
+          {featured.format === "predictions" && <div><span>Game</span><b>5 picks</b></div>}
           <div><span>Players</span><b>{seats}</b></div>
           <div><span>{featured.status === "enrolling" ? "Locks in" : "Ends in"}</span><b className="neon">{deadline ? fmtClock(timeLeft) : "—"}</b></div>
           <div><span>Tier</span><b className={tier === "S" ? "gold" : tier === "A" ? "neon" : ""}>{tier}</b></div>
@@ -450,7 +458,7 @@ function PlayPanel({
               <button key={a.arenaCode} className="gm-mini-arena" onClick={() => onJoin(a.inviteSlug)}>
                 <span className={`rank-badge ${t.toLowerCase()}`} aria-label={`Tier ${t}`}>{t}</span>
                 <span className="mid">
-                  <span className="q">{a.asset} · {a.marketQuestion}</span>
+                  <span className="q">{a.format === "predictions" ? a.marketQuestion : `${a.asset} · ${a.marketQuestion}`}</span>
                   <span className="meta">{a.humans}/{a.capacity} players · {STATUS_LABEL[a.status]}{d ? ` · ${fmtClock(tl)}` : ""}</span>
                 </span>
                 <span className="prize">{usd.format(a.prizePoolUsdc)}</span>
@@ -476,7 +484,7 @@ function HostPanel({
   hStartInMin: number; setHStartInMin: (v: number) => void;
   hAsset: "BTC" | "ETH" | "SOL"; setHAsset: (v: "BTC" | "ETH" | "SOL") => void;
   hHorizon: "MIN5" | "MIN15" | "HOUR" | "DAY"; setHHorizon: (v: "MIN5" | "MIN15" | "HOUR" | "DAY") => void;
-  hFormat: "single" | "royale"; setHFormat: (v: "single" | "royale") => void;
+  hFormat: RoundFormat; setHFormat: (v: RoundFormat) => void;
   hRounds: number; setHRounds: (v: number) => void;
   hCapacity: number; setHCapacity: (v: number) => void;
   hEntry: string; setHEntry: (v: string) => void;
@@ -490,6 +498,7 @@ function HostPanel({
   step: HostStep; onSubmit: () => void;
 }) {
   const busy = step !== "";
+  const picks = hFormat === "predictions";
   const draftCheck = validateUsername(nameDraft);
   const needsWallet = escrowActive && !wallet;
   const label =
@@ -497,6 +506,7 @@ function HostPanel({
     step === "opening" ? "Opening arena…" :
     step ? seatStepText(step, hostSeat).button :
     !wallet && !escrowActive ? "Host practice arena" :
+    picks ? `Deposit & take seat 1 · ${usd2.format(hostSeat)}${escrowActive ? "" : " · practice"}` :
     !hCall ? `Pick UP or DOWN on ${hAsset}` :
     `${hCall === "YES" ? "Deposit & call UP" : hCall === "NO" ? "Deposit & call DOWN" : "Deposit & take seat 1"} · ${usd2.format(hostSeat)}${escrowActive ? "" : " · practice"}`;
 
@@ -557,25 +567,34 @@ function HostPanel({
         </FieldRow>
       )}
 
+      <FieldRow label="Game">
+        <div className="gm-seg">
+          <button className={`opt ${hFormat === "single" ? "on" : ""}`} onClick={() => setHFormat("single")}>Single</button>
+          <button className={`opt ${hFormat === "royale" ? "on" : ""}`} onClick={() => setHFormat("royale")}>Royale</button>
+          <button className={`opt ${hFormat === "predictions" ? "on" : ""}`} onClick={() => setHFormat("predictions")}>Predictions</button>
+        </div>
+      </FieldRow>
+      <p className="jc-help">
+        {picks ? "No trading. Everyone answers five questions on BTC, ETH and SOL; most right answers take the pool."
+          : hFormat === "royale" ? "Trade UP/DOWN over several rounds; the bottom half is cut each round."
+          : "Trade UP/DOWN on one market for one round; the top finishers split the pool."}
+      </p>
+
       <div className="jc-host-grid">
-        <FieldRow label="Market">
-          <div className="gm-seg">
-            {(["BTC", "ETH", "SOL"] as const).map((a) => (
-              <button key={a} className={`opt ${hAsset === a ? "on" : ""}`} onClick={() => setHAsset(a)}>{a}</button>
-            ))}
-          </div>
-        </FieldRow>
+        {!picks && (
+          <FieldRow label="Market">
+            <div className="gm-seg">
+              {(["BTC", "ETH", "SOL"] as const).map((a) => (
+                <button key={a} className={`opt ${hAsset === a ? "on" : ""}`} onClick={() => setHAsset(a)}>{a}</button>
+              ))}
+            </div>
+          </FieldRow>
+        )}
         <FieldRow label="Timeframe">
           <div className="gm-seg">
             {(["MIN5", "MIN15", "HOUR"] as const).map((h) => (
               <button key={h} className={`opt ${hHorizon === h ? "on" : ""}`} onClick={() => setHHorizon(h)}>{HORIZON_LABEL[h]}</button>
             ))}
-          </div>
-        </FieldRow>
-        <FieldRow label="Format">
-          <div className="gm-seg">
-            <button className={`opt ${hFormat === "single" ? "on" : ""}`} onClick={() => setHFormat("single")}>Single</button>
-            <button className={`opt ${hFormat === "royale" ? "on" : ""}`} onClick={() => setHFormat("royale")}>Royale</button>
           </div>
         </FieldRow>
         <FieldRow label="Players">
@@ -602,11 +621,13 @@ function HostPanel({
           <input value={hEntry} onChange={(e) => setHEntry(e.target.value.replace(/[^0-9]/g, "").slice(0, 3))} inputMode="numeric" aria-describedby="entry-help" />
           <em id="entry-help">Into the shared prize pool · $1–100</em>
         </label>
-        <label className="gm-num">
-          <span>Vault (USDC)</span>
-          <input value={hVault} onChange={(e) => setHVault(e.target.value.replace(/[^0-9]/g, "").slice(0, 3))} inputMode="numeric" aria-describedby="vault-help" />
-          <em id="vault-help">Your trading bankroll · $5–500</em>
-        </label>
+        {!picks && (
+          <label className="gm-num">
+            <span>Vault (USDC)</span>
+            <input value={hVault} onChange={(e) => setHVault(e.target.value.replace(/[^0-9]/g, "").slice(0, 3))} inputMode="numeric" aria-describedby="vault-help" />
+            <em id="vault-help">Your trading bankroll · $5–500</em>
+          </label>
+        )}
       </div>
 
       <div className="jc-host-preview">
@@ -617,6 +638,9 @@ function HostPanel({
 
 
       {/* Seat 1 is a real position — say which way it goes before any deposit. */}
+      {picks ? (
+        <p className="jc-help call-help">You take seat 1. Right after the arena opens you make your five picks on its page — they stay hidden and lock when enrollment closes.</p>
+      ) : (
       <div className="jc-field host-call">
         <span className="jc-field-label">Your call on {hAsset}</span>
         <div className="gm-seg call-seg" role="radiogroup" aria-label="Your opening call">
@@ -635,13 +659,14 @@ function HostPanel({
               : `${callSizeText(hCallPct, Number(hVault) || 0).stake.replace(/^./, (c) => c.toUpperCase())} goes on ${hCall === "YES" ? "UP" : "DOWN"} at ${hAsset}'s opening price when trading starts — each share pays $1 if ${hAsset} closes ${hCall === "YES" ? "higher" : "lower"}. ${callSizeText(hCallPct, Number(hVault) || 0).rest ?? ""} You can switch any time during the round.`}
         </p>
       </div>
+      )}
 
       {inputError && <p className="jc-error" role="alert">{inputError}</p>}
       {escrowKnown && !escrowActive && (
         <p className="jc-note"><b>Practice mode.</b> Hosting works, but no USDC moves and your wallet won&apos;t be asked to sign.</p>
       )}
 
-      <button className="gm-host-cta" onClick={onSubmit} disabled={busy || !!inputError || needsWallet || (!!wallet && !hCall)} aria-busy={busy}>
+      <button className="gm-host-cta" onClick={onSubmit} disabled={busy || !!inputError || needsWallet || (!!wallet && !hCall && !picks)} aria-busy={busy}>
         {label}
       </button>
     </div>
@@ -659,12 +684,12 @@ function FieldRow({ label, children }: { label: string; children: React.ReactNod
 
 /* ── Invite result ───────────────────────────────────────────────── */
 function InviteResult({
-  info, onCopy, onOpen, onReset
-}: { info: { code: string; url: string }; onCopy: (url: string) => void; onOpen: () => void; onReset: () => void }) {
+  info, picks, onCopy, onOpen, onReset
+}: { info: { code: string; url: string }; picks: boolean; onCopy: (url: string) => void; onOpen: () => void; onReset: () => void }) {
   const text = `Join my Oracle Rumble arena · ${info.url}`;
   return (
     <div className="jc-invite">
-      <p className="jc-invite-lead">Your arena is open. Share the code or link.</p>
+      <p className="jc-invite-lead">{picks ? "Your arena is open. Make your five picks there, then share the code or link." : "Your arena is open. Share the code or link."}</p>
       <div className="gm-invite-code" aria-label={`Arena code ${info.code}`}>{info.code}</div>
       <div className="gm-invite-url">
         <input readOnly value={info.url} onFocus={(e) => e.currentTarget.select()} aria-label="Invite link" />
@@ -675,7 +700,7 @@ function InviteResult({
         <a className="btn ghost sm" target="_blank" rel="noopener noreferrer" href={`https://t.me/share/url?url=${encodeURIComponent(info.url)}&text=${encodeURIComponent("Join my Oracle Rumble arena")}`}>Telegram</a>
         <a className="btn ghost sm" target="_blank" rel="noopener noreferrer" href={`https://wa.me/?text=${encodeURIComponent(text)}`}>WhatsApp</a>
       </div>
-      <button className="gm-host-cta" onClick={onOpen}>Enter arena {info.code}</button>
+      <button className="gm-host-cta" onClick={onOpen}>{picks ? `Make my picks in ${info.code}` : `Enter arena ${info.code}`}</button>
       <button className="link-btn" onClick={onReset} style={{ marginTop: 10 }}>Host another arena</button>
     </div>
   );

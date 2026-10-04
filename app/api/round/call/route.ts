@@ -26,6 +26,7 @@ export async function POST(request: Request) {
   let callError = "";
   const { round, error } = await mutateActiveRound(arena, (r) => {
     if (r.status !== "enrolling") { callError = "the round has started — trade from the live panel"; return; }
+    if (r.predictions) { callError = "this is a predictions arena — change your picks instead"; return; }
     const me = r.entrants.find((e) => e.wallet === body.wallet);
     if (!me) { callError = "take a seat first"; return; }
     me.openingCall = body.call ?? null;

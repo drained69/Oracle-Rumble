@@ -3,7 +3,8 @@ import { sessionWallet } from "@/lib/session";
 import { PublicKey } from "@solana/web3.js";
 import { buildDepositTx, buildWithdrawTx, escrowReady, playerBalances, readPlayerEntry, readVault, verifyPlayerDeposited } from "@/lib/escrow-server";
 import { getActiveRound, getLatestRound, mutateActiveRound } from "@/lib/round-store";
-import { normalizeArenaCode, normalizeCallPct, type Side } from "@/lib/royale";
+import { normalizeArenaCode, normalizeCallPct, seatCostUsdc, type Side } from "@/lib/royale";
+import { normalizePicks } from "@/lib/predictions";
 import { validateUsername } from "@/lib/username";
 
 /** Cap on remembered pending seats per arena (anti-spam). */
@@ -35,6 +36,7 @@ export async function POST(request: Request) {
     nickname?: string;
     openingCall?: Side | null;
     openingCallPct?: number;
+    picks?: Record<string, string>;
   };
   if (!escrowReady()) {
     return NextResponse.json({ escrow: "inactive" });
@@ -91,7 +93,7 @@ export async function POST(request: Request) {
       }
       // Funds check: without it the wallet shows a red "failed to simulate"
       // warning instead of telling the player they're short on USDC/SOL.
-      const seat = round.config.entryUsdc + round.config.startingBankroll;
+      const seat = seatCostUsdc(round.config);
       const bal = await playerBalances(wallet);
       if (bal.usdc + 1e-9 < seat) {
         return NextResponse.json({
@@ -140,15 +142,16 @@ export async function POST(request: Request) {
         if (r.status !== "enrolling" || !r.escrow) return;
         const pending = (r.escrow.pendingSeats ??= {});
         if (!pending[body.wallet] && Object.keys(pending).length >= MAX_PENDING_SEATS) return;
-        pending[body.wallet] = { nickname: name.ok ? name.value : "", openingCall, openingCallPct: normalizeCallPct(body.openingCallPct) };
+        pending[body.wallet] = r.predictions
+          ? { nickname: name.ok ? name.value : "", openingCall: null, picks: normalizePicks(r.predictions.questions, body.picks) }
+          : { nickname: name.ok ? name.value : "", openingCall, openingCallPct: normalizeCallPct(body.openingCallPct) };
       }).catch(() => { /* best effort — enroll carries the same data */ });
     }
 
-    const seatUsdc = round.config.entryUsdc + round.config.startingBankroll;
-    const call = body.openingCall === "YES" || body.openingCall === "NO"
-      ? `${body.openingCall === "YES" ? "UP" : "DOWN"} (${normalizeCallPct(body.openingCallPct)}% of vault)`
-      : "decide later";
-    const memo = `Oracle Rumble arena ${arena}: ${seatUsdc.toFixed(2)} USDC seat, ${round.config.asset} opening call ${call}`;
+    // The memo is public on chain, so it never carries a hidden call or picks.
+    const seatUsdc = seatCostUsdc(round.config);
+    const game = round.config.format === "predictions" ? "predictions" : `${round.config.asset} ${round.config.format === "royale" ? "royale" : "single round"}`;
+    const memo = `Oracle Rumble arena ${arena}: ${seatUsdc.toFixed(2)} USDC seat, ${game}`;
     const res = body.action === "deposit"
       ? await buildDepositTx(wallet, roundVault, memo)
       : await buildWithdrawTx(wallet, roundVault, body.action === "recover");

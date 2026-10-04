@@ -32,7 +32,7 @@ async function waitForDeposit(wallet: string, roundVault: string, signature?: st
 }
 
 /**
- * POST /api/round/enroll  { wallet, nickname, arena?, escrowSignature?, openingCall?, openingCallPct? }
+ * POST /api/round/enroll  { wallet, nickname, arena?, escrowSignature?, openingCall?, openingCallPct?, picks? }
  *
  * Enroll a wallet into an arena's current enrolling round.
  *
@@ -55,6 +55,8 @@ export async function POST(request: Request) {
     escrowSignature?: string;
     openingCall?: Side | null;
     openingCallPct?: number;
+    /** Predictions arena: question id → option id. */
+    picks?: Record<string, string>;
   };
   if (!body?.wallet) return NextResponse.json({ error: "wallet required" }, { status: 400 });
   // Only the wallet itself (signed-in session) may act for its seat.
@@ -118,7 +120,8 @@ export async function POST(request: Request) {
     const res = seatPlayer(r, body.wallet, nickname, {
       signature: body.escrowSignature,
       openingCall,
-      openingCallPct: normalizeCallPct(body.openingCallPct)
+      openingCallPct: normalizeCallPct(body.openingCallPct),
+      picks: body.picks
     });
     if (!res.ok) {
       enrollError = res.reason;
