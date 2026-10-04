@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { recentArenas, STORE_ENABLED } from "@/lib/round-store";
-import { PUBLIC_ARENA } from "@/lib/royale";
+import { isPracticeArena } from "@/lib/royale";
 
 export const dynamic = "force-dynamic";
 
@@ -9,7 +9,7 @@ type Event = {
   id: string;
   actor: string;        // nickname of a real human player
   verb: Verb;
-  asset: string;        // BTC / ETH / SOL
+  asset: string;        // BTC / ETH / SOL, or "Predictions"
   arenaCode: string;
   amount?: number;      // USDC, filled on WON
   ts: number;           // ms epoch
@@ -31,8 +31,9 @@ export async function GET(req: Request) {
     const rooms = await recentArenas(60);
     const events: Event[] = [];
     for (const { arenaCode, latest } of rooms) {
-      if (arenaCode === PUBLIC_ARENA) continue;
-      const asset = latest.config.asset;
+      if (isPracticeArena(arenaCode)) continue;
+      // A predictions arena covers all three coins.
+      const asset = latest.config.format === "predictions" ? "Predictions" : latest.config.asset;
 
       // ── Arena-level opens / settles ─────────────────────────────
       if (latest.roundNumber === 1 && latest.createdAt) {
@@ -69,7 +70,9 @@ export async function GET(req: Request) {
             ts: e.joinedAt
           });
         }
-        if (e.openingCall && e.joinedAt) {
+        // Opening calls are hidden until the round locks (and cleared once
+        // placed), so they are never announced while enrolling.
+        if (e.openingCall && e.joinedAt && latest.status !== "enrolling") {
           events.push({
             id: `${arenaCode}:call:${e.id}`,
             actor: e.nickname,
