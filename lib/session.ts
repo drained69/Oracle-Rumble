@@ -1,7 +1,7 @@
 /**
  * Wallet sessions — proves a request comes from the wallet it names.
  *
- * Game actions (take a seat, set a call, trade, parlay, cash out) change a
+ * Game actions (take a seat, set a call or picks, trade) change a
  * player's vault, and their USDC payout follows the vault. They must not
  * be accepted on the strength of a wallet address in the request body.
  *

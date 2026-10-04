@@ -22,10 +22,8 @@ export type Market = {
   phase: MarketPhase;
   outcome?: "YES" | "NO" | null;
   /**
-   * Markets that resolve to mutually exclusive outcomes share a
-   * `correlationGroup`. A parlay may include at most one leg per group,
-   * matching parlayit's correlation blocks. Here the two horizons of a single
-   * asset share a group so you can't stack BTC-hour-up with BTC-day-up.
+   * Markets on the same asset share a `correlationGroup` (every horizon of
+   * one coin moves together).
    */
   correlationGroup?: string;
 };
@@ -119,8 +117,8 @@ function buildDirectionMarket(symbol: AssetSymbol, horizon: Horizon): Market {
   };
 }
 
-// The whole board is the three-asset direction set. Every leg you can parlay,
-// and every market a round can run on, lives here.
+// The whole board is the three-asset direction set. Every market a round can
+// run on lives here.
 const directionMarkets: Market[] = ASSETS.flatMap((a) =>
   HORIZONS.map((h) => buildDirectionMarket(a.symbol, h.id))
 );
@@ -129,7 +127,7 @@ export const arenas: Arena[] = [
   {
     id: "oracle-rumble",
     name: "Oracle Rumble",
-    tagline: "Call BTC, ETH and SOL. Build the parlay. Outlast the cut.",
+    tagline: "Call BTC, ETH and SOL. Outlast the cut.",
     endsInMs: 24 * HOUR,
     markets: directionMarkets
   }

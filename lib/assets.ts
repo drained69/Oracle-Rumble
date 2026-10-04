@@ -2,10 +2,10 @@
  * The Oracle Rumble asset universe.
  *
  * The game is deliberately focused on three liquid, high-conviction assets —
- * BTC, ETH, SOL. Every round market and every parlay leg is a price-direction
- * call on one of these three. Keeping the universe small makes the parlays
- * legible (you always know the three names on the board) and mirrors Market
- * Royale's fast BTC/ETH-style up/down markets.
+ * BTC, ETH, SOL. Every round market and every Predictions question is a
+ * price-direction call on one of these three. Keeping the universe small
+ * keeps the game legible (you always know the three names on the board) and
+ * mirrors Market Royale's fast BTC/ETH-style up/down markets.
  *
  * This module is the single source of truth for the asset set. Market data,
  * the round keeper's market picker, and the seed script all resolve assets
@@ -42,8 +42,7 @@ export function getAsset(symbol: string): Asset | undefined {
  * (YES = up), so they never need a correlation group. But every horizon on
  * the SAME asset is correlated (a daily-up call largely subsumes an hourly-up
  * call, an hourly-up call subsumes a 15m-up call, etc.), so they all share
- * `dir-<asset>` and a parlay may include at most one horizon per asset —
- * parlayit-style correlation blocking earns its keep on a three-asset board.
+ * `dir-<asset>` (used to value any legacy parlay ticket still on record).
  *
  * 5m and 15m horizons are the "hot ticks" for fast rumbles — Market Royale
  * calls them a "flash market". HOUR and DAY remain for slower/scheduled rooms.

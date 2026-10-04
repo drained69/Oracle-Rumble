@@ -21,7 +21,6 @@ import type {
   PantaMarket,
   PantaPosition
 } from "@/lib/panta";
-import type { ParlayQuote, ParlayLeg } from "@/lib/parlay";
 import { connectWallet, describeWalletError, signAndSendAs } from "@/lib/wallet";
 
 const SOLANA_RPC = process.env.NEXT_PUBLIC_SOLANA_RPC ?? "https://api.mainnet-beta.solana.com";
@@ -88,9 +87,6 @@ export function buildClaim(args: { wallet: string; marketId: string }) {
  */
 export function reportTrade(args: { signature: string; wallet?: string; marketId?: string }) {
   return jpost<TradeStatusResponse>("/api/trades/report", { signature: args.signature });
-}
-export function quoteParlayLive(args: { legs: Array<Pick<ParlayLeg, "marketId" | "side" | "correlationGroup" | "question">>; stakeUsdc: number }) {
-  return jpost<{ source: "panta" | "mock"; quote: ParlayQuote }>("/api/parlay/quote", args);
 }
 
 // ---- Market creation (host-a-ring) lifecycle --------------------------

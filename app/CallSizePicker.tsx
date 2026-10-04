@@ -36,6 +36,6 @@ export function callSizeText(pct: number, vault: number): { stake: string; rest:
   const stake = (vault * pct) / 100;
   return {
     stake: pct >= 100 ? `your whole ${usd.format(vault)} vault` : `${usd.format(stake)} of your ${usd.format(vault)} vault`,
-    rest: pct >= 100 ? null : `The other ${usd.format(vault - stake)} stays in cash for trades and parlays.`
+    rest: pct >= 100 ? null : `The other ${usd.format(vault - stake)} stays in cash for your trades.`
   };
 }

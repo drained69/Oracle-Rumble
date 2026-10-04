@@ -40,7 +40,7 @@ type Snapshot = {
   ranks: Map<string, number>;
   eliminated: Set<string>;
   below: Set<string>;
-  pos: Map<string, { shares: number; side: string | null; parlays: number; cashedOut: number }>;
+  pos: Map<string, { shares: number; side: string | null }>;
 };
 
 const HIGHLIGHT_MS = 1600;
@@ -110,12 +110,7 @@ export default function ArenaStage({ round, standings, survivors, yesPrice, spot
     standings.forEach((e, i) => ranks.set(e.id, i + 1));
     const eliminated = new Set(standings.filter((e) => e.eliminatedRound !== null).map((e) => e.id));
     const below = new Set(cutActive ? alive.slice(survivors).map((e) => e.id) : []);
-    const pos = new Map(standings.map((e) => [e.id, {
-      shares: e.shares,
-      side: e.side,
-      parlays: e.parlays.length,
-      cashedOut: e.parlays.filter((p) => p.status === "cashed_out").length
-    }] as const));
+    const pos = new Map(standings.map((e) => [e.id, { shares: e.shares, side: e.side }] as const));
     const byId = new Map(standings.map((e) => [e.id, e] as const));
     const name = (id: string) => { const e = byId.get(id); return e ? displayName(e) : "A player"; };
 
@@ -179,9 +174,7 @@ export default function ArenaStage({ round, standings, survivors, yesPrice, spot
         const was = p.pos.get(id);
         if (!was) return;
         const bought = now.shares > was.shares + 1e-9 && now.side;
-        const parlay = now.parlays > was.parlays || now.cashedOut > was.cashedOut;
         if (bought) nextPulse[id] = now.side === "YES" ? "up" : "down";
-        else if (parlay) nextPulse[id] = "up";
       });
     }
 

@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { STORE_ENABLED, withKeeperLock } from "@/lib/round-store";
-import { advanceToNext, bootstrapRound, livePricing, oraclePriceMap, pickMarket, tick, yesAfterTick, type Pricing } from "@/lib/round-keeper";
+import { advanceToNext, bootstrapRound, livePricing, pickMarket, tick, yesAfterTick, type Pricing } from "@/lib/round-keeper";
 import { PICKS_PRACTICE_ARENA, chainVaultUsdc, cutLine, humanCount, isPracticeArena, newArenaCode, normalizeArenaCode, redactOpeningCalls, seatCostUsdc, seatPlayer, standings, type Round, logEvent } from "@/lib/royale";
 import { escrowReady, initArenaOnChain, playerBalances } from "@/lib/escrow-server";
 import { sessionWallet } from "@/lib/session";
@@ -127,7 +127,6 @@ export async function GET(request: Request) {
       round: pub,
       arena: round.arenaCode,
       yesPrice,
-      prices: round.id === pricedId ? oraclePriceMap(round, pricing.spots) : undefined,
       spot: (pricing.spots as Record<string, number | undefined>)[asset] ?? round.oracle?.last?.[asset] ?? null,
       cutLine: cutLine(round),
       standings: standings(pub),

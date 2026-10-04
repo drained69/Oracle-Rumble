@@ -27,7 +27,7 @@ export type PortfolioItem = {
   me: null | {
     nickname: string;
     startingVault: number;
-    /** Vault value now: cash + open position + open parlays, at live prices. */
+    /** Vault value now: cash + open position, at live prices. */
     vault: number;
     cash: number;
     side: Side | null;
@@ -36,7 +36,6 @@ export type PortfolioItem = {
     markPrice: number | null; // cents, current price of the side held
     openingCall: Side | null; // only returned to the wallet itself
     openingCallPct: number | null; // % of the vault the call uses
-    openParlays: number;
     /** Place among players still in (live) or overall finishing place (done). */
     place: number | null;
     players: number;

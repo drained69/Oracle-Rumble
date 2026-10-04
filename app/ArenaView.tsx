@@ -6,14 +6,12 @@ import { changeOf, pickCount, type Picks } from "@/lib/predictions";
 import { PicksBoard, PicksEditor, PicksRoster, judgedPrices, pctText, picksMade } from "@/app/Predictions";
 import { useEscapeKey } from "@/lib/use-escape";
 import CallSizePicker, { callSizeText } from "@/app/CallSizePicker";
-import { getRound, enrollWithEscrow, tradeRound, newRound, placeParlayApi, claimFromEscrow, serverSettleArena, cancelArena, checkSeatFunds, setOpeningCall, setPicks, prepareWallet, seatStepText, type OpeningCall, type RoundView, type SeatStep } from "@/lib/round-client";
+import { getRound, enrollWithEscrow, tradeRound, newRound, claimFromEscrow, serverSettleArena, cancelArena, checkSeatFunds, setOpeningCall, setPicks, prepareWallet, seatStepText, type OpeningCall, type RoundView, type SeatStep } from "@/lib/round-client";
 import { useEscrowStatus, useWalletIdentity } from "@/lib/use-wallet";
 import SiteHeader from "@/app/SiteHeader";
 import UsernameModal from "@/app/UsernameModal";
-import type { Entrant, Round, ParlayTicket } from "@/lib/royale";
+import type { Entrant, Round } from "@/lib/royale";
 import { PICKS_CHAIN_VAULT_USDC, PUBLIC_ARENA, isPracticeArena } from "@/lib/royale";
-import { markets as boardMarkets } from "@/lib/arena-data";
-import { quoteParlay, PARLAY_MAX_LEGS, type ParlayLeg } from "@/lib/parlay";
 import { avatarDataUrl } from "@/lib/avatars";
 import {
   displayName,
@@ -27,7 +25,6 @@ import PantaTradeTape from "@/app/PantaTradeTape";
 import PantaResolution from "@/app/PantaResolution";
 import PantaGraduationBanner from "@/app/PantaGraduationBanner";
 import PantaOrderStatus from "@/app/PantaOrderStatus";
-import PantaCashOutModal from "@/app/PantaCashOutModal";
 import { executePantaOrder, type LifecycleUpdate } from "@/lib/panta-order";
 import { looksLikePantaMarketId } from "@/lib/tracked-markets";
 
@@ -68,9 +65,6 @@ export default function ArenaView({ arenaCode }: { arenaCode: string }) {
   const [now, setNow] = useState(() => Date.now());
   const [amount, setAmount] = useState("");
   const [side, setSide] = useState<"YES" | "NO">("YES");
-  const [betMode, setBetMode] = useState<"single" | "parlay">("single");
-  const [parlayLegs, setParlayLegs] = useState<{ marketId: string; side: "YES" | "NO" }[]>([]);
-  const [parlayStake, setParlayStake] = useState("");
   const [busy, setBusy] = useState(false);
   // Which wallet step a seat/host request is waiting on (null = idle).
   const [seatStep, setSeatStep] = useState<SeatStep | null>(null);
@@ -98,7 +92,6 @@ export default function ArenaView({ arenaCode }: { arenaCode: string }) {
   // through Panta's own APIs and streams progress here.
   const [pantaFillOn, setPantaFillOn] = useState(false);
   const [pantaOrder, setPantaOrder] = useState<LifecycleUpdate | null>(null);
-  const [cashoutTicket, setCashoutTicket] = useState<ParlayTicket | null>(null);
   // Predictions: answers chosen in the seat modal, and edits to my saved
   // picks that are on their way to the server.
   const [seatPicks, setSeatPicks] = useState<Picks>({});
@@ -168,7 +161,6 @@ export default function ArenaView({ arenaCode }: { arenaCode: string }) {
   const spot = view?.spot ?? round?.oracle?.last?.[asset] ?? null;
   const openPrice = round?.oracle?.open?.[asset] ?? null;
   const closePrice = round?.oracle?.close?.[asset] ?? null;
-  const livePrices = view?.prices ?? {};
 
   const me = useMemo(() => (wallet ? standings.find((e) => e.wallet === wallet) ?? null : null), [standings, wallet]);
   const enrolled = !!me;
@@ -386,60 +378,6 @@ export default function ArenaView({ arenaCode }: { arenaCode: string }) {
     } finally { setBusy(false); }
   }, [wallet, enrolled, arenaCode, refresh, yesPrice]);
 
-  // ── parlay builder ────────────────────────────────────────────────
-  const toggleLeg = useCallback((marketId: string, legSide: "YES" | "NO") => {
-    setParlayLegs((prev) => {
-      const existing = prev.find((l) => l.marketId === marketId);
-      if (existing && existing.side === legSide) return prev.filter((l) => l.marketId !== marketId); // deselect
-      // Correlation block: at most one horizon per asset (shared correlationGroup).
-      const target = boardMarkets.find((m) => m.id === marketId);
-      const group = target?.correlationGroup;
-      const kept = prev.filter((l) => {
-        if (l.marketId === marketId) return false;
-        if (!group) return true;
-        const m = boardMarkets.find((b) => b.id === l.marketId);
-        return m?.correlationGroup !== group;
-      });
-      if (kept.length >= PARLAY_MAX_LEGS) { setToast(`Parlays cap at ${PARLAY_MAX_LEGS} legs.`); return prev; }
-      return [...kept, { marketId, side: legSide }];
-    });
-  }, []);
-
-  const parlayQuote = useMemo(() => {
-    const legs: ParlayLeg[] = parlayLegs.map((l) => {
-      const m = boardMarkets.find((b) => b.id === l.marketId)!;
-      const up = livePrices[l.marketId] ?? 50;
-      return { marketId: l.marketId, side: l.side, question: m.question, price: l.side === "YES" ? up : 100 - up, correlationGroup: m.correlationGroup };
-    });
-    return quoteParlay(legs, Number(parlayStake) || 0);
-  }, [parlayLegs, parlayStake, livePrices]);
-
-  // One leg per asset, on this round's horizon — every leg resolves over
-  // the round's own window.
-  const parlayBoard = useMemo(() => {
-    const horizon = boardMarkets.find((m) => m.id === round?.config.marketId)?.horizon ?? "MIN5";
-    return boardMarkets.filter((m) => m.horizon === horizon);
-  }, [round?.config.marketId]);
-
-  const doPlaceParlay = useCallback(async () => {
-    if (!wallet || !enrolled) return setToast("Enroll in the round first.");
-    if (parlayLegs.length < 2) return setToast("Add at least 2 legs.");
-    const v = Number(parlayStake);
-    if (!v || v <= 0) return setToast("Enter a stake.");
-    if (me && v > me.cash + 1e-9) return setToast(`You have ${usd2.format(me.cash)} in cash for a parlay.`);
-    setBusy(true);
-    try {
-      const r = await placeParlayApi(wallet, parlayLegs, v, arenaCode);
-      if (r.error) setToast(r.error);
-      else {
-        setToast(`Parlay placed · ${parlayLegs.length} legs, ${usd2.format(v)} staked.`);
-        setParlayLegs([]);
-        setParlayStake("");
-        await refresh();
-      }
-    } finally { setBusy(false); }
-  }, [wallet, enrolled, parlayLegs, parlayStake, arenaCode, refresh, me]);
-
   const hostPicks = hFormat === "predictions";
   const hostSeat = (Number(hEntry) || 0) + (hostPicks ? PICKS_CHAIN_VAULT_USDC : Number(hVault) || 0);
   const hostError = hostAmountError(Number(hEntry) || 0, Number(hVault) || 0, hFormat);
@@ -548,8 +486,6 @@ export default function ArenaView({ arenaCode }: { arenaCode: string }) {
 
 
   const myPnl = me ? me.bankroll - (round?.config.startingBankroll ?? 0) : 0;
-  const openParlays = (me?.parlays ?? []).filter((p) => p.status === "open");
-  const openParlayPotential = openParlays.reduce((s, t) => s + t.potentialPayout, 0);
 
   return (
     <main className="game-main arena-main">
@@ -979,36 +915,8 @@ export default function ArenaView({ arenaCode }: { arenaCode: string }) {
                     <div><span>Vault</span><b>{usd2.format(me!.bankroll)}</b></div>
                     <div><span>Cash</span><b>{usd2.format(me!.cash)}</b></div>
                     <div><span>Position</span><b>{me!.side ? `${me!.shares.toFixed(1)} ${me!.side === "YES" ? "UP" : "DOWN"} @ ${me!.avgPrice.toFixed(0)}¢` : "—"}</b></div>
-                    <div><span>Parlays</span><b>{openParlays.length ? `${openParlays.length} · pays ${usd.format(openParlayPotential)}` : "—"}</b></div>
                     <div className={myPnl >= 0 ? "up" : "down"}><span>Vault P&amp;L</span><b>{myPnl >= 0 ? "+" : ""}{usd2.format(myPnl)}</b></div>
                   </div>
-
-                  {openParlays.length > 0 && (
-                    <div className="parlay-list">
-                      <div className="parlay-list-head">Open parlays · early cashout</div>
-                      {openParlays.map((t) => (
-                        <div className="parlay-row" key={t.id}>
-                          <div className="pr-lead">
-                            <span className="pr-legs">{t.legs.length}-leg</span>
-                            <span className="pr-mid">
-                              {t.legs.map((l) => `${l.asset} ${l.side}`).join(" · ")}
-                            </span>
-                            <span className="pr-payout">pays {usd.format(t.potentialPayout)}</span>
-                          </div>
-                          <div className="pr-tail">
-                            <span className="pr-stake">stake {usd2.format(t.stake)}</span>
-                            <button
-                              className="btn secondary sm"
-                              disabled={!tradeOpen}
-                              onClick={() => setCashoutTicket(t)}
-                            >
-                              Cash out →
-                            </button>
-                          </div>
-                        </div>
-                      ))}
-                    </div>
-                  )}
 
                   {round?.status === "live" && !tradeOpen ? (
                     <div className="enroll-cta locked-note" role="status">
@@ -1020,145 +928,75 @@ export default function ArenaView({ arenaCode }: { arenaCode: string }) {
                         Trading closes in <b className="mono">{fmtClock(Math.max(0, round.liveDeadline - TRADE_CUTOFF_MS - now))}</b> — last call is {TRADE_CUTOFF_MS / 1000}s before the end.
                         Each trade buys {TRADE_SPREAD}¢ above and sells {TRADE_SPREAD}¢ below the market price.
                       </p>
-                      <div className="bet-mode">
-                        <button className={betMode === "single" ? "bm on" : "bm"} onClick={() => setBetMode("single")}>Single trade</button>
-                        <button className={betMode === "parlay" ? "bm on" : "bm"} onClick={() => setBetMode("parlay")}>Parlay</button>
+                      {openPrice ? (
+                        <p className="trade-rule">
+                          <b className="up">UP</b> pays $1 a share if {asset} closes above <b>{usdPx(openPrice)}</b>; <b className="down">DOWN</b> pays $1 if it closes below. Prices move with {asset}.
+                        </p>
+                      ) : null}
+                      <div className="sides">
+                        <button className={side === "YES" ? "side yes on" : "side yes"} onClick={() => setSide("YES")} aria-pressed={side === "YES"}>▲ UP <b>{yesPrice}¢</b></button>
+                        <button className={side === "NO" ? "side no on" : "side no"} onClick={() => setSide("NO")} aria-pressed={side === "NO"}>▼ DOWN <b>{100 - yesPrice}¢</b></button>
                       </div>
-
-                      {betMode === "single" ? (
-                        <>
-                          {openPrice ? (
-                            <p className="trade-rule">
-                              <b className="up">UP</b> pays $1 a share if {asset} closes above <b>{usdPx(openPrice)}</b>; <b className="down">DOWN</b> pays $1 if it closes below. Prices move with {asset}.
-                            </p>
-                          ) : null}
-                          <div className="sides">
-                            <button className={side === "YES" ? "side yes on" : "side yes"} onClick={() => setSide("YES")} aria-pressed={side === "YES"}>▲ UP <b>{yesPrice}¢</b></button>
-                            <button className={side === "NO" ? "side no on" : "side no"} onClick={() => setSide("NO")} aria-pressed={side === "NO"}>▼ DOWN <b>{100 - yesPrice}¢</b></button>
-                          </div>
-                          {(() => {
-                            const avail = availableFor(me!, side, yesPrice, TRADE_SPREAD);
-                            const stake = Number(amount || 0);
-                            const market = side === "YES" ? yesPrice : 100 - yesPrice;
-                            const price = buyPriceOf(market);
-                            const over = stake > avail + 1e-9;
-                            const switching = !!me!.side && me!.side !== side && me!.shares > 0;
-                            const mySide = me!.side ? (me!.side === "YES" ? yesPrice : 100 - yesPrice) : 0;
-                            const sellValue = me!.side ? me!.shares * (sellPriceOf(mySide) / 100) : 0;
-                            return (
-                              <>
-                                <label className="field">
-                                  <span className="field-head">
-                                    Stake from your vault (USDC)
-                                    <em>{usd2.format(avail)} available{switching ? ` — sells your ${me!.side === "YES" ? "UP" : "DOWN"} first` : ""}</em>
-                                  </span>
-                                  <div className={`field-input ${over ? "bad" : ""}`}>
-                                    <span className="curr">$</span>
-                                    <input value={amount} placeholder={avail > 0 ? avail.toFixed(2) : "0.00"} onChange={(e) => setAmount(e.target.value.replace(/[^0-9.]/g, ""))} inputMode="decimal" aria-invalid={over} />
-                                    <button type="button" className="max" onClick={() => setAmount(String(Math.floor(avail * 100) / 100))}>MAX</button>
-                                  </div>
-                                </label>
-                                <div className="summary">
-                                  <span>Buy price</span><b>{price}¢ <em className="muted">market {market}¢ + {TRADE_SPREAD}¢</em></b>
-                                  <span>Shares</span><b>{(stake / (price / 100)).toFixed(2)}</b>
-                                  <span>Pays if {asset} closes {side === "YES" ? "higher" : "lower"}</span><b className="accent">{usd2.format(stake / (price / 100))}</b>
-                                </div>
-                                {over && <p className="jc-error" role="alert">That&apos;s more than the {usd2.format(avail)} you have available.</p>}
-                                <div className="trade-actions">
-                                  <button className="btn primary full" onClick={doBuy} disabled={busy || !stake || over}>
-                                    {switching ? `Switch to ${side === "YES" ? "UP" : "DOWN"}` : `Buy ${side === "YES" ? "UP" : "DOWN"}`}
-                                  </button>
-                                  <button className="btn secondary" onClick={doSell} disabled={busy || !me!.side} title={me!.side ? `Sells at ${sellPriceOf(mySide)}¢ (market less ${TRADE_SPREAD}¢)` : "No position to sell"}>
-                                    {me!.side ? `Sell all · ${usd2.format(sellValue)}` : "Sell all"}
-                                  </button>
-                                </div>
-                              </>
-                            );
-                          })()}
-                          {pantaFillAvailable && (
-                          <div className="panta-fill-toggle">
-                            <label className={pantaFillAvailable ? "" : "disabled"}>
-                              <input
-                                type="checkbox"
-                                checked={pantaFillOn && pantaFillAvailable}
-                                onChange={(e) => setPantaFillOn(e.target.checked)}
-                                disabled={!pantaFillAvailable}
-                              />
-                              <span className="lab">Also fill on Panta</span>
-                              <span className="hint">
-                                {!wallet ? "connect a wallet"
-                                  : !marketId ? "no market"
-                                  : !looksLikePantaMarketId(marketId) ? "synthetic market — Panta orders need a real book"
-                                  : "real /orders/quote → build → sign → submit → verify → report"}
+                      {(() => {
+                        const avail = availableFor(me!, side, yesPrice, TRADE_SPREAD);
+                        const stake = Number(amount || 0);
+                        const market = side === "YES" ? yesPrice : 100 - yesPrice;
+                        const price = buyPriceOf(market);
+                        const over = stake > avail + 1e-9;
+                        const switching = !!me!.side && me!.side !== side && me!.shares > 0;
+                        const mySide = me!.side ? (me!.side === "YES" ? yesPrice : 100 - yesPrice) : 0;
+                        const sellValue = me!.side ? me!.shares * (sellPriceOf(mySide) / 100) : 0;
+                        return (
+                          <>
+                            <label className="field">
+                              <span className="field-head">
+                                Stake from your vault (USDC)
+                                <em>{usd2.format(avail)} available{switching ? ` — sells your ${me!.side === "YES" ? "UP" : "DOWN"} first` : ""}</em>
                               </span>
+                              <div className={`field-input ${over ? "bad" : ""}`}>
+                                <span className="curr">$</span>
+                                <input value={amount} placeholder={avail > 0 ? avail.toFixed(2) : "0.00"} onChange={(e) => setAmount(e.target.value.replace(/[^0-9.]/g, ""))} inputMode="decimal" aria-invalid={over} />
+                                <button type="button" className="max" onClick={() => setAmount(String(Math.floor(avail * 100) / 100))}>MAX</button>
+                              </div>
                             </label>
-                          </div>
-                          )}
-                          {pantaFillOn && pantaFillAvailable && pantaOrder && (
-                            <PantaOrderStatus update={pantaOrder} />
-                          )}
-                        </>
-                      ) : (
-                        <div className="parlay-build">
-                          <p className="pb-hint">Stack BTC, ETH and SOL up-or-down calls into one bet — every leg must land, over this round. The three usually move together, so legs in the same direction pay modestly, and legs that split (say BTC UP + ETH DOWN) pay far more.</p>
-                          <div className="pb-board">
-                            {parlayBoard.map((m) => {
-                              const sel = parlayLegs.find((l) => l.marketId === m.id);
-                              const up = livePrices[m.id] ?? 50;
-                              return (
-                                <div className="pb-mkt" key={m.id}>
-                                  <div className="pb-mkt-q"><b>{m.asset}</b> up by the end of the round?</div>
-                                  <div className="pb-mkt-sides">
-                                    <button className={sel?.side === "YES" ? "pb-side up on" : "pb-side up"} onClick={() => toggleLeg(m.id, "YES")}>UP {up}¢</button>
-                                    <button className={sel?.side === "NO" ? "pb-side down on" : "pb-side down"} onClick={() => toggleLeg(m.id, "NO")}>DOWN {100 - up}¢</button>
-                                  </div>
-                                </div>
-                              );
-                            })}
-                          </div>
-                          {(() => {
-                            const cash = me!.cash;
-                            const stake = Number(parlayStake || 0);
-                            const over = stake > cash + 1e-9;
-                            const ready = parlayLegs.length >= 2;
-                            const mySide = me!.side ? (me!.side === "YES" ? yesPrice : 100 - yesPrice) : 0;
-                            return (
-                              <>
-                                <label className="field">
-                                  <span className="field-head">
-                                    Stake from your vault cash (USDC)
-                                    <em>{usd2.format(cash)} available</em>
-                                  </span>
-                                  <div className={`field-input ${over ? "bad" : ""}`}>
-                                    <span className="curr">$</span>
-                                    <input value={parlayStake} placeholder={cash > 0 ? cash.toFixed(2) : "0.00"} onChange={(e) => setParlayStake(e.target.value.replace(/[^0-9.]/g, ""))} inputMode="decimal" aria-invalid={over} />
-                                    <button type="button" className="max" onClick={() => setParlayStake(String(Math.floor(cash * 100) / 100))}>MAX</button>
-                                  </div>
-                                </label>
-                                {cash < 0.01 && me!.side && me!.shares > 0 && (
-                                  <p className="pb-cash-note">
-                                    Your vault is all in your {me!.side === "YES" ? "UP" : "DOWN"} position.{" "}
-                                    <button type="button" className="link-btn" onClick={doSell} disabled={busy}>
-                                      Sell it for {usd2.format(me!.shares * (sellPriceOf(mySide) / 100))} to free cash
-                                    </button>
-                                  </p>
-                                )}
-                                <div className="summary">
-                                  <span>Legs</span><b>{parlayLegs.length}</b>
-                                  <span>Chance all land</span><b>{ready ? `${parlayQuote.combinedPrice.toFixed(1)}%` : "—"}</b>
-                                  <span>Pays</span><b>{ready ? `${parlayQuote.impliedOdds.toFixed(2)}× your stake` : "—"}</b>
-                                  <span>Variance fee</span><b>{ready ? usd2.format(parlayQuote.feeUsdc) : "—"}</b>
-                                  <span>Pays if all land</span><b className="accent">{ready ? usd2.format(parlayQuote.potentialPayoutUsdc) : "—"}</b>
-                                  <span>If one leg voids</span><b>{ready ? usd2.format(parlayQuote.halfPayoutIfOneVoidUsdc) : "—"}</b>
-                                </div>
-                                {over && <p className="jc-error" role="alert">That&apos;s more than the {usd2.format(cash)} cash in your vault.</p>}
-                                <button className="btn primary full" onClick={doPlaceParlay} disabled={busy || !ready || !stake || over}>
-                                  {!ready ? "Pick at least 2 legs" : !stake ? "Enter a stake" : `Place ${parlayLegs.length}-leg parlay`}
-                                </button>
-                              </>
-                            );
-                          })()}
-                        </div>
+                            <div className="summary">
+                              <span>Buy price</span><b>{price}¢ <em className="muted">market {market}¢ + {TRADE_SPREAD}¢</em></b>
+                              <span>Shares</span><b>{(stake / (price / 100)).toFixed(2)}</b>
+                              <span>Pays if {asset} closes {side === "YES" ? "higher" : "lower"}</span><b className="accent">{usd2.format(stake / (price / 100))}</b>
+                            </div>
+                            {over && <p className="jc-error" role="alert">That&apos;s more than the {usd2.format(avail)} you have available.</p>}
+                            <div className="trade-actions">
+                              <button className="btn primary full" onClick={doBuy} disabled={busy || !stake || over}>
+                                {switching ? `Switch to ${side === "YES" ? "UP" : "DOWN"}` : `Buy ${side === "YES" ? "UP" : "DOWN"}`}
+                              </button>
+                              <button className="btn secondary" onClick={doSell} disabled={busy || !me!.side} title={me!.side ? `Sells at ${sellPriceOf(mySide)}¢ (market less ${TRADE_SPREAD}¢)` : "No position to sell"}>
+                                {me!.side ? `Sell all · ${usd2.format(sellValue)}` : "Sell all"}
+                              </button>
+                            </div>
+                          </>
+                        );
+                      })()}
+                      {pantaFillAvailable && (
+                      <div className="panta-fill-toggle">
+                        <label className={pantaFillAvailable ? "" : "disabled"}>
+                          <input
+                            type="checkbox"
+                            checked={pantaFillOn && pantaFillAvailable}
+                            onChange={(e) => setPantaFillOn(e.target.checked)}
+                            disabled={!pantaFillAvailable}
+                          />
+                          <span className="lab">Also fill on Panta</span>
+                          <span className="hint">
+                            {!wallet ? "connect a wallet"
+                              : !marketId ? "no market"
+                              : !looksLikePantaMarketId(marketId) ? "synthetic market — Panta orders need a real book"
+                              : "real /orders/quote → build → sign → submit → verify → report"}
+                          </span>
+                        </label>
+                      </div>
+                      )}
+                      {pantaFillOn && pantaFillAvailable && pantaOrder && (
+                        <PantaOrderStatus update={pantaOrder} />
                       )}
                     </>
                   ) : (
@@ -1278,19 +1116,6 @@ export default function ArenaView({ arenaCode }: { arenaCode: string }) {
       </section>
 
       {toast && <div className="toast" role="status"><span>{toast}</span><button onClick={() => setToast("")} aria-label="Dismiss">×</button></div>}
-
-      {cashoutTicket && wallet && (
-        <PantaCashOutModal
-          ticket={cashoutTicket}
-          wallet={wallet}
-          arena={arenaCode}
-          onClose={() => setCashoutTicket(null)}
-          onSuccess={async (net) => {
-            setToast(`Cashed out for ${new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" }).format(net)}.`);
-            await refresh();
-          }}
-        />
-      )}
 
       {showUsername && (
         <UsernameModal

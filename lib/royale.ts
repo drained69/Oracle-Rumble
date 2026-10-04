@@ -45,7 +45,7 @@ export type Entrant = {
   eliminatedRound: number | null;
   rank: number | null;    // filled at settlement
   prizeUsdc: number;      // prize-pool share won at the final (0 until then)
-  parlays: ParlayTicket[];// open + settled parlay tickets bought from the vault
+  parlays: ParlayTicket[];// parlay tickets (no longer sold; see ParlayTicket)
   /**
    * The direction picked when taking the seat — YES = UP, NO = DOWN. Placed
    * the moment the round goes live, then cleared. Null means the player
@@ -70,10 +70,10 @@ export type ParlayLegState = {
 };
 
 /**
- * A native parlay bought from a player's vault. Priced by lib/parlay.ts
- * (variance fee, combined price). It pays `shares` USDC if every leg lands,
- * with a 50/50 fallback per voided leg — the parlayit model. Held inside the
- * round vault so it marks-to-market and settles alongside single trades.
+ * A parlay ticket bought from a player's vault. Parlays are no longer sold
+ * (the Predictions arena replaced them); the type, valuation and settlement
+ * stay so rounds saved with tickets still mark and pay them out. A ticket
+ * pays `shares` USDC if every leg lands, with a 50/50 fallback per voided leg.
  */
 export type ParlayTicket = {
   id: string;
@@ -701,17 +701,6 @@ export function markToMarket(entrant: Entrant, markYesPrice: number, priceMap?: 
   let parlayVal = 0;
   for (const t of entrant.parlays) parlayVal += parlayMarkValue(t, priceMap);
   entrant.bankroll = entrant.cash + entrant.shares * (mark / 100) + parlayVal;
-}
-
-/** Buy a parlay ticket from the vault. Stake (incl. variance fee) leaves cash. */
-export function placeParlay(entrant: Entrant, ticket: ParlayTicket): { ok: boolean; reason?: string } {
-  if (entrant.eliminatedRound !== null) return { ok: false, reason: "Eliminated." };
-  if (!ticket.legs || ticket.legs.length < 2) return { ok: false, reason: "A parlay needs at least 2 legs." };
-  if (ticket.stake <= 0) return { ok: false, reason: "Stake must be positive." };
-  if (ticket.stake > entrant.cash + 1e-9) return { ok: false, reason: "Insufficient vault cash." };
-  entrant.cash -= ticket.stake;
-  entrant.parlays.push(ticket);
-  return { ok: true };
 }
 
 /** Resolve every open parlay at the final prices, crediting winnings to cash. */

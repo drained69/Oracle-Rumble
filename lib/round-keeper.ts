@@ -45,7 +45,7 @@ const CLOSE_FRESH_MS = 15_000;
 /** Prices a keeper tick / trade runs at. */
 export type Pricing = {
   yesPrice: number;      // the round market's UP (YES) price, cents
-  priceMap: PriceMap;    // every board market's UP price, cents (parlay legs)
+  priceMap: PriceMap;    // every board market's UP price, cents (values legacy parlay tickets)
   spots: Spots;          // latest USD spot per asset
   closeSpots?: Spots;    // USD per asset at the live deadline (late settles)
 };
@@ -293,8 +293,8 @@ export async function bootstrapRound(overrides?: Partial<RoundConfig> & { horizo
 }
 
 /**
- * YES price (cents) for every board market, so multi-asset parlays can be
- * valued and settled. The round's own market gets the live price; the other
+ * YES price (cents) for every board market, so any legacy parlay ticket can
+ * be valued and settled. The round's own market gets the live price; the other
  * assets use the board's current prices. (A per-asset price oracle can enrich
  * this later; the shape stays the same.)
  */

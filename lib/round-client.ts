@@ -113,8 +113,6 @@ export type RoundView = {
   yesPrice: number;
   cutLine: number;
   standings: Entrant[];
-  /** UP price (cents) of every board market for this round — parlay legs. */
-  prices?: Record<string, number>;
   /** Latest USD spot price of the round's asset. */
   spot?: number | null;
   persisted?: boolean;
@@ -338,46 +336,6 @@ export async function tradeRound(args: { wallet: string; action: "buy" | "sell";
   try {
     const { data } = await postAsWallet("/api/round/trade", args.wallet, args);
     return data as TradeResult;
-  } catch {
-    return { error: "network error — try again" };
-  }
-}
-
-export type ParlayLegInput = { marketId: string; side: "YES" | "NO" };
-
-/** Place a native parlay from the vault into the live round. */
-export async function placeParlayApi(wallet: string, legs: ParlayLegInput[], stakeUsdc: number, arena?: string): Promise<{ round?: Round; entrant?: Entrant; error?: string }> {
-  try {
-    const { data } = await postAsWallet("/api/round/parlay", wallet, { wallet, legs, stakeUsdc, arena });
-    return data as { round?: Round; entrant?: Entrant; error?: string };
-  } catch {
-    return { error: "network error — try again" };
-  }
-}
-
-/**
- * Cash out an open parlay ticket. Server re-prices from live YES prices,
- * applies the cashout edge, marks the ticket cashed_out, and credits the
- * entrant's cash bankroll. Refuses on non-live rounds or already-settled
- * tickets.
- */
-export async function cashOutParlayApi(wallet: string, ticketId: string, arena: string): Promise<{
-  round?: Round;
-  entrant?: Entrant;
-  quote?: {
-    liveCombinedPrice: number;
-    fairValueUsdc: number;
-    cashoutFeeUsdc: number;
-    netCashoutUsdc: number;
-    originalStakeUsdc: number;
-    pnlUsdc: number;
-    legs: Array<{ marketId: string; side: "YES" | "NO"; entryPrice: number; currentSidePrice: number; question?: string }>;
-  };
-  error?: string;
-}> {
-  try {
-    const { data } = await postAsWallet("/api/round/parlay/cashout", wallet, { wallet, ticketId, arena });
-    return data as Awaited<ReturnType<typeof cashOutParlayApi>>;
   } catch {
     return { error: "network error — try again" };
   }

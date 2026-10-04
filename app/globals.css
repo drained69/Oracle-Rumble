@@ -572,7 +572,7 @@ main { min-height: 100vh; }
 .cta-row { display: inline-flex; gap: 8px; flex-wrap: wrap; justify-content: center; }
 
 .vault {
-  display: grid; grid-template-columns: repeat(5, 1fr);
+  display: grid; grid-template-columns: repeat(4, 1fr);
   padding: 14px 0; border-bottom: 1px solid var(--border);
 }
 .vault > div { display: flex; flex-direction: column; gap: 4px; padding: 0 14px; border-right: 1px solid var(--border); }
@@ -582,12 +582,6 @@ main { min-height: 100vh; }
 .vault b { font-family: 'JetBrains Mono', monospace; font-size: 14px; font-weight: 700; color: var(--text); }
 .vault > div.up b { color: var(--up); }
 .vault > div.down b { color: var(--down); }
-
-.bet-mode { display: inline-flex; background: var(--surface); border: 1px solid var(--border); border-radius: var(--r); padding: 3px; margin: 14px 0; gap: 2px; }
-.bet-mode .bm { padding: 6px 14px; font-size: 12px; font-weight: 600; color: var(--text-2); border-radius: var(--r-sm); }
-.bet-mode .bm.on { color: var(--text); background: var(--surface-alt); }
-.bet-mode .bm:hover:not(.on) { color: var(--text); }
-
 .sides { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-bottom: 12px; }
 .side {
   display: flex; align-items: center; justify-content: space-between;
@@ -619,17 +613,6 @@ main { min-height: 100vh; }
 .trade-actions { display: flex; gap: 8px; margin-top: 12px; }
 
 /* Parlay */
-.parlay-build { }
-.pb-hint { color: var(--text-2); font-size: 12px; margin: 8px 0 12px; line-height: 1.55; }
-.pb-board { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin-bottom: 12px; }
-.pb-mkt { background: var(--surface); border: 1px solid var(--border); border-radius: var(--r); padding: 10px; }
-.pb-mkt-q { font-size: 11px; color: var(--text-2); margin-bottom: 6px; font-weight: 500; }
-.pb-mkt-q b { color: var(--text); font-family: 'JetBrains Mono', monospace; font-weight: 700; letter-spacing: 0.8px; }
-.pb-mkt-sides { display: grid; grid-template-columns: 1fr 1fr; gap: 4px; }
-.pb-side { padding: 7px 6px; border: 1px solid var(--border); border-radius: var(--r-sm); font-family: 'JetBrains Mono', monospace; font-size: 10px; font-weight: 700; letter-spacing: 0.4px; color: var(--text-2); background: transparent; }
-.pb-side.up:hover, .pb-side.up.on { border-color: var(--up-border); background: var(--up-bg); color: var(--up); }
-.pb-side.down:hover, .pb-side.down.on { border-color: var(--down-border); background: var(--down-bg); color: var(--down); }
-
 /* Roster */
 .roster {
   background: var(--bg-elev); border: 1px solid var(--border); border-radius: var(--r-lg);
@@ -782,7 +765,6 @@ main { min-height: 100vh; }
   .how-inner .how-steps::before { display: none; }
   .host-card { grid-template-columns: 1fr; padding: 22px; }
   .host-grid { grid-template-columns: 1fr; }
-  .pb-board { grid-template-columns: 1fr; }
   .brand { font-size: 12px; letter-spacing: 1.2px; }
   .escrow-badge { display: none; }
   .panta-badge .calls { display: none; }
@@ -1192,80 +1174,6 @@ main { min-height: 100vh; }
 }
 
 /* ═══════════════ Panta market-creation modal ═══════════════ */
-.pcm-field { display: flex; flex-direction: column; gap: 6px; margin-bottom: 12px; }
-.pcm-field label {
-  display: flex; justify-content: space-between; align-items: baseline;
-  font-family: 'JetBrains Mono', monospace; font-size: 10px; font-weight: 700;
-  color: var(--text-3); text-transform: uppercase; letter-spacing: 1.1px;
-}
-.pcm-field label em {
-  color: var(--text-3); font-style: normal; font-size: 9.5px; letter-spacing: 0.8px;
-}
-.pcm-field textarea,
-.pcm-field input,
-.pcm-field select {
-  width: 100%; padding: 10px 12px;
-  background: var(--surface); border: 1px solid var(--border);
-  border-radius: var(--r); color: var(--text);
-  font-family: 'Inter', sans-serif; font-size: 13px;
-  outline: none; resize: vertical;
-}
-.pcm-field textarea:focus,
-.pcm-field input:focus,
-.pcm-field select:focus { border-color: var(--border-focus); }
-.pcm-hint {
-  font-family: 'JetBrains Mono', monospace; font-size: 10.5px;
-  color: var(--text-3);
-}
-.pcm-row { display: grid; grid-template-columns: 1fr 2fr; gap: 12px; }
-.pcm-row3 { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; }
-.pcm-preview {
-  width: 100%; max-height: 140px; object-fit: cover;
-  border: 1px solid var(--border); border-radius: var(--r); margin-bottom: 12px;
-}
-.pcm-warn {
-  padding: 10px 12px; margin-bottom: 12px;
-  background: var(--amber-bg); border: 1px solid var(--amber-border);
-  border-radius: var(--r); color: var(--amber);
-  font-size: 12px; display: flex; gap: 10px; align-items: center;
-}
-.pcm-warn .link-btn {
-  margin-left: auto; color: var(--up); background: transparent; border: 0;
-  font-family: 'JetBrains Mono', monospace; font-size: 11px; font-weight: 700;
-  text-decoration: underline; cursor: pointer;
-}
-.pcm-error {
-  padding: 10px 12px; margin-top: 10px;
-  background: var(--down-bg); border: 1px solid var(--down-border);
-  border-radius: var(--r); color: var(--down);
-  font-family: 'JetBrains Mono', monospace; font-size: 11.5px;
-  word-break: break-word;
-}
-.pcm-summary {
-  display: flex; flex-direction: column; gap: 6px;
-  background: var(--surface); border: 1px solid var(--border);
-  border-radius: var(--r); padding: 12px 14px; margin-bottom: 14px;
-}
-.pcm-summary > div {
-  display: flex; justify-content: space-between; align-items: baseline; gap: 10px;
-}
-.pcm-summary span {
-  font-family: 'JetBrains Mono', monospace; font-size: 10.5px;
-  color: var(--text-3); text-transform: uppercase; letter-spacing: 1.1px;
-}
-.pcm-summary b {
-  font-family: 'JetBrains Mono', monospace; font-size: 12.5px; font-weight: 700;
-  color: var(--text);
-}
-.pcm-summary b.up { color: var(--up); }
-.pcm-summary b.amber { color: var(--amber); }
-.pcm-summary b.mono.small { font-size: 11.5px; }
-.pcm-summary a.link { color: var(--up); text-decoration: none; font-family: 'JetBrains Mono', monospace; }
-.pcm-actions { display: flex; gap: 10px; margin-top: 10px; }
-.pcm-actions .btn { flex: 1; }
-@media (max-width: 700px) {
-  .pcm-row, .pcm-row3 { grid-template-columns: 1fr; }
-}
 
 /* ═══════════════ Panta positions rows ═══════════════ */
 .panta-pos {
@@ -1310,93 +1218,6 @@ main { min-height: 100vh; }
 @media (max-width: 700px) {
   .panta-pos-grid { grid-template-columns: repeat(3, 1fr); }
 }
-
-/* ═══════════════ Open-parlay list + cashout ═══════════════ */
-.parlay-list {
-  margin-top: 12px; border: 1px solid var(--border); border-radius: var(--r);
-  background: var(--bg-elev);
-}
-.parlay-list-head {
-  padding: 8px 12px; border-bottom: 1px solid var(--border);
-  font-family: 'JetBrains Mono', monospace; font-size: 10.5px;
-  color: var(--text-3); text-transform: uppercase; letter-spacing: 1px;
-}
-.parlay-row {
-  display: grid; grid-template-columns: 1fr auto; gap: 12px;
-  padding: 10px 12px; border-bottom: 1px solid rgba(255, 255, 255, 0.04);
-  align-items: center;
-}
-.parlay-row:last-child { border-bottom: 0; }
-.parlay-row .pr-lead { display: flex; gap: 10px; align-items: center; min-width: 0; }
-.parlay-row .pr-legs {
-  font-family: 'JetBrains Mono', monospace; font-size: 10.5px; font-weight: 800;
-  color: var(--text); padding: 3px 7px; border-radius: 4px;
-  background: var(--surface); border: 1px solid var(--border);
-  letter-spacing: 0.8px;
-}
-.parlay-row .pr-mid {
-  color: var(--text-2); font-family: 'JetBrains Mono', monospace; font-size: 11px;
-  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-}
-.parlay-row .pr-payout {
-  font-family: 'JetBrains Mono', monospace; font-size: 11px; color: var(--up); font-weight: 700;
-  white-space: nowrap;
-}
-.parlay-row .pr-tail { display: flex; gap: 10px; align-items: center; }
-.parlay-row .pr-stake {
-  font-family: 'JetBrains Mono', monospace; font-size: 10.5px;
-  color: var(--text-3);
-}
-
-.cashout-legs {
-  display: flex; flex-direction: column; gap: 8px;
-  margin-bottom: 12px;
-}
-.cashout-leg {
-  background: var(--surface); border: 1px solid var(--border); border-radius: var(--r);
-  padding: 10px 12px;
-}
-.cashout-leg-line {
-  display: flex; gap: 10px; align-items: center;
-  font-family: 'JetBrains Mono', monospace; font-size: 12px;
-  color: var(--text);
-}
-.cashout-leg-line.small {
-  margin-top: 4px; color: var(--text-3); font-size: 10.5px; justify-content: flex-start;
-}
-.cashout-leg-line.small span { color: var(--text-3); }
-.cashout-leg-line.small span.up { color: var(--up); }
-.cashout-leg-line.small span.down { color: var(--down); }
-.cashout-leg .side {
-  font-weight: 800; font-size: 10px; letter-spacing: 0.8px;
-  padding: 2px 6px; border-radius: 4px;
-}
-.cashout-leg .side.up { color: var(--up); background: var(--up-bg); border: 1px solid var(--up-border); }
-.cashout-leg .side.down { color: var(--down); background: var(--down-bg); border: 1px solid var(--down-border); }
-.cashout-leg .q {
-  color: var(--text); font-family: 'Inter', sans-serif; font-size: 12.5px; font-weight: 500;
-  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-}
-
-.cashout-summary {
-  display: flex; flex-direction: column; gap: 6px;
-  background: var(--surface); border: 1px solid var(--border);
-  border-radius: var(--r); padding: 10px 12px;
-}
-.cashout-summary > div {
-  display: flex; justify-content: space-between; align-items: baseline;
-  font-family: 'JetBrains Mono', monospace;
-}
-.cashout-summary span {
-  font-size: 10.5px; color: var(--text-3);
-  text-transform: uppercase; letter-spacing: 1px;
-}
-.cashout-summary b { font-size: 12.5px; color: var(--text); font-weight: 700; }
-.cashout-summary .up b { color: var(--up); }
-.cashout-summary .down b { color: var(--down); }
-.cashout-summary .net { border-top: 1px solid var(--border); padding-top: 8px; margin-top: 4px; }
-.cashout-summary .net span { color: var(--text-2); font-size: 12px; }
-.cashout-summary .net b { font-size: 15px; }
 
 /* ═══════════════════════════════════════════════════════════════════════════
  * GAME MODE — arcade-cabinet + battle-royale visual layer.
@@ -2967,17 +2788,6 @@ body.no-scroll { overflow: hidden; }
 .arena-main .vault > div.down b { color: var(--danger); }
 
 /* Bet mode toggle */
-.arena-main .bet-mode { border-radius: 10px; }
-.arena-main .bet-mode .bm {
-  font-family: 'Orbitron', sans-serif; font-weight: 800; letter-spacing: 1.4px;
-  text-transform: uppercase; padding: 7px 14px;
-}
-.arena-main .bet-mode .bm.on {
-  color: #051510;
-  background: linear-gradient(180deg, var(--neon), #6d28d9);
-  box-shadow: 0 4px 12px rgba(192, 132, 252, 0.3);
-}
-
 /* Sides — YES / NO trade buttons */
 .arena-main .sides { gap: 10px; margin-bottom: 14px; }
 .arena-main .side {
@@ -3027,10 +2837,6 @@ body.no-scroll { overflow: hidden; }
 .arena-main .trade-actions .btn.secondary { border: 1px solid rgba(192, 132, 252, 0.4); color: var(--neon); background: transparent; }
 
 /* Parlay board */
-.arena-main .pb-mkt { background: rgba(15, 19, 27, 0.6); border: 1px solid var(--border); border-radius: 10px; }
-.arena-main .pb-side.up:hover, .arena-main .pb-side.up.on { color: var(--plasma); border-color: rgba(34, 211, 238, 0.4); background: rgba(34, 211, 238, 0.08); }
-.arena-main .pb-side.down:hover, .arena-main .pb-side.down.on { color: var(--danger); border-color: rgba(244, 63, 94, 0.4); background: rgba(244, 63, 94, 0.08); }
-
 /* Roster panel */
 .arena-main .roster {
   background: linear-gradient(180deg, rgba(19, 24, 36, 0.85), rgba(15, 19, 27, 0.6));
@@ -3054,13 +2860,6 @@ body.no-scroll { overflow: hidden; }
 .arena-main .cutline span { background: var(--bg-elev); color: var(--danger); font-family: 'Orbitron', sans-serif; letter-spacing: 1.2px; }
 
 /* Parlay open list */
-.arena-main .parlay-list {
-  background: rgba(15, 19, 27, 0.6); border-color: var(--border); border-radius: 10px;
-}
-.arena-main .parlay-list-head { color: var(--neon); font-family: 'Orbitron', sans-serif; letter-spacing: 1.6px; }
-.arena-main .parlay-row .pr-legs { color: var(--text); background: rgba(192, 132, 252, 0.08); border-color: rgba(192, 132, 252, 0.3); font-family: 'Orbitron', sans-serif; }
-.arena-main .parlay-row .pr-payout { color: var(--plasma); font-family: 'Orbitron', sans-serif; }
-
 /* Panta order lifecycle */
 .arena-main .panta-order.done { border-left-color: var(--plasma); }
 .arena-main .panta-order-head .eyebrow { color: var(--neon); font-family: 'Orbitron', sans-serif; letter-spacing: 1.4px; }
@@ -3143,17 +2942,6 @@ body.no-scroll { overflow: hidden; }
 .game-mode .invite-code { color: var(--plasma); background: linear-gradient(180deg, rgba(34, 211, 238, 0.08), rgba(34, 211, 238, 0.02)); border-color: rgba(34, 211, 238, 0.35); text-shadow: 0 0 20px rgba(34, 211, 238, 0.4); }
 
 /* Cash-out modal + create-market modal share the arcade skin above. */
-.game-mode .cashout-summary,
-.game-mode .cashout-leg,
-.game-mode .pcm-summary {
-  background: rgba(15, 19, 27, 0.6); border-color: var(--border);
-}
-.game-mode .cashout-summary .up b,
-.game-mode .cashout-leg-line.small span.up,
-.game-mode .cashout-leg .side.up { color: var(--plasma); border-color: rgba(34, 211, 238, 0.3); background: rgba(34, 211, 238, 0.08); }
-.game-mode .pcm-summary b.up { color: var(--plasma); }
-.game-mode .pcm-summary a.link { color: var(--neon); }
-
 /* Graduation banner — arcade violet accent */
 .game-mode .panta-grad-banner {
   border-color: rgba(192, 132, 252, 0.4);
@@ -3941,9 +3729,6 @@ a.pf-code:hover { background: rgba(34, 211, 238, 0.08); }
 .call-size-opt.on { border-color: var(--neon); color: var(--text); background: rgba(192, 132, 252, 0.1); }
 .call-size-opt.on em { color: var(--text-2); }
 .call-size-opt:disabled { opacity: 0.6; cursor: default; }
-.pb-cash-note { color: var(--text-2); font-size: 12.5px; line-height: 1.5; margin: -4px 0 10px; }
-.pb-cash-note .link-btn { color: var(--plasma); text-decoration: underline; text-underline-offset: 3px; background: none; border: 0; padding: 0; cursor: pointer; font: inherit; }
-
 /* ═══════════════════════════════════════════════════════════════════════
  * BRING-IT-TO-LIFE PASS
  * Ambient overlays, panel sweeps, ticker, room feed, seat ring, CTA shimmer,

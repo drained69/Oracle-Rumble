@@ -275,7 +275,6 @@ function ActiveCard({ i, now }: { i: PortfolioItem; now: number }) {
           {i.format === "royale" ? `Round ${i.roundNumber} of ${i.roundLimit} · top ${me.survivors} survive the cut`
             : i.format === "predictions" ? "Predictions · most right answers take the pool"
             : "Single round · top finishers split the pool"}
-          {me.openParlays > 0 ? ` · ${me.openParlays} open parlay${me.openParlays === 1 ? "" : "s"}` : ""}
           {" · "}<a href={`/a/${i.arena}`}>Open arena →</a>
         </p>
       )}

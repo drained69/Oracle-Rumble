@@ -63,7 +63,6 @@ function myView(round: Round, me: Entrant, yes: number | null, showCall: boolean
     markPrice,
     openingCall: showCall ? me.openingCall ?? null : null,
     openingCallPct: showCall && me.openingCall ? me.openingCallPct ?? 100 : null,
-    openParlays: me.parlays.filter((t) => t.status === "open").length,
     place: predictions ? scorePlace(round, me) : idx >= 0 && (done || me.eliminatedRound === null) ? idx + 1 : null,
     players: done ? round.entrants.length : order.length,
     survivors: predictions ? paidPlaces(round) : cutLine(round),

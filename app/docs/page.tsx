@@ -24,7 +24,6 @@ const SECTIONS: { id: string; title: string }[] = [
   { id: "recovery", title: "Cancellations & recovery" },
   { id: "calls", title: "UP / DOWN & the price oracle" },
   { id: "trading", title: "Trading in an arena" },
-  { id: "parlays", title: "Parlays & cash-out" },
   { id: "panta", title: "Panta integration" },
   { id: "usernames", title: "Usernames" },
   { id: "wallet", title: "Wallets & signing" },
@@ -225,8 +224,8 @@ withdraw  = prize share + vault pot × (your final vault ÷ all final vaults)`}<
               <b> DOWN</b> (a NO share) pays $1 if it closes below. A dead-flat close pays 50¢ each way.
             </p>
             <ul>
-              <li><b>Opening call</b> — when you take a seat you pick UP, DOWN or <em>decide later</em>. A call puts a quarter, half (the default) or all of your vault on that side at the opening price (50¢ a share) the moment trading opens; the rest stays in cash for trades and parlays. You can change it until then, and switch or sell any time while the round is live — switching sides sells your current position and buys the other side in one step. Other players can&apos;t see your call until the round starts.</li>
-              <li><b>Open</b> — the asset&apos;s spot price when enrollment locks. BTC, ETH and SOL are all recorded so parlay legs resolve over the same window.</li>
+              <li><b>Opening call</b> — when you take a seat you pick UP, DOWN or <em>decide later</em>. A call puts a quarter, half (the default) or all of your vault on that side at the opening price (50¢ a share) the moment trading opens; the rest stays in cash for your trades. You can change it until then, and switch or sell any time while the round is live — switching sides sells your current position and buys the other side in one step. Other players can&apos;t see your call until the round starts.</li>
+              <li><b>Open</b> — the asset&apos;s spot price when enrollment locks. BTC, ETH and SOL are all recorded (a Predictions arena is judged on all three).</li>
               <li><b>Live price</b> — the UP price is the chance the asset finishes above the open, given the move so far and the time left, so positions gain or lose value as the asset moves.</li>
               <li><b>Close</b> — the price sample nearest the deadline (the arena is polled every few seconds while anyone watches; otherwise the one-minute candle at the deadline).</li>
               <li><b>Source</b> — Coinbase&apos;s public spot price, with Kraken as backup. If no price is available the lock or the settlement waits up to a minute; a round that still can&apos;t be priced settles at 50¢ both ways.</li>
@@ -244,7 +243,7 @@ withdraw  = prize share + vault pot × (your final vault ÷ all final vaults)`}<
               <li><b>1¢ spread</b> — you buy 1¢ above and sell 1¢ below the market price. Changing your mind
                 is allowed any time, but flipping back and forth costs something, so re-trading every small
                 lag in the price doesn&apos;t pay. Opening calls and settlement don&apos;t pay the spread.</li>
-              <li><b>Last call</b> — trading, parlays and cash-outs close 30 seconds before the deadline, so
+              <li><b>Last call</b> — trading closes 30 seconds before the deadline, so
                 nobody can pile onto a near-certain outcome in the final seconds.</li>
               <li><b>Live quotes</b> — each trade is priced on BTC/ETH/SOL quotes taken at that moment from
                 Coinbase and Kraken. While the asset is jumping, or the two exchanges disagree, trading pauses
@@ -264,21 +263,6 @@ withdraw  = prize share + vault pot × (your final vault ÷ all final vaults)`}<
               <li><b>Verify</b> — <code>/primaryorderverify/</code> is polled until confirmed, failed or expired.</li>
               <li><b>Attribute</b> — <code>/trades/{`{signature}`}/</code> confirms the trade was credited.</li>
             </ol>
-          </Section>
-
-          <Section id="parlays" title="Parlays & cash-out">
-            <ul>
-              <li><b>Up to 3 legs</b> — one UP/DOWN call each on BTC, ETH and SOL, paid from your vault cash. Every leg resolves on its asset&apos;s move over the round.</li>
-              <li><b>Priced together</b> — BTC, ETH and SOL usually move together over a few minutes, so a parlay is priced on the chance that all its legs land <em>jointly</em>, not by multiplying the legs as if they were independent. Legs in the same direction (BTC UP + ETH UP) pay modestly; legs that split (BTC UP + ETH DOWN) pay far more. Cash-outs use the same pricing.</li>
-              <li><b>Correlation block</b> — one leg per asset.</li>
-              <li><b>Variance fee</b> — the fee scales with the combined risk of the legs.</li>
-              <li><b>Void fallback</b> — a leg voided at resolution counts as 0.5× instead of killing the ticket.</li>
-            </ul>
-            <p>Open tickets can be cashed out early at the current combined price:</p>
-            <pre className="code">{`fair = shares × Π(current price of each leg's side)
-fee  = min(fair × 2%, 1.50 USDC)
-net  = fair − fee   → credited to your vault`}</pre>
-            <p>Cash-out settles inside the arena vault; it is not a Panta order.</p>
           </Section>
 
           <Section id="panta" title="Panta integration">
@@ -344,7 +328,6 @@ net  = fair − fee   → credited to your vault`}</pre>
                 <tr><td><code>POST /api/round/picks</code></td><td>Change your predictions picks while enrolling (signed in)</td></tr>
                 <tr><td><code>POST /api/round/cancel</code></td><td>Cancel an arena whose host never funded seat #1</td></tr>
                 <tr><td><code>POST /api/round/trade</code></td><td>Buy UP/DOWN or sell inside the arena (signed in)</td></tr>
-                <tr><td><code>POST /api/round/parlay</code> · <code>/cashout</code></td><td>Place or cash out a parlay</td></tr>
                 <tr><td><code>GET /api/escrow/status</code></td><td>On-chain or practice mode</td></tr>
                 <tr><td><code>GET /api/escrow/balance?wallet=</code></td><td>Devnet USDC and SOL for a wallet</td></tr>
                 <tr><td><code>POST /api/escrow/tx</code></td><td>Unsigned deposit, claim or recover transaction</td></tr>

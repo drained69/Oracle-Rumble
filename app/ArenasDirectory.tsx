@@ -273,14 +273,14 @@ export default function ArenasDirectory() {
           </h1>
           <p className="jt-lead">
             Everyone pays the same seat and gets the same trading vault. Call UP or DOWN on a live
-            BTC, ETH or SOL market, switch sides as the price moves, and stack cross-asset parlays.
+            BTC, ETH or SOL market and switch sides as the price moves.
             Top finishers claim the pool — in a royale, the bottom half is cut each round.
             Or play Predictions: five hidden picks on BTC, ETH and SOL, no trading, most right answers wins.
           </p>
 
           <ol className="jt-steps">
             <li><b>01</b><span>Take a seat — your entry funds the shared pool, your vault is the bankroll you trade with.</span></li>
-            <li><b>02</b><span>Call UP or DOWN at the live price on BTC, ETH or SOL. Switch sides, size up, or stack a parlay as the market moves.</span></li>
+            <li><b>02</b><span>Call UP or DOWN at the live price on BTC, ETH or SOL. Switch sides or size up as the market moves.</span></li>
             <li><b>03</b><span>Finish on top. The pool pays out to the top finishers&apos; wallets — in a royale, the bottom half is cut each round.</span></li>
           </ol>
 
