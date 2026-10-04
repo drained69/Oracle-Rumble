@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 import { requireWallet } from "@/lib/session";
 import { getActiveRound, mutateActiveRound } from "@/lib/round-store";
 import {
-  buyPriceOf, buyShares, liquidate, logEvent, markToMarket, normalizeArenaCode, redactOpeningCalls, sellPriceOf,
+  buyPriceOf, isPicksFormat, buyShares, liquidate, logEvent, markToMarket, normalizeArenaCode, redactOpeningCalls, sellPriceOf,
   sideWord, standings, tradingOpen, TRADE_CUTOFF_MS, TRADE_SPREAD
 } from "@/lib/royale";
 import { tradePricing } from "@/lib/round-keeper";
@@ -47,7 +47,7 @@ export async function POST(request: Request) {
   const peek = await getActiveRound(arena);
   if (!peek) return NextResponse.json({ error: "no active round in this arena", arena }, { status: 404 });
   if (peek.status !== "live") return NextResponse.json({ error: "round is not live" }, { status: 409 });
-  if (peek.config.format === "predictions") return NextResponse.json({ error: "This is a predictions arena — there's nothing to trade." }, { status: 409 });
+  if (isPicksFormat(peek.config.format)) return NextResponse.json({ error: "This arena is played by picking answers — there's nothing to trade." }, { status: 409 });
   if (!tradingOpen(peek)) {
     return NextResponse.json({ error: `Trading is closed for the last ${TRADE_CUTOFF_MS / 1000} seconds of the round — positions are locked until it settles.`, closed: true }, { status: 409 });
   }

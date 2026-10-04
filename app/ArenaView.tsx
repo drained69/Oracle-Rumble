@@ -2,11 +2,13 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { availableFor, buyPriceOf, DEFAULT_OPENING_CALL_PCT, hostAmountError, paidPlaces, payoutShares, scorePlace, seatCostUsdc, sellPriceOf, tradingOpen, TRADE_CUTOFF_MS, TRADE_SPREAD } from "@/lib/royale";
-import { changeOf, pickCount, type Picks } from "@/lib/predictions";
+import { changeOf, LOCK_MAX, pickCount, scoreCard, type Picks } from "@/lib/predictions";
 import { PicksBoard, PicksEditor, PicksRoster, judgedPrices, pctText, picksMade } from "@/app/Predictions";
+import { StreakHistory, StreakLegCard, StreakRoster, phaseText } from "@/app/Streak";
+import { canPick, currentLeg, DEFAULT_LEG_SEC, LEG_LENGTHS, MAX_LEGS, PICK_MS } from "@/lib/streak";
 import { useEscapeKey } from "@/lib/use-escape";
 import CallSizePicker, { callSizeText } from "@/app/CallSizePicker";
-import { getRound, enrollWithEscrow, tradeRound, newRound, claimFromEscrow, serverSettleArena, cancelArena, checkSeatFunds, setOpeningCall, setPicks, prepareWallet, seatStepText, type OpeningCall, type RoundView, type SeatStep } from "@/lib/round-client";
+import { getRound, enrollWithEscrow, tradeRound, newRound, claimFromEscrow, serverSettleArena, cancelArena, checkSeatFunds, setOpeningCall, setPicks, setStreakPick, prepareWallet, seatStepText, type OpeningCall, type RoundView, type SeatStep } from "@/lib/round-client";
 import { useEscrowStatus, useWalletIdentity } from "@/lib/use-wallet";
 import SiteHeader from "@/app/SiteHeader";
 import UsernameModal from "@/app/UsernameModal";
@@ -77,7 +79,8 @@ export default function ArenaView({ arenaCode }: { arenaCode: string }) {
   const [showHost, setShowHost] = useState(false);
   const [hAsset, setHAsset] = useState<"BTC" | "ETH" | "SOL">("SOL");
   const [hHorizon, setHHorizon] = useState<"MIN5" | "MIN15" | "HOUR" | "DAY">("MIN5");
-  const [hFormat, setHFormat] = useState<"single" | "royale" | "predictions">("royale");
+  const [hFormat, setHFormat] = useState<"single" | "royale" | "predictions" | "streak">("royale");
+  const [hLegSec, setHLegSec] = useState<number>(DEFAULT_LEG_SEC);
   const [hRounds, setHRounds] = useState(3);
   const [hCapacity, setHCapacity] = useState(8);
   const [hEntry, setHEntry] = useState("2");
@@ -96,6 +99,11 @@ export default function ArenaView({ arenaCode }: { arenaCode: string }) {
   // picks that are on their way to the server.
   const [seatPicks, setSeatPicks] = useState<Picks>({});
   const [pickEdits, setPickEdits] = useState<Picks>({});
+  // Predictions lock: the seat modal's choice, and an edit to my saved lock on its way.
+  const [seatLocks, setSeatLocks] = useState<string[]>([]);
+  const [lockEdit, setLockEdit] = useState<string[] | null>(null);
+  // Streak: my pick for the current leg while it's on its way to the server.
+  const [streakDraft, setStreakDraft] = useState<{ n: number; pick: string } | null>(null);
   const pollRef = useRef<number | null>(null);
 
   // Live invite URL for THIS arena (visible in the HUD when non-public).
@@ -165,8 +173,13 @@ export default function ArenaView({ arenaCode }: { arenaCode: string }) {
   const me = useMemo(() => (wallet ? standings.find((e) => e.wallet === wallet) ?? null : null), [standings, wallet]);
   const enrolled = !!me;
   const picksMode = round?.config.format === "predictions";
+  const streakMode = round?.config.format === "streak";
+  // Formats with no vault: the seat is just the entry.
+  const entryOnly = picksMode || streakMode;
+  const leg = round?.streak ? currentLeg(round.streak) : null;
   const questions = useMemo(() => round?.predictions?.questions ?? [], [round?.predictions?.questions]);
   const myPicks: Picks = useMemo(() => ({ ...(me?.picks ?? {}), ...pickEdits }), [me?.picks, pickEdits]);
+  const myLocks: string[] = lockEdit ?? me?.locks ?? [];
   const myPickCount = pickCount(questions, myPicks);
   const tradeOpen = !!round && tradingOpen(round, now);
   const aliveCount = standings.filter((e) => e.eliminatedRound === null).length;
@@ -196,8 +209,9 @@ export default function ArenaView({ arenaCode }: { arenaCode: string }) {
       setToast("Answer all five questions to take your seat.");
       return;
     }
-    if (!predictions && !callPick) { setToast("Pick UP, DOWN or decide later."); return; }
-    const call: OpeningCall = predictions || callPick === "LATER" || !callPick ? null : callPick;
+    const noCall = predictions || round?.config.format === "streak";
+    if (!noCall && !callPick) { setToast("Pick UP, DOWN or decide later."); return; }
+    const call: OpeningCall = noCall || callPick === "LATER" || !callPick ? null : callPick;
 
     setBusy(true);
     try {
@@ -211,10 +225,10 @@ export default function ArenaView({ arenaCode }: { arenaCode: string }) {
       const r = await enrollWithEscrow(wallet, nick, arenaCode, call, (step, name) => {
         setSeatStep(step);
         setToast(seatStepText(step, seatUsd, call, name).toast);
-      }, callPct, predictions ? seatPicks : undefined);
+      }, callPct, predictions ? seatPicks : undefined, predictions ? seatLocks : undefined);
       const seated = !!(r.entrantId || r.already);
       if (seated) {
-        const callText = predictions ? " · your picks stay hidden until the start" : call ? ` · opening call ${call === "YES" ? "UP" : "DOWN"}` : "";
+        const callText = predictions ? " · your picks stay hidden until the start" : round?.config.format === "streak" ? " · pick leg 1 below" : call ? ` · opening call ${call === "YES" ? "UP" : "DOWN"}` : "";
         setToast(`You're in arena ${arenaCode} as ${nick}${callText}.`);
         setShowEnroll(false);
       } else if (r.deposited) {
@@ -227,11 +241,37 @@ export default function ArenaView({ arenaCode }: { arenaCode: string }) {
       }
       await refresh();
     } finally { setBusy(false); setSeatStep(null); }
-  }, [wallet, nickname, arenaCode, refresh, round, saveUsername, callPick, callPct, seatPicks]);
+  }, [wallet, nickname, arenaCode, refresh, round, saveUsername, callPick, callPct, seatPicks, seatLocks]);
+
+  /** Add or remove a question from a lock (2–3 picks). */
+  const nextLocks = useCallback((current: string[], questionId: string): string[] | null => {
+    if (current.includes(questionId)) return current.filter((q) => q !== questionId);
+    if (current.length >= LOCK_MAX) { setToast(`A lock holds at most ${LOCK_MAX} picks — remove one first.`); return null; }
+    return [...current, questionId];
+  }, []);
+  const toggleSeatLock = useCallback((questionId: string) => {
+    setSeatLocks((cur) => nextLocks(cur, questionId) ?? cur);
+  }, [nextLocks]);
+
+  // Pick and lock saves go out one at a time, so the last click always wins.
+  const pickQueue = useRef<Promise<void>>(Promise.resolve());
+
+  // Change my saved lock while enrolling (queued behind pick saves).
+  const doToggleLock = useCallback((questionId: string) => {
+    if (!wallet) return;
+    const next = nextLocks(myLocks, questionId);
+    if (!next) return;
+    setLockEdit(next);
+    pickQueue.current = pickQueue.current.then(async () => {
+      const r = await setPicks(wallet, arenaCode, undefined, next);
+      if (r.error) setToast(r.error);
+      await refresh();
+      setLockEdit((cur) => (cur && cur.join() === next.join() ? null : cur));
+    });
+  }, [wallet, arenaCode, refresh, myLocks, nextLocks]);
 
   // Change one of my picks while enrolling. Shown at once; saved in the
   // background, one request at a time so the last click always wins.
-  const pickQueue = useRef<Promise<void>>(Promise.resolve());
   const doPick = useCallback((questionId: string, optionId: string) => {
     if (!wallet) return;
     setPickEdits((p) => ({ ...p, [questionId]: optionId }));
@@ -261,6 +301,19 @@ export default function ArenaView({ arenaCode }: { arenaCode: string }) {
       await refresh();
     } finally { setBusy(false); }
   }, [wallet, arenaCode, refresh]);
+
+  // Streak: pick this leg's answer (one request at a time; the last click wins).
+  const streakQueue = useRef<Promise<void>>(Promise.resolve());
+  const doStreakPick = useCallback((optionId: string) => {
+    if (!wallet || !leg) return;
+    const n = leg.n;
+    setStreakDraft({ n, pick: optionId });
+    streakQueue.current = streakQueue.current.then(async () => {
+      const r = await setStreakPick(wallet, arenaCode, optionId);
+      if (r.error) { setToast(r.error); setStreakDraft((d) => (d?.n === n && d.pick === optionId ? null : d)); }
+      await refresh();
+    });
+  }, [wallet, arenaCode, refresh, leg]);
 
   // ── settlement, refunds + claim ───────────────────────────────────
   // Complete arena → record payouts on-chain. Cancelled arena → record a
@@ -378,7 +431,9 @@ export default function ArenaView({ arenaCode }: { arenaCode: string }) {
     } finally { setBusy(false); }
   }, [wallet, enrolled, arenaCode, refresh, yesPrice]);
 
-  const hostPicks = hFormat === "predictions";
+  // Entry-only games: the host takes seat 1 with no call (picks come later).
+  const hostPicks = hFormat === "predictions" || hFormat === "streak";
+  const hostStreak = hFormat === "streak";
   const hostSeat = (Number(hEntry) || 0) + (hostPicks ? PICKS_CHAIN_VAULT_USDC : Number(hVault) || 0);
   const hostError = hostAmountError(Number(hEntry) || 0, Number(hVault) || 0, hFormat);
 
@@ -421,6 +476,7 @@ export default function ArenaView({ arenaCode }: { arenaCode: string }) {
         capacity: hCapacity,
         roundLimit: hFormat === "royale" ? hRounds : 1,
         enrollmentSec: 120, // counted from the host's confirmed seat
+        ...(hFormat === "streak" ? { liveSec: hLegSec } : {}),
         host: wallet ?? ""
       });
       if (v.error || !v.arena) { setToast(v.error ?? "Host failed."); return; }
@@ -462,7 +518,7 @@ export default function ArenaView({ arenaCode }: { arenaCode: string }) {
       setInviteInfo({ code: v.arena, url });
       setToast(`Arena ${v.arena} is open. Share the link.`);
     } finally { setBusy(false); setSeatStep(null); }
-  }, [hAsset, hHorizon, hFormat, hEntry, hVault, hCapacity, hRounds, wallet, escrow, username, hCall, hCallPct, hostSeat, hostError, hostPicks]);
+  }, [hAsset, hHorizon, hFormat, hEntry, hVault, hCapacity, hRounds, wallet, escrow, username, hCall, hCallPct, hostSeat, hostError, hostPicks, hLegSec]);
 
   const doCopyInvite = useCallback(async (url?: string) => {
     const link = url ?? currentInviteUrl;
@@ -512,7 +568,7 @@ export default function ArenaView({ arenaCode }: { arenaCode: string }) {
       <div className="roundbar" id="top">
         {round ? (
           <>
-            {!picksMode && (
+            {!entryOnly && (
               <div className="rb-cell">
                 <span className="rb-k">Round</span>
                 <span className="rb-v">{round.roundNumber} <em>/ {round.config.roundLimit}</em></span>
@@ -524,7 +580,7 @@ export default function ArenaView({ arenaCode }: { arenaCode: string }) {
             </div>
             {deadline > 0 && (
               <div className="rb-cell">
-                <span className="rb-k">{round.status === "enrolling" ? "Locks in" : "Settles in"}</span>
+                <span className="rb-k">{round.status === "enrolling" ? "Locks in" : streakMode ? (round.streak?.phase === "picking" ? "Picks lock" : "Leg ends") : "Settles in"}</span>
                 <span className="rb-v mono">
                   {round.status === "enrolling" && standings.every((e) => e.isBot) ? "Waiting" : fmtClock(timeLeft)}
                 </span>
@@ -534,7 +590,12 @@ export default function ArenaView({ arenaCode }: { arenaCode: string }) {
               <span className="rb-k">Prize pool</span>
               <span className="rb-v accent">{usd.format(round.prizePoolUsdc)}</span>
             </div>
-            {picksMode ? (
+            {streakMode && round.status !== "enrolling" ? (
+              <div className="rb-cell">
+                <span className="rb-k">Still in</span>
+                <span className="rb-v">{aliveCount} <em>/ {standings.length}</em></span>
+              </div>
+            ) : entryOnly ? (
               <div className="rb-cell">
                 <span className="rb-k">Players</span>
                 <span className="rb-v">{standings.length} <em>/ {round.config.capacity}</em></span>
@@ -557,8 +618,12 @@ export default function ArenaView({ arenaCode }: { arenaCode: string }) {
               </div>
             ) : null}
             <div className="rb-cell grow">
-              <span className="rb-k">{picksMode ? "Game" : `Market · ${round.config.asset}`}</span>
-              <span className="rb-v market">{picksMode ? `Five picks on BTC, ETH and SOL · ${Math.round(round.config.liveSec / 60)} min` : round.config.marketQuestion}</span>
+              <span className="rb-k">{entryOnly ? "Game" : `Market · ${round.config.asset}`}</span>
+              <span className="rb-v market">
+                {picksMode ? `Five picks on BTC, ETH and SOL · ${Math.round(round.config.liveSec / 60)} min`
+                  : streakMode ? `Streak · ${leg && round.status !== "enrolling" ? `leg ${leg.n} of up to ${round.streak!.maxLegs}` : `up to ${MAX_LEGS} legs`} · ${Math.round(round.config.liveSec / 60)}-min legs`
+                  : round.config.marketQuestion}
+              </span>
             </div>
             {picksMode && round.oracle?.open && (["BTC", "ETH", "SOL"] as const).map((a) => {
               const c = changeOf(round.oracle?.open?.[a], judgedPrices(round)[a]);
@@ -569,7 +634,7 @@ export default function ArenaView({ arenaCode }: { arenaCode: string }) {
                 </div>
               );
             })}
-            {!picksMode && (spot || closePrice) && (
+            {!entryOnly && (spot || closePrice) && (
               <div className="rb-cell">
                 <span className="rb-k">{asset} {closePrice ? "close" : "price"}</span>
                 <span className="rb-v mono">
@@ -582,7 +647,7 @@ export default function ArenaView({ arenaCode }: { arenaCode: string }) {
                 </span>
               </div>
             )}
-            {!picksMode && (
+            {!entryOnly && (
               <div className="rb-cell">
                 <span className="rb-k">UP / DOWN</span>
                 <span className="rb-v"><span className="yes">{yesPrice}¢</span> <em>/</em> <span className="no">{100 - yesPrice}¢</span></span>
@@ -623,6 +688,15 @@ export default function ArenaView({ arenaCode }: { arenaCode: string }) {
         </div>
       )}
 
+      {/* Streak: a player still in with no pick for the open leg. */}
+      {streakMode && round?.status === "live" && round.streak?.phase === "picking" && me && me.eliminatedRound === null
+        && leg && !(streakDraft?.n === leg.n) && !leg.picks[me.id] && canPick(round, me, now) && (
+        <div className="pk-nudge urgent" role="status">
+          <span><b>Leg {leg.n} is open — pick now.</b> {leg.question.text} Picks lock in <span className="mono">{fmtClock(Math.max(0, round.streak.phaseEndsAt - now))}</span>; no pick and you&apos;re out.</span>
+          <a className="btn primary sm" href="#streak">Pick ↓</a>
+        </div>
+      )}
+
       {/* ── ARENA STAGE (every round state) ─────────────────── */}
       {round && (
         <ArenaStage round={round} standings={standings} survivors={cut} yesPrice={yesPrice} spot={spot} wallet={wallet} />
@@ -649,14 +723,29 @@ export default function ArenaView({ arenaCode }: { arenaCode: string }) {
               const explorerCluster = CLUSTER === "mainnet-beta" ? "" : `?cluster=${CLUSTER}`;
               return (
                 <>
-                  <p className="eyebrow">{picksMode ? "Predictions" : round.config.format === "single" ? "Single round" : `Round ${round.roundNumber}`} · final</p>
-                  <h1>{picksMode ? predictionsHeadline(standings, questions.length) : champ ? `${displayName(champ)} wins ${usd2.format(champ.prizeUsdc)}` : "Rumble complete"}</h1>
+                  <p className="eyebrow">{picksMode ? "Predictions" : streakMode ? "Streak" : round.config.format === "single" ? "Single round" : `Round ${round.roundNumber}`} · final</p>
+                  <h1>{picksMode ? predictionsHeadline(standings) : streakMode ? streakHeadline(standings) : champ ? `${displayName(champ)} wins ${usd2.format(champ.prizeUsdc)}` : "Rumble complete"}</h1>
+                  {streakMode && (
+                    <div className="pk-results">
+                      <StreakHistory round={round} me={me} />
+                      {me && (
+                        <p className="pk-results-me">
+                          {me.eliminatedRound === null ? <>You lasted to the end — <b>{me.score ?? 0} leg{(me.score ?? 0) === 1 ? "" : "s"}</b></> : <>You were knocked out on <b>leg {me.eliminatedRound}</b></>}
+                          {standings.filter((e) => !e.isBot).length === 1 ? <>. No one else paid in, so your entry comes back.</>
+                            : me.prizeUsdc > 0 ? <> and won <b>{usd2.format(me.prizeUsdc)}</b>.</> : <>.</>}
+                        </p>
+                      )}
+                    </div>
+                  )}
                   {picksMode && (
                     <div className="pk-results">
                       <PicksBoard round={round} me={me} entrants={standings} />
                       {me && (
                         <p className="pk-results-me">
-                          You got <b>{me.score ?? 0} of {questions.length}</b> right
+                          {(() => {
+                            const card = scoreCard(me.picks, me.locks, round.predictions?.answers);
+                            return <>You scored <b>{card.total} pts</b> — {card.right} of {questions.length} right{card.lock === "landed" ? `, lock +${card.lockDelta}` : card.lock === "missed" ? `, lock missed (−${Math.abs(card.lockDelta)})` : ""}</>;
+                          })()}
                           {standings.filter((e) => !e.isBot).length === 1 ? <>. No one else paid in, so your entry comes back.</>
                             : me.prizeUsdc > 0 ? <> and won <b>{usd2.format(me.prizeUsdc)}</b>.</> : <>.</>}
                         </p>
@@ -673,7 +762,7 @@ export default function ArenaView({ arenaCode }: { arenaCode: string }) {
                     {paid.length > 1
                       ? `${usd.format(round.prizePoolUsdc)} pool split across the top ${paid.length}.`
                       : `${usd.format(round.prizePoolUsdc)} pool to the winner.`}
-                    {picksMode ? <>{" "}Players who tie split the places they share.</>
+                    {entryOnly ? <>{" "}Players who tie split the places they share.</>
                       : round.escrow ? <>{" "}Players also share the vault money by how their vaults finished — one player&apos;s trading losses fund another&apos;s gains.</> : null}
                   </p>
 
@@ -689,7 +778,7 @@ export default function ArenaView({ arenaCode }: { arenaCode: string }) {
                         <p className="claimed"><b>Withdrawn ✓</b> {usd2.format(myEscrow.entitlementUsdc ?? myEntitlement)} is back in your wallet.</p>
                       ) : (myEscrow?.entitlementUsdc ?? myEntitlement) > 0.0001 ? (
                         <>
-                          <p><b>Your withdrawal:</b> {usd2.format(myEscrow?.entitlementUsdc ?? myEntitlement)}{picksMode ? " — your prize" : me.prizeUsdc > 0 ? ` — includes your ${usd2.format(me.prizeUsdc)} prize` : " — your share of the vault money"}</p>
+                          <p><b>Your withdrawal:</b> {usd2.format(myEscrow?.entitlementUsdc ?? myEntitlement)}{entryOnly ? " — your prize" : me.prizeUsdc > 0 ? ` — includes your ${usd2.format(me.prizeUsdc)} prize` : " — your share of the vault money"}</p>
                           <button
                             className="btn primary full"
                             onClick={() => doClaim(false)}
@@ -707,7 +796,7 @@ export default function ArenaView({ arenaCode }: { arenaCode: string }) {
                           </div>
                         </>
                       ) : (
-                        <p>{picksMode ? "No prize this time — nothing to withdraw." : "Your vault finished at $0 — nothing to withdraw this time."}</p>
+                        <p>{entryOnly ? "No prize this time — nothing to withdraw." : "Your vault finished at $0 — nothing to withdraw this time."}</p>
                       )}
                     </div>
                   )}
@@ -728,19 +817,19 @@ export default function ArenaView({ arenaCode }: { arenaCode: string }) {
                   )}
 
                   {!round.escrow && <p className="disclaimer">Practice round — no USDC moved.</p>}
-                  <button className="btn primary" onClick={() => { setInviteInfo(null); setHCall(""); if (picksMode) setHFormat("predictions"); setShowHost(true); }} disabled={busy}>Host the next rumble →</button>
+                  <button className="btn primary" onClick={() => { setInviteInfo(null); setHCall(""); if (entryOnly) setHFormat(streakMode ? "streak" : "predictions"); setShowHost(true); }} disabled={busy}>Host the next rumble →</button>
                   <div className="final-board">
                     <div className="fb-row fb-head" aria-hidden="true">
                       <span className="fb-rank">#</span>
                       <span className="fb-name">Player</span>
-                      <span className="fb-bank">{picksMode ? "Right" : "Final vault"}</span>
+                      <span className="fb-bank">{picksMode ? "Points" : streakMode ? "Lasted" : "Final vault"}</span>
                       <span className="fb-prize">{round.escrow ? "Payout" : "Prize"}</span>
                     </div>
                     {standings.map((e, i) => (
                       <div key={e.id} className={`fb-row ${e.wallet === wallet ? "me" : ""}`}>
-                        <span className="fb-rank">{picksMode ? scorePlace(round, e) : i + 1}</span>
+                        <span className="fb-rank">{entryOnly ? scorePlace(round, e) : i + 1}</span>
                         <span className="fb-name">{displayName(e)}{e.isBot ? " ·bot" : ""}</span>
-                        <span className="fb-bank">{picksMode ? `${e.score ?? 0}/${questions.length}` : usd2.format(e.bankroll)}</span>
+                        <span className="fb-bank">{picksMode ? `${e.score ?? 0} pts` : streakMode ? `${e.score ?? 0} leg${(e.score ?? 0) === 1 ? "" : "s"}` : usd2.format(e.bankroll)}</span>
                         <span className="fb-prize">
                           {e.isBot ? "" : round.escrow ? usd2.format(projected[e.wallet] ?? 0) : e.prizeUsdc > 0 ? `+${usd2.format(e.prizeUsdc)}` : ""}
                         </span>
@@ -788,6 +877,80 @@ export default function ArenaView({ arenaCode }: { arenaCode: string }) {
               </>
             )}
           </div>
+        ) : streakMode && round.streak ? (
+          <div className="cockpit">
+            <div className="trade-col pk-col" id="streak">
+              <div className="tc-head">
+                <div>
+                  <span className="cat">Streak · {Math.round(round.config.liveSec / 60)}-min legs</span>
+                  <h2>
+                    {round.status === "enrolling" ? "Last caller standing. One wrong pick and you're out."
+                      : round.status === "live" && leg ? `Leg ${leg.n}: ${leg.question.text}`
+                      : "Working out the results…"}
+                  </h2>
+                </div>
+                {deadline > 0 && (
+                  <div className="pk-clock">
+                    <b className="mono">{round.status === "enrolling" && standings.every((e) => e.isBot) ? "—" : fmtClock(timeLeft)}</b>
+                    <span>{round.status === "enrolling" ? "until it starts" : round.streak.phase === "picking" ? "to pick" : "left in the leg"}</span>
+                  </div>
+                )}
+              </div>
+
+              {round.status === "enrolling" && !enrolled ? (
+                <div className="enroll-cta">
+                  <p>
+                    A chain of quick calls on BTC, ETH and SOL. Each leg you get {PICK_MS / 1000} seconds to pick, then it runs
+                    for {Math.round(round.config.liveSec / 60)} minute{round.config.liveSec === 60 ? "" : "s"} on live prices. Right, and you&apos;re through; wrong — or no pick — and you&apos;re out.
+                    The last player standing takes the pool. Your seat is <b>{usd2.format(round.config.entryUsdc)}</b>{round.escrow ? "" : " (free here — practice)"}.
+                  </p>
+                  <ul className="sk-rules">
+                    <li>Picks are hidden until each leg starts — going against the crowd is how you end up alone.</li>
+                    <li>If everyone still in misses a leg, or it ends dead level, nobody goes out.</li>
+                    <li>Up to {MAX_LEGS} legs; players still in after that split the pool.</li>
+                  </ul>
+                  <div className="cta-row">
+                    <button className="btn primary" onClick={() => { if (!wallet) { connect(); return; } setShowEnroll(true); }} disabled={busy}>
+                      {wallet ? "Take a seat" : "Connect to play"}
+                    </button>
+                    <button className="btn secondary" onClick={() => { setInviteInfo(null); setHCall(""); setHFormat("streak"); setShowHost(true); }} disabled={busy}>Host your own</button>
+                    {!isPublic && <button className="btn secondary" onClick={() => doCopyInvite()}>Copy invite link</button>}
+                  </div>
+                </div>
+              ) : (
+                <>
+                  {round.status === "enrolling" && (
+                    <p className="last-call">
+                      <b>You&apos;re in.</b> Leg 1 is below — pick now or in the {PICK_MS / 1000}-second window once the game starts.
+                    </p>
+                  )}
+                  {round.status === "live" && (
+                    <p className="last-call">{phaseText(round, now)} · {aliveCount} of {standings.length} still in</p>
+                  )}
+                  <StreakLegCard
+                    round={round}
+                    me={me}
+                    now={now}
+                    busy={busy}
+                    myDraft={leg && streakDraft?.n === leg.n ? streakDraft.pick : undefined}
+                    onPick={doStreakPick}
+                  />
+                  <StreakHistory round={round} me={me} />
+                  {round.status === "enrolling" && !isPublic && currentInviteUrl && (
+                    <div className="invite-inline">
+                      <span className="call-k">Invite players · {standings.filter((e) => !e.isBot).length}/{round.config.capacity} seats taken</span>
+                      <div className="invite-inline-row">
+                        <input readOnly value={currentInviteUrl} onFocus={(e) => e.currentTarget.select()} aria-label="Invite link" />
+                        <button className="btn secondary sm" onClick={() => doCopyInvite()}>Copy link</button>
+                      </div>
+                      <p className="call-note">Elimination needs a crowd — the more players, the better the game. If nobody else joins you play a bot, and your entry comes back.</p>
+                    </div>
+                  )}
+                </>
+              )}
+            </div>
+            <StreakRoster round={round} standings={standings} wallet={wallet} />
+          </div>
         ) : picksMode ? (
           <div className="cockpit">
             <div className="trade-col pk-col" id="picks">
@@ -795,7 +958,7 @@ export default function ArenaView({ arenaCode }: { arenaCode: string }) {
                 <div>
                   <span className="cat">Predictions · {Math.round(round.config.liveSec / 60)} min</span>
                   <h2>
-                    {round.status === "enrolling" ? "Five picks on BTC, ETH and SOL. Most right answers wins."
+                    {round.status === "enrolling" ? "Five picks on BTC, ETH and SOL. Most points wins."
                       : round.status === "live" ? "Picks are locked — now the coins decide."
                       : "Working out the results…"}
                   </h2>
@@ -813,13 +976,13 @@ export default function ArenaView({ arenaCode }: { arenaCode: string }) {
                   <p>
                     Answer five questions about the next <b>{Math.round(round.config.liveSec / 60)} minutes</b>: is each coin up or down, which does best, and one head-to-head.
                     Nothing to trade — your seat is <b>{usd2.format(round.config.entryUsdc)}</b> into the prize pool{round.escrow ? "" : " (free here — practice)"}.
-                    Picks stay hidden until the round starts, and the most right answers take the pool.
+                    Picks stay hidden until the round starts, and the most points take the pool. Lock 2 or 3 picks together for bonus points — if they all land.
                   </p>
                   <ol className="pk-preview" aria-label="This round's questions">
                     {questions.map((q) => <li key={q.id}>{q.text}</li>)}
                   </ol>
                   <div className="cta-row">
-                    <button className="btn primary" onClick={() => { if (!wallet) { connect(); return; } setSeatPicks({}); setShowEnroll(true); }} disabled={busy}>
+                    <button className="btn primary" onClick={() => { if (!wallet) { connect(); return; } setSeatPicks({}); setSeatLocks([]); setShowEnroll(true); }} disabled={busy}>
                       {wallet ? "Make your picks" : "Connect to play"}
                     </button>
                     <button className="btn secondary" onClick={() => { setInviteInfo(null); setHCall(""); setHFormat("predictions"); setShowHost(true); }} disabled={busy}>Host your own</button>
@@ -844,7 +1007,7 @@ export default function ArenaView({ arenaCode }: { arenaCode: string }) {
                       Change any of them until the round locks{deadline > 0 ? <> in <b className="mono">{fmtClock(timeLeft)}</b></> : null}; each click saves.
                     </p>
                   )}
-                  <PicksEditor questions={questions} picks={myPicks} onPick={doPick} />
+                  <PicksEditor questions={questions} picks={myPicks} onPick={doPick} locks={myLocks} onToggleLock={doToggleLock} />
                   {!isPublic && currentInviteUrl && (
                     <div className="invite-inline">
                       <span className="call-k">Invite players · {standings.filter((e) => !e.isBot).length}/{round.config.capacity} seats taken</span>
@@ -862,7 +1025,7 @@ export default function ArenaView({ arenaCode }: { arenaCode: string }) {
                     {round.oracle?.open
                       ? <>Every coin is judged against its price when picks locked. </>
                       : <>Waiting for the opening prices… </>}
-                    {me ? <>Right now you have <b>{me.score ?? 0} of {questions.length}</b>{scorePlace(round, me, true) <= paidPlaces(round) ? " — in the money" : ""}.</> : <>You&apos;re watching — enrollment has closed.</>}
+                    {me ? <>Right now you have <b>{me.score ?? 0} pts</b>{scorePlace(round, me, true) <= paidPlaces(round) ? " — in the money" : ""}.</> : <>You&apos;re watching — enrollment has closed.</>}
                   </p>
                   <PicksBoard round={round} me={me} entrants={standings} />
                   <p className="pk-key">
@@ -1088,13 +1251,22 @@ export default function ArenaView({ arenaCode }: { arenaCode: string }) {
       {/* ── HOW IT WORKS ────────────────────────────────────── */}
       <section className="how-shell" id="how">
         <h2>How the arena works</h2>
-        {picksMode ? (
+        {streakMode ? (
+        <div className="how-grid">
+          <div><b>1 · One seat, one entry</b><p>Everyone pays the same entry into the prize pool. There&apos;s no vault and nothing to trade.</p></div>
+          <div><b>2 · One call per leg</b><p>Each leg asks one question: a coin up or down, a head-to-head, or which of BTC, ETH and SOL does best. You get {PICK_MS / 1000} seconds to pick.</p></div>
+          <div><b>3 · Hidden, then revealed</b><p>Nobody sees your pick while the window is open. When it closes, the leg starts at the live price and everyone&apos;s picks are shown.</p></div>
+          <div><b>4 · Wrong and you&apos;re out</b><p>A wrong pick — or no pick — knocks you out. If everyone still in misses, or the leg ends dead level, nobody goes out.</p></div>
+          <div><b>5 · Last caller standing</b><p>The game ends when one player is left, or after {MAX_LEGS} legs. The pool goes to whoever lasted longest — ties split their places.</p></div>
+          <div><b>6 · Read the room</b><p>Short moves are close to a coin flip, so the edge is the crowd: if everyone calls UP, DOWN is how you end up alone.</p></div>
+        </div>
+        ) : picksMode ? (
         <div className="how-grid">
           <div><b>1 · One seat, one entry</b><p>Everyone pays the same entry into the prize pool. There&apos;s no vault and nothing to trade.</p></div>
           <div><b>2 · Five picks</b><p>BTC, ETH and SOL: each up or down, which does best (biggest % gain or smallest drop), and one head-to-head.</p></div>
           <div><b>3 · Hidden until the start</b><p>Nobody sees your picks while enrollment is open. You can change them until the round locks — then everyone&apos;s picks are revealed.</p></div>
           <div><b>4 · The prices decide</b><p>Each coin is judged against its live price at the lock. At the close every right answer is a point; a dead-level result scores for nobody.</p></div>
-          <div><b>5 · Most right answers wins</b><p>The top scores take the pool — 62.5% / 23.4% / 14.1%, or all of it in a duel. Players who tie split the places they share.</p></div>
+          <div><b>5 · Most points wins</b><p>Each right answer is a point; a lock of 2–3 picks that all land adds a point each, but one miss zeroes the lock. The top scores take the pool — 62.5% / 23.4% / 14.1%, or all of it in a duel. Players who tie split the places they share.</p></div>
           <div><b>6 · Withdraw</b><p>Winners withdraw their prize from the arena or the Positions page once the results are recorded on chain.</p></div>
         </div>
         ) : (
@@ -1140,7 +1312,7 @@ export default function ArenaView({ arenaCode }: { arenaCode: string }) {
         const rounds = round.config.format === "royale" ? round.config.roundLimit : 1;
         const cta = callPick === "YES" ? "call UP" : callPick === "NO" ? "call DOWN" : "join";
         const seatPicked = pickCount(questions, seatPicks);
-        const ready = picksMode ? seatPicked >= questions.length : !!callPick;
+        const ready = streakMode ? true : picksMode ? seatPicked >= questions.length : !!callPick;
         return (
           <div className="modal-backdrop" onClick={() => { if (!busy) setShowEnroll(false); }}>
             <div className="modal seat-modal" role="dialog" aria-modal="true" aria-labelledby="seat-title" onClick={(e) => e.stopPropagation()}>
@@ -1149,10 +1321,17 @@ export default function ArenaView({ arenaCode }: { arenaCode: string }) {
               <p className="sub">Arena <b>{arenaCode}</b> · {round.config.marketQuestion}</p>
 
               <form onSubmit={(e) => { e.preventDefault(); if (ok && ready && !busy && wallet) doEnroll(); }}>
-                {picksMode ? (
+                {streakMode ? (
+                  <div className="call-pick sk-seat">
+                    <p className="call-explain">
+                      Each leg asks one question about BTC, ETH or SOL. You get {PICK_MS / 1000} seconds to pick, then the leg runs for {Math.round(round.config.liveSec / 60)} minute{round.config.liveSec === 60 ? "" : "s"}.
+                      A wrong pick — or no pick — knocks you out. Stay on this page while you play: legs come quickly.
+                    </p>
+                  </div>
+                ) : picksMode ? (
                   <fieldset className="call-pick">
                     <legend>Your picks · hidden from everyone until the round starts</legend>
-                    <PicksEditor questions={questions} picks={seatPicks} onPick={(q, o) => setSeatPicks((p) => ({ ...p, [q]: o }))} disabled={busy} compact />
+                    <PicksEditor questions={questions} picks={seatPicks} onPick={(q, o) => setSeatPicks((p) => ({ ...p, [q]: o }))} disabled={busy} compact locks={seatLocks} onToggleLock={toggleSeatLock} />
                     <p className="call-explain" role="status">
                       Each coin is judged against its price when picks lock. &ldquo;Best&rdquo; means the biggest % gain (or smallest drop). You can change picks until the round starts.
                     </p>
@@ -1190,17 +1369,21 @@ export default function ArenaView({ arenaCode }: { arenaCode: string }) {
 
                 <ol className="seat-steps" aria-label="How this round plays">
                   <li><b>Enrollment</b> {round.status === "enrolling" && deadline > 0 && standings.some((e) => !e.isBot) ? <>closes in <span className="mono">{fmtClock(timeLeft)}</span></> : isPublic ? `runs ${round.config.enrollmentSec}s from the first seat` : "open"}</li>
-                  {picksMode
+                  {streakMode
+                    ? <li><b>Up to {MAX_LEGS} legs</b> of {liveMin} min, {PICK_MS / 1000}s to pick each — no trading</li>
+                    : picksMode
                     ? <li><b>{liveMin} min</b> on the live BTC, ETH and SOL prices — no trading</li>
                     : <li><b>{liveMin} min</b> of trading on the live {asset} price{rounds > 1 ? `, ${rounds} rounds` : ""}</li>}
-                  {picksMode
-                    ? <li><b>Most right answers</b> take the pool · ties split their places</li>
+                  {streakMode
+                    ? <li><b>Last caller standing</b> takes the pool · ties split their places</li>
+                    : picksMode
+                    ? <li><b>Most points</b> take the pool · ties split their places</li>
                     : <li><b>Top finishers</b> split the pool · everyone is paid out after the round</li>}
                 </ol>
 
                 <dl className="seat-breakdown">
                   <div><dt>Entry → shared prize pool</dt><dd>{usd2.format(round.config.entryUsdc)}</dd></div>
-                  {!picksMode && <div><dt>Vault → your trading bankroll</dt><dd>{usd2.format(vault)}</dd></div>}
+                  {!entryOnly && <div><dt>Vault → your trading bankroll</dt><dd>{usd2.format(vault)}</dd></div>}
                   <div className="total">
                     <dt>{round.escrow ? "Total deposit" : "Practice seat"}</dt>
                     <dd>{round.escrow ? `${usd2.format(seat)} USDC` : "free — no USDC moves"}</dd>
@@ -1224,6 +1407,7 @@ export default function ArenaView({ arenaCode }: { arenaCode: string }) {
                 <button type="submit" className="btn primary full" disabled={busy || !ok || !wallet || !ready} style={{ marginTop: 10 }}>
                   {busy ? (seatStep ? seatStepText(seatStep, seat, callPick === "YES" || callPick === "NO" ? callPick : null).button : "Checking your wallet…")
                     : !wallet ? "Connect a wallet first"
+                    : streakMode ? (round.escrow ? `Deposit ${usd2.format(seat)} & take a seat` : "Take a practice seat")
                     : picksMode && !ready ? `Answer all ${questions.length} questions · ${seatPicked}/${questions.length}`
                     : picksMode ? (round.escrow ? `Deposit ${usd2.format(seat)} & lock in my picks` : "Take a practice seat")
                     : !callPick ? "Pick UP, DOWN or decide later"
@@ -1231,7 +1415,7 @@ export default function ArenaView({ arenaCode }: { arenaCode: string }) {
                 </button>
               </form>
               <p className="disclaimer" style={{ marginTop: 12 }}>
-                {round.escrow && picksMode
+                {round.escrow && entryOnly
                   ? <>Held in a non-custodial escrow program on Solana {CLUSTER}. After settlement, winners withdraw their prize to this wallet.</>
                   : round.escrow
                   ? <>Held in a non-custodial escrow program on Solana {CLUSTER}. After settlement you withdraw your payout: any prize plus your share of the vault money.</>
@@ -1276,10 +1460,12 @@ export default function ArenaView({ arenaCode }: { arenaCode: string }) {
                 </div>
 
                 <button className="btn primary full" onClick={() => goToArena(inviteInfo.code)} style={{ marginTop: 12 }}>
-                  {hostPicks ? `Make my picks in ${inviteInfo.code} →` : `Go to arena ${inviteInfo.code} →`}
+                  {hostStreak ? `Go to ${inviteInfo.code} and pick leg 1 →` : hostPicks ? `Make my picks in ${inviteInfo.code} →` : `Go to arena ${inviteInfo.code} →`}
                 </button>
                 <p className="disclaimer" style={{ marginTop: 10 }}>
-                  {hostPicks
+                  {hostStreak
+                    ? "Next: open the arena and pick leg 1. The game starts when enrollment closes — stay on the page, legs come quickly."
+                    : hostPicks
                     ? "Next: open the arena and make your five picks — they lock when enrollment closes."
                     : "Enrollment is open now. Your game starts the moment the timer locks, with whoever joined."}
                 </p>
@@ -1296,11 +1482,14 @@ export default function ArenaView({ arenaCode }: { arenaCode: string }) {
                     <button className={hFormat === "single" ? "seg-opt on" : "seg-opt"} onClick={() => setHFormat("single")}>Single round</button>
                     <button className={hFormat === "royale" ? "seg-opt on" : "seg-opt"} onClick={() => setHFormat("royale")}>Royale</button>
                     <button className={hFormat === "predictions" ? "seg-opt on" : "seg-opt"} onClick={() => setHFormat("predictions")}>Predictions</button>
+                    <button className={hFormat === "streak" ? "seg-opt on" : "seg-opt"} onClick={() => setHFormat("streak")}>Streak</button>
                   </div>
                 </div>
                 {hostPicks && (
                   <p className="host-call-help" role="status">
-                    No trading: everyone answers five questions on BTC, ETH and SOL (up or down, which does best, a head-to-head). Most right answers take the pool. You make your picks in the arena after it opens.
+                    {hostStreak
+                      ? `No trading: a chain of quick calls on BTC, ETH and SOL. ${PICK_MS / 1000}s to pick each leg; a wrong pick and you're out. Last caller standing takes the pool.`
+                      : "No trading: everyone answers five questions on BTC, ETH and SOL (up or down, which does best, a head-to-head). Most points take the pool. You make your picks in the arena after it opens."}
                   </p>
                 )}
 
@@ -1334,6 +1523,16 @@ export default function ArenaView({ arenaCode }: { arenaCode: string }) {
                 </div>
                 </>)}
 
+                {hostStreak ? (
+                  <div className="host-field">
+                    <span className="host-label">Leg length</span>
+                    <div className="seg">
+                      {LEG_LENGTHS.map((sec) => (
+                        <button key={sec} className={hLegSec === sec ? "seg-opt on" : "seg-opt"} onClick={() => setHLegSec(sec)}>{sec / 60} min</button>
+                      ))}
+                    </div>
+                  </div>
+                ) : (
                 <div className="host-field">
                   <span className="host-label">Timeframe</span>
                   <div className="seg">
@@ -1344,6 +1543,7 @@ export default function ArenaView({ arenaCode }: { arenaCode: string }) {
                     ))}
                   </div>
                 </div>
+                )}
 
                 {hFormat === "royale" && (
                   <div className="host-field">
@@ -1383,13 +1583,13 @@ export default function ArenaView({ arenaCode }: { arenaCode: string }) {
                 <div className="host-summary">
                   <div><span>Seat per player</span><b>{usd2.format(hostSeat)}</b></div>
                   <div><span>Pool if full</span><b className="accent">{usd2.format((Number(hEntry) || 0) * hCapacity)}</b></div>
-                  <div><span>Format</span><b>{hostPicks ? "5 picks · 1 round" : hFormat === "single" ? "1 round" : `${hRounds} rounds · cut`}</b></div>
+                  <div><span>Format</span><b>{hostStreak ? `Up to ${MAX_LEGS} legs` : hostPicks ? "5 picks · 1 round" : hFormat === "single" ? "1 round" : `${hRounds} rounds · cut`}</b></div>
                 </div>
 
                 {hostError && <p className="jc-error" role="alert">{hostError}</p>}
                 <button className="btn primary full" onClick={doHost} disabled={busy || !!hostError || (!!wallet && !hCall && !hostPicks)} style={{ marginTop: 12 }}>
                   {busy ? (seatStep ? seatStepText(seatStep, hostSeat).button : "Opening…")
-                    : !wallet ? (hostPicks ? "Open practice predictions" : `Open ${hAsset} practice rumble`)
+                    : !wallet ? (hostStreak ? "Open practice streak" : hostPicks ? "Open practice predictions" : `Open ${hAsset} practice rumble`)
                     : hostPicks ? `Deposit ${usd2.format(hostSeat)} & take seat 1 · get invite link`
                     : !hCall ? `Pick UP or DOWN on ${hAsset}`
                     : `Deposit ${usd2.format(hostSeat)} & ${hCall === "YES" ? "call UP" : hCall === "NO" ? "call DOWN" : "open"} · get invite link`}
@@ -1406,16 +1606,30 @@ export default function ArenaView({ arenaCode }: { arenaCode: string }) {
   );
 }
 
-/** "nova wins $3.75 with 4/5" or "nova and kai tie on 4/5". */
-function predictionsHeadline(standings: Entrant[], total: number): string {
+/** "nova wins $3.75 with 6 pts" or "nova and kai tie on 4 pts". */
+function predictionsHeadline(standings: Entrant[]): string {
   const humans = standings.filter((e) => !e.isBot);
   const best = humans[0];
   if (!best) return "Predictions complete";
-  if (humans.length === 1) return `${displayName(best)} scored ${best.score ?? 0}/${total} — entry returned`;
+  const pts = (n: number | undefined) => `${n ?? 0} pt${(n ?? 0) === 1 ? "" : "s"}`;
+  if (humans.length === 1) return `${displayName(best)} scored ${pts(best.score)} — entry returned`;
   const top = humans.filter((e) => (e.score ?? 0) === (best.score ?? 0));
-  if (top.length === 1) return `${displayName(best)} wins ${usd2.format(best.prizeUsdc)} with ${best.score ?? 0}/${total}`;
-  if (top.length === 2) return `${displayName(top[0])} and ${displayName(top[1])} tie on ${best.score ?? 0}/${total}`;
-  return `${top.length} players tie on ${best.score ?? 0}/${total}`;
+  if (top.length === 1) return `${displayName(best)} wins ${usd2.format(best.prizeUsdc)} with ${pts(best.score)}`;
+  if (top.length === 2) return `${displayName(top[0])} and ${displayName(top[1])} tie on ${pts(best.score)}`;
+  return `${top.length} players tie on ${pts(best.score)}`;
+}
+
+/** "nova is the last caller standing" or "nova and kai survive 6 legs". */
+function streakHeadline(standings: Entrant[]): string {
+  const humans = standings.filter((e) => !e.isBot);
+  const best = humans[0];
+  if (!best) return "Streak complete";
+  const legs = (n: number | undefined) => `${n ?? 0} leg${(n ?? 0) === 1 ? "" : "s"}`;
+  if (humans.length === 1) return `${displayName(best)} lasted ${legs(best.score)} — entry returned`;
+  const top = humans.filter((e) => (e.score ?? 0) === (best.score ?? 0));
+  if (top.length === 1) return best.eliminatedRound === null ? `${displayName(best)} is the last caller standing` : `${displayName(best)} lasted ${legs(best.score)} and wins ${usd2.format(best.prizeUsdc)}`;
+  if (top.length === 2) return `${displayName(top[0])} and ${displayName(top[1])} survive ${legs(best.score)}`;
+  return `${top.length} players survive ${legs(best.score)}`;
 }
 
 /** Plain-language reason from the round's last cancellation event. */

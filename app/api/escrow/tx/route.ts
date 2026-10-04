@@ -4,7 +4,7 @@ import { PublicKey } from "@solana/web3.js";
 import { buildDepositTx, buildWithdrawTx, escrowReady, playerBalances, readPlayerEntry, readVault, verifyPlayerDeposited } from "@/lib/escrow-server";
 import { getActiveRound, getLatestRound, mutateActiveRound } from "@/lib/round-store";
 import { normalizeArenaCode, normalizeCallPct, seatCostUsdc, type Side } from "@/lib/royale";
-import { normalizePicks } from "@/lib/predictions";
+import { normalizeLocks, normalizePicks } from "@/lib/predictions";
 import { validateUsername } from "@/lib/username";
 
 /** Cap on remembered pending seats per arena (anti-spam). */
@@ -37,6 +37,7 @@ export async function POST(request: Request) {
     openingCall?: Side | null;
     openingCallPct?: number;
     picks?: Record<string, string>;
+    locks?: string[];
   };
   if (!escrowReady()) {
     return NextResponse.json({ escrow: "inactive" });
@@ -143,14 +144,14 @@ export async function POST(request: Request) {
         const pending = (r.escrow.pendingSeats ??= {});
         if (!pending[body.wallet] && Object.keys(pending).length >= MAX_PENDING_SEATS) return;
         pending[body.wallet] = r.predictions
-          ? { nickname: name.ok ? name.value : "", openingCall: null, picks: normalizePicks(r.predictions.questions, body.picks) }
+          ? { nickname: name.ok ? name.value : "", openingCall: null, picks: normalizePicks(r.predictions.questions, body.picks), locks: normalizeLocks(r.predictions.questions, body.locks) }
           : { nickname: name.ok ? name.value : "", openingCall, openingCallPct: normalizeCallPct(body.openingCallPct) };
       }).catch(() => { /* best effort — enroll carries the same data */ });
     }
 
     // The memo is public on chain, so it never carries a hidden call or picks.
     const seatUsdc = seatCostUsdc(round.config);
-    const game = round.config.format === "predictions" ? "predictions" : `${round.config.asset} ${round.config.format === "royale" ? "royale" : "single round"}`;
+    const game = round.config.format === "predictions" || round.config.format === "streak" ? round.config.format : `${round.config.asset} ${round.config.format === "royale" ? "royale" : "single round"}`;
     const memo = `Oracle Rumble arena ${arena}: ${seatUsdc.toFixed(2)} USDC seat, ${game}`;
     const res = body.action === "deposit"
       ? await buildDepositTx(wallet, roundVault, memo)

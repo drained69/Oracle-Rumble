@@ -32,8 +32,8 @@ export async function GET(req: Request) {
     const events: Event[] = [];
     for (const { arenaCode, latest } of rooms) {
       if (isPracticeArena(arenaCode)) continue;
-      // A predictions arena covers all three coins.
-      const asset = latest.config.format === "predictions" ? "Predictions" : latest.config.asset;
+      // Predictions and Streak arenas cover all three coins.
+      const asset = latest.config.format === "predictions" ? "Predictions" : latest.config.format === "streak" ? "Streak" : latest.config.asset;
 
       // ── Arena-level opens / settles ─────────────────────────────
       if (latest.roundNumber === 1 && latest.createdAt) {

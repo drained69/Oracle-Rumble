@@ -12,6 +12,7 @@ import { PANTA_LIVE, pantaFetch, type PantaMarket } from "@/lib/panta";
 import { markets as directionMarkets, findMockMarket } from "@/lib/arena-data";
 import { ASSET_SYMBOLS, assetOfMarketId, directionMarketId, getAsset, HORIZONS, type AssetSymbol, type Horizon } from "@/lib/assets";
 import { answersFor, predictionQuestions, randomPicks, scorePicks } from "@/lib/predictions";
+import { createStreak, currentLeg, normalizeLegSec, resolveLeg, runLeg, startStreak } from "@/lib/streak";
 import { freshSpots, resolvedCents, spotPrices, spotPricesAt, upCents, type Spots } from "@/lib/oracle";
 import {
   advance,
@@ -22,6 +23,7 @@ import {
   humanCount,
   markToMarket,
   normalizeConfig,
+  isPicksFormat,
   isPracticeArena,
   placeOpeningCalls,
   settle,
@@ -57,6 +59,7 @@ export function isDirectionRound(round: Round): boolean {
 
 /** Assets whose open and close a round needs: all three for predictions, else its own. */
 function neededAssets(round: Round): AssetSymbol[] {
+  if (round.streak) return currentLeg(round.streak).question.assets;
   return round.config.format === "predictions" ? ASSET_SYMBOLS : [round.config.asset as AssetSymbol];
 }
 
@@ -66,7 +69,7 @@ function scoreLive(round: Round, spots: Spots): void {
   const open = round.oracle?.open;
   if (!st || !open) return;
   const live = answersFor(st.questions, open, { ...(round.oracle?.last ?? {}), ...spots });
-  for (const e of round.entrants) e.score = scorePicks(e.picks, live);
+  for (const e of round.entrants) e.score = scorePicks(e.picks, live, e.locks);
 }
 
 /**
@@ -252,8 +255,8 @@ export async function pickMarket(excludeId?: string): Promise<MarketPick | null>
  * that asset's market; otherwise the keeper picks one.
  */
 export async function bootstrapRound(overrides?: Partial<RoundConfig> & { horizon?: string }, arenaCode?: string): Promise<Round | null> {
-  const predictions = overrides?.format === "predictions";
-  // A predictions round covers all three coins; its clock runs on BTC's market.
+  const predictions = isPicksFormat(overrides?.format);
+  // Predictions and Streak cover all three coins; their clock runs on BTC's market.
   const wantAsset = predictions ? "BTC" : overrides?.asset ? String(overrides.asset).toUpperCase() : undefined;
   // A day-long market can't run as one arena round; it plays as the hour.
   const rawHorizon = overrides?.horizon ? String(overrides.horizon).toUpperCase() : undefined;
@@ -287,8 +290,14 @@ export async function bootstrapRound(overrides?: Partial<RoundConfig> & { horizo
     config.asset = "BTC";
     config.marketQuestion = `Predictions · BTC, ETH and SOL ${hz.label}`;
   }
+  if (config.format === "streak") {
+    // liveSec is the leg length (1, 2 or 5 minutes).
+    config.liveSec = normalizeLegSec(overrides?.liveSec);
+    config.marketQuestion = `Streak · last caller standing`;
+  }
   const round = createRound(config, 1, arenaCode);
   if (config.format === "predictions") round.predictions = { questions: predictionQuestions(`${round.arenaCode}:${round.id}`) };
+  if (config.format === "streak") round.streak = createStreak(`${round.arenaCode}:${round.id}`, config.liveSec);
   return round;
 }
 
@@ -369,7 +378,7 @@ export function tick(round: Round, pricing: Pricing): Round {
     // The open price is the whole bet — wait (briefly) for the oracle
     // rather than open a round nobody can resolve.
     const need = neededAssets(round);
-    if (direction && need.some((a) => !pricing.spots[a]) && now < round.enrollDeadline + ORACLE_WAIT_MS) return round;
+    if (direction && !round.streak && need.some((a) => !pricing.spots[a]) && now < round.enrollDeadline + ORACLE_WAIT_MS) return round;
     // Thin backfill: only add bots to reach the minimum to run a game, and
     // never pad beyond the number of real players. A 5-human lobby runs
     // 5-handed; a solo host gets one opponent so the game can start. Real
@@ -390,8 +399,14 @@ export function tick(round: Round, pricing: Pricing): Round {
     round.liveDeadline = now + round.config.liveSec * 1000;
     logEvent(round, round.predictions
       ? `Enrollment locked — ${round.entrants.length} players, picks revealed.`
-      : `Enrollment locked — ${round.entrants.length} entrants live on ${round.config.asset}.`);
-    if (round.predictions) {
+      : round.streak
+        ? `Enrollment locked — ${round.entrants.length} players in. Wrong pick and you're out.`
+        : `Enrollment locked — ${round.entrants.length} entrants live on ${round.config.asset}.`);
+    if (round.streak) {
+      // Keep sampling all three coins for the live view; each leg opens itself.
+      if (pricing.spots.BTC || pricing.spots.ETH || pricing.spots.SOL) openOracle(round, pricing.spots, now);
+      startStreak(round, now);
+    } else if (round.predictions) {
       if (pricing.spots.BTC || pricing.spots.ETH || pricing.spots.SOL) {
         openOracle(round, pricing.spots, now);
         logEvent(round, `Picks locked. Opening prices: ${need.map((a) => `${a} ${pricing.spots[a] ? usdFmt(pricing.spots[a]!) : "unavailable"}`).join(", ")}.`);
@@ -404,6 +419,25 @@ export function tick(round: Round, pricing: Pricing): Round {
       // UP/DOWN calls picked at the seat go in at the opening price.
       placeOpeningCalls(round, direction ? 50 : pricing.yesPrice);
     }
+  }
+
+  if (round.status === "live" && round.streak) {
+    const st = round.streak;
+    if (!round.oracle?.open && (pricing.spots.BTC || pricing.spots.ETH || pricing.spots.SOL)) openOracle(round, pricing.spots, now);
+    if (st.phase === "picking" && now >= st.phaseEndsAt) {
+      // Picks are locked from phaseEndsAt (the picks route checks the time).
+      // Open the leg on the coins it asks about — waiting briefly for prices.
+      const need = neededAssets(round);
+      if (need.some((a) => !pricing.spots[a]) && now < st.phaseEndsAt + ORACLE_WAIT_MS) return round;
+      runLeg(round, pricing.spots, now);
+      return round;
+    }
+    if (st.phase === "running" && now >= st.phaseEndsAt) {
+      const close = closeSample(round, pricing, prevSample, now);
+      if (!close && now < st.phaseEndsAt + ORACLE_WAIT_MS) return round;
+      resolveLeg(round, close ?? {}, now);
+    }
+    return round;
   }
 
   if (round.status === "live" && round.predictions) {

@@ -5,6 +5,7 @@ import { latestRoundsForWallet } from "@/lib/round-store";
 import { livePricing, yesAfterTick } from "@/lib/round-keeper";
 import { cutLine, finishingOrder, markToMarket, paidPlaces, scorePlace, standings, type Entrant, type Round } from "@/lib/royale";
 import { pickCount } from "@/lib/predictions";
+import { currentLeg } from "@/lib/streak";
 import { sessionWallet } from "@/lib/session";
 import { limitByIp } from "@/lib/rate-limit";
 import type { Portfolio, PortfolioAction, PortfolioItem } from "@/lib/portfolio";
@@ -50,7 +51,7 @@ function myView(round: Round, me: Entrant, yes: number | null, showCall: boolean
   const order = done ? finishingOrder(round) : standings(round).filter((x) => x.eliminatedRound === null);
   const idx = order.findIndex((x) => x.wallet === me.wallet);
   const markPrice = yes === null || !e.side ? null : e.side === "YES" ? yes : 100 - yes;
-  const predictions = round.config.format === "predictions";
+  const predictions = round.config.format === "predictions" || round.config.format === "streak";
   const questions = round.predictions?.questions.length ?? 0;
   return {
     nickname: me.nickname,
@@ -71,7 +72,13 @@ function myView(round: Round, me: Entrant, yes: number | null, showCall: boolean
     score: predictions ? me.score ?? 0 : null,
     questions,
     picksMade: predictions && showCall ? pickCount(round.predictions?.questions, me.picks) : null,
-    inMoney: predictions && round.status === "live" ? scorePlace(round, me, true) <= paidPlaces(round) : null
+    inMoney: predictions && round.status === "live" ? scorePlace(round, me, true) <= paidPlaces(round) : null,
+    streak: round.streak ? {
+      leg: currentLeg(round.streak).n,
+      maxLegs: round.streak.maxLegs,
+      alive: me.eliminatedRound === null,
+      picked: showCall && !!currentLeg(round.streak).picks[me.id]
+    } : null
   };
 }
 

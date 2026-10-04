@@ -55,8 +55,9 @@ export async function POST(request: Request) {
     escrowSignature?: string;
     openingCall?: Side | null;
     openingCallPct?: number;
-    /** Predictions arena: question id → option id. */
+    /** Predictions arena: question id → option id, and the locked questions. */
     picks?: Record<string, string>;
+    locks?: string[];
   };
   if (!body?.wallet) return NextResponse.json({ error: "wallet required" }, { status: 400 });
   // Only the wallet itself (signed-in session) may act for its seat.
@@ -121,7 +122,8 @@ export async function POST(request: Request) {
       signature: body.escrowSignature,
       openingCall,
       openingCallPct: normalizeCallPct(body.openingCallPct),
-      picks: body.picks
+      picks: body.picks,
+      locks: body.locks
     });
     if (!res.ok) {
       enrollError = res.reason;

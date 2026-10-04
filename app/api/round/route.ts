@@ -1,7 +1,8 @@
 import { NextResponse } from "next/server";
 import { STORE_ENABLED, withKeeperLock } from "@/lib/round-store";
 import { advanceToNext, bootstrapRound, livePricing, pickMarket, tick, yesAfterTick, type Pricing } from "@/lib/round-keeper";
-import { PICKS_PRACTICE_ARENA, chainVaultUsdc, cutLine, humanCount, isPracticeArena, newArenaCode, normalizeArenaCode, redactOpeningCalls, seatCostUsdc, seatPlayer, standings, type Round, logEvent } from "@/lib/royale";
+import { streakSpanSec } from "@/lib/streak";
+import { PICKS_PRACTICE_ARENA, STREAK_PRACTICE_ARENA, chainVaultUsdc, cutLine, humanCount, isPracticeArena, newArenaCode, normalizeArenaCode, redactOpeningCalls, seatCostUsdc, seatPlayer, standings, type Round, logEvent } from "@/lib/royale";
 import { escrowReady, initArenaOnChain, playerBalances } from "@/lib/escrow-server";
 import { sessionWallet } from "@/lib/session";
 import { limitByIp, overLimit } from "@/lib/rate-limit";
@@ -33,9 +34,13 @@ async function currentWithTick(arena: string, allowBootstrap: boolean): Promise<
   const mayAdvance = peek?.status === "live" && peek.config.format === "royale";
   const nextMarket = mayAdvance ? await pickMarket(peek?.config.marketId) : null;
   // Only the walk-in practice arenas auto-boot. Hosted arenas stay empty when
-  // done. PUBLIC runs quick single rounds, PICKS runs predictions.
+  // done. PUBLIC runs quick single rounds, PICKS predictions, and STREAK a
+  // streak against a table of bots (elimination needs a crowd).
   const bootRound = !peek && allowBootstrap
-    ? await bootstrapRound({ format: arena === PICKS_PRACTICE_ARENA ? "predictions" : "single" }, arena)
+    ? await bootstrapRound(
+      arena === PICKS_PRACTICE_ARENA ? { format: "predictions" }
+        : arena === STREAK_PRACTICE_ARENA ? { format: "streak", minEntrants: 6 }
+        : { format: "single" }, arena)
     : null;
   // Paid-but-unseated wallets (escrow arenas while enrolling).
   const sync = await unseatedDepositors(peek);
@@ -93,6 +98,7 @@ function seatDepositors(round: Round, sync: SeatSync): boolean {
       openingCall: pending?.openingCall ?? null,
       openingCallPct: pending?.openingCallPct,
       picks: pending?.picks,
+      locks: pending?.locks,
       restored: true
     });
     if (res.ok && round.escrow?.pendingSeats) delete round.escrow.pendingSeats[wallet];
@@ -208,7 +214,8 @@ export async function POST(request: Request) {
       vaultUsdc: chainVaultUsdc(fresh.config),
       capacity: fresh.config.capacity,
       enrollmentSec: fresh.config.enrollmentSec,
-      liveSec: fresh.config.liveSec,
+      // A streak runs up to MAX_LEGS legs plus pick windows.
+      liveSec: fresh.config.format === "streak" ? streakSpanSec(fresh.config.liveSec) : fresh.config.liveSec,
       roundLimit: fresh.config.roundLimit
     });
     if (res.ok) {

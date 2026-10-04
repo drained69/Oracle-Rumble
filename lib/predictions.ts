@@ -50,36 +50,51 @@ function hash(s: string): number {
   return h >>> 0;
 }
 
-/** The five questions of a round. `seed` picks which head-to-head it plays. */
-export function predictionQuestions(seed: string): PickQuestion[] {
-  const direction: PickQuestion[] = ASSET_SYMBOLS.map((a) => ({
-    id: a.toLowerCase(),
+export function directionQuestion(a: AssetSymbol, id = a.toLowerCase()): PickQuestion {
+  return {
+    id,
     kind: "direction",
     text: `${a} up or down?`,
     rule: `Up if ${a} closes above its opening price.`,
     assets: [a],
     options: [{ id: "UP", label: "Up" }, { id: "DOWN", label: "Down" }]
-  }));
+  };
+}
+
+export function bestQuestion(id = "best"): PickQuestion {
+  return {
+    id,
+    kind: "best",
+    text: "Which does best?",
+    rule: "The biggest % gain, or the smallest % drop.",
+    assets: [...ASSET_SYMBOLS],
+    options: ASSET_SYMBOLS.map((a) => ({ id: a, label: a }))
+  };
+}
+
+export function duelQuestion(x: AssetSymbol, y: AssetSymbol, id = "duel"): PickQuestion {
+  return {
+    id,
+    kind: "duel",
+    text: `${x} or ${y}: which does better?`,
+    rule: `Whichever of ${x} and ${y} has the better % change.`,
+    assets: [x, y],
+    options: [{ id: x, label: x }, { id: y, label: y }]
+  };
+}
+
+/** A small deterministic hash, for picking question variants from a seed. */
+export function seedHash(s: string): number {
+  return hash(s);
+}
+
+/** The head-to-head pairs questions rotate through. */
+export const DUEL_PAIRS: readonly [AssetSymbol, AssetSymbol][] = DUELS;
+
+/** The five questions of a round. `seed` picks which head-to-head it plays. */
+export function predictionQuestions(seed: string): PickQuestion[] {
   const [x, y] = DUELS[hash(seed) % DUELS.length];
-  return [
-    ...direction,
-    {
-      id: "best",
-      kind: "best",
-      text: "Which does best?",
-      rule: "The biggest % gain, or the smallest % drop.",
-      assets: [...ASSET_SYMBOLS],
-      options: ASSET_SYMBOLS.map((a) => ({ id: a, label: a }))
-    },
-    {
-      id: "duel",
-      kind: "duel",
-      text: `${x} or ${y}: which does better?`,
-      rule: `Whichever of ${x} and ${y} has the better % change.`,
-      assets: [x, y],
-      options: [{ id: x, label: x }, { id: y, label: y }]
-    }
-  ];
+  return [...ASSET_SYMBOLS.map((a) => directionQuestion(a)), bestQuestion(), duelQuestion(x, y)];
 }
 
 /** % change from open to `now` as a fraction, or null when a price is missing. */
@@ -113,12 +128,72 @@ export function answersFor(questions: PickQuestion[], open: AssetPrices, now: As
   return out;
 }
 
-/** Points for a set of picks: one per right answer. */
-export function scorePicks(picks: Picks | undefined, answers: Record<string, string[]> | undefined): number {
+/** Right answers in a set of picks (no lock bonus). */
+export function rightCount(picks: Picks | undefined, answers: Record<string, string[]> | undefined): number {
   if (!picks || !answers) return 0;
   let n = 0;
   for (const [q, opt] of Object.entries(picks)) if (answers[q]?.includes(opt)) n++;
   return n;
+}
+
+// ── Lock: a parlay inside a predictions card ─────────────────────────
+// A player may lock 2 or 3 of their picks together. If every locked pick
+// is right, the lock lands and adds a bonus point per locked pick (so the
+// locked picks count double). If any locked pick is wrong, every locked
+// pick scores 0. A locked question that ends level (void) is left out of
+// the lock; the rest decide it.
+
+export const LOCK_MIN = 2;
+export const LOCK_MAX = 3;
+
+export type LockState = "none" | "pending" | "landed" | "missed";
+
+export type CardScore = {
+  /** Right answers, as if there were no lock. */
+  right: number;
+  /** Points from the lock: +bonus when it lands, −(locked rights) when it misses. */
+  lockDelta: number;
+  lock: LockState;
+  /** right + lockDelta. */
+  total: number;
+};
+
+/** Is this a usable lock (2–3 picked questions)? */
+export function lockActive(locks: string[] | undefined, picks: Picks | undefined): boolean {
+  const n = (locks ?? []).filter((q) => picks?.[q]).length;
+  return n >= LOCK_MIN && n <= LOCK_MAX;
+}
+
+/**
+ * Score a predictions card with its lock. With `answers` missing a locked
+ * question (still running), the lock is "pending" and adds nothing yet.
+ */
+export function scoreCard(picks: Picks | undefined, locks: string[] | undefined, answers: Record<string, string[]> | undefined): CardScore {
+  const right = rightCount(picks, answers);
+  if (!picks || !answers || !lockActive(locks, picks)) return { right, lockDelta: 0, lock: "none", total: right };
+  const locked = (locks ?? []).filter((q) => picks[q]);
+  const live = locked.filter((q) => (answers[q] ?? []).length > 0); // void questions drop out
+  if (live.length === 0) return { right, lockDelta: 0, lock: "none", total: right };
+  const lockedRight = live.filter((q) => answers[q].includes(picks[q])).length;
+  if (lockedRight === live.length) return { right, lockDelta: live.length, lock: "landed", total: right + live.length };
+  return { right, lockDelta: -lockedRight, lock: "missed", total: right - lockedRight };
+}
+
+/** Points for a card: right answers plus the lock result. */
+export function scorePicks(picks: Picks | undefined, answers: Record<string, string[]> | undefined, locks?: string[]): number {
+  return scoreCard(picks, locks, answers).total;
+}
+
+/** Keep only valid locks: picked questions, no duplicates, at most LOCK_MAX. */
+export function normalizeLocks(questions: PickQuestion[] | undefined, raw: unknown): string[] {
+  if (!questions || !Array.isArray(raw)) return [];
+  const ids = new Set(questions.map((q) => q.id));
+  return [...new Set(raw.filter((x): x is string => typeof x === "string" && ids.has(x)))].slice(0, LOCK_MAX);
+}
+
+/** Highest possible score for a round's card: every pick right and a full lock. */
+export function maxScore(questions: PickQuestion[] | undefined): number {
+  return (questions?.length ?? 0) + LOCK_MAX;
 }
 
 /** Keep only valid picks: known questions, known options. */

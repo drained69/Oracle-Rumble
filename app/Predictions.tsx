@@ -6,7 +6,7 @@
  * All state comes from the round; nothing here decides an outcome.
  */
 
-import { answersFor, changeOf, optionLabel, type PickQuestion, type Picks } from "@/lib/predictions";
+import { answersFor, changeOf, LOCK_MAX, LOCK_MIN, optionLabel, scoreCard, type PickQuestion, type Picks } from "@/lib/predictions";
 import { paidPlaces, scorePlace, type Entrant, type Round } from "@/lib/royale";
 import { avatarDataUrl } from "@/lib/avatars";
 import { displayName } from "@/lib/username";
@@ -49,7 +49,7 @@ function optionTone(q: PickQuestion, id: string): string {
 
 /** The five questions with a button per answer. */
 export function PicksEditor({
-  questions, picks, onPick, disabled, compact
+  questions, picks, onPick, disabled, compact, locks, onToggleLock
 }: {
   questions: PickQuestion[];
   picks: Picks;
@@ -57,11 +57,17 @@ export function PicksEditor({
   disabled?: boolean;
   /** Hide the one-line rules (tight spaces). */
   compact?: boolean;
+  /** Questions locked together; with `onToggleLock`, each card gets a lock toggle. */
+  locks?: string[];
+  onToggleLock?: (questionId: string) => void;
 }) {
   return (
+    <>
     <div className={`pk-editor ${compact ? "compact" : ""}`}>
-      {questions.map((q, i) => (
-        <div key={q.id} className={`pk-q ${picks[q.id] ? "done" : ""}`} role="radiogroup" aria-label={q.text}>
+      {questions.map((q, i) => {
+        const locked = !!locks?.includes(q.id);
+        return (
+        <div key={q.id} className={`pk-q ${picks[q.id] ? "done" : ""} ${locked ? "locked" : ""}`} role="radiogroup" aria-label={q.text}>
           <div className="pk-q-head">
             <span className="pk-n" aria-hidden="true">{i + 1}</span>
             <span className="pk-q-text">{q.text}</span>
@@ -84,10 +90,41 @@ export function PicksEditor({
               );
             })}
           </div>
+          {onToggleLock && (
+            <button
+              type="button"
+              className={`pk-lock ${locked ? "on" : ""}`}
+              aria-pressed={locked}
+              aria-label={`${locked ? "Remove" : "Add"} ${q.text} ${locked ? "from" : "to"} your lock`}
+              title={!picks[q.id] ? "Pick an answer first, then lock it" : locked ? "Remove from your lock" : "Add to your lock"}
+              disabled={disabled || (!picks[q.id] && !locked)}
+              onClick={() => onToggleLock(q.id)}
+            >
+              {locked ? "🔒 Locked" : "Lock"}
+            </button>
+          )}
           {!compact && <p className="pk-rule">{q.rule}</p>}
         </div>
-      ))}
+        );
+      })}
     </div>
+    {onToggleLock && <LockSummary questions={questions} picks={picks} locks={locks ?? []} />}
+    </>
+  );
+}
+
+/** One line on what the current lock does. */
+export function LockSummary({ questions, picks, locks }: { questions: PickQuestion[]; picks: Picks; locks: string[] }) {
+  const locked = questions.filter((q) => locks.includes(q.id) && picks[q.id]);
+  const names = locked.map((q) => q.kind === "direction" ? `${q.assets[0]} ${picks[q.id] === "UP" ? "up" : "down"}` : `${optionLabel(q, picks[q.id])} (${q.kind === "best" ? "best" : q.assets.join(" v ")})`);
+  return (
+    <p className={`pk-lock-line ${locked.length >= LOCK_MIN ? "on" : ""}`} role="status">
+      {locked.length === 0
+        ? <>Optional <b>lock</b>: tie {LOCK_MIN} or {LOCK_MAX} picks together. All right: +1 bonus point each. Any wrong: they all score 0.</>
+        : locked.length < LOCK_MIN
+          ? <>Lock one more pick to make a lock ({LOCK_MIN} or {LOCK_MAX} picks) — a single pick can&apos;t be locked.</>
+          : <>🔒 <b>{names.join(" + ")}</b> — all right: <b className="up">+{locked.length}</b>. Any wrong: all {locked.length} score 0.</>}
+    </p>
   );
 }
 
@@ -102,7 +139,10 @@ export function PicksBoard({ round, me, entrants }: { round: Round; me: Entrant 
   const now = judgedPrices(round);
   const answers = currentAnswers(round);
   const final = !!round.predictions?.answers;
+  const card = me && answers ? scoreCard(me.picks, me.locks, answers) : null;
+  const myLocks = me?.locks ?? [];
   return (
+    <>
     <ol className="pk-board" aria-label={final ? "Results" : "Live questions"}>
       {questions.map((q) => {
         const right = answers?.[q.id] ?? [];
@@ -111,7 +151,7 @@ export function PicksBoard({ round, me, entrants }: { round: Round; me: Entrant 
         return (
           <li key={q.id} className={`pk-row v-${verdict}`}>
             <div className="pk-row-q">
-              <b>{q.text}</b>
+              <b>{q.text}{myLocks.includes(q.id) && card?.lock !== "none" ? <span className="pk-lock-tag" title="In your lock">🔒</span> : null}</b>
               <span className="pk-moves">
                 {q.assets.map((a) => {
                   const c = changeOf(open[a], now[a]);
@@ -139,6 +179,14 @@ export function PicksBoard({ round, me, entrants }: { round: Round; me: Entrant 
         );
       })}
     </ol>
+    {card && card.lock !== "none" && (
+      <p className={`pk-lock-line ${card.lock === "landed" ? "on" : "miss"}`} role="status">
+        🔒 Your lock {final ? (card.lock === "landed" ? "landed" : "missed") : (card.lock === "landed" ? "is landing" : "is missing")}:{" "}
+        <b className={card.lockDelta >= 0 ? "up" : "down"}>{card.lockDelta >= 0 ? "+" : "−"}{Math.abs(card.lockDelta)}</b>
+        {" "}· {card.right} right {card.lockDelta >= 0 ? "+" : "−"} {Math.abs(card.lockDelta)} = <b>{card.total} pts</b>
+      </p>
+    )}
+    </>
   );
 }
 
@@ -173,7 +221,7 @@ export function PicksRoster({ round, standings, wallet }: { round: Round; standi
                 {/* eslint-disable-next-line @next/next/no-img-element */}
                 <img className="r-avatar" src={avatarDataUrl(e.wallet, 24)} width={24} height={24} alt="" />
                 <span className="r-name">{displayName(e)}{e.isBot ? <em>bot</em> : ""}{e.wallet === wallet ? <em>you</em> : ""}</span>
-                <span className="r-bank">{enrolling ? `${made}/${total}` : `${e.score ?? 0}/${total}`}</span>
+                <span className="r-bank">{enrolling ? `${made}/${total}` : `${e.score ?? 0} pts`}</span>
                 <span className={`r-pnl ${enrolling ? (made >= total ? "up" : "") : live && paid ? "up" : ""}`}>
                   {enrolling ? (made >= total ? "ready" : "picking") : live ? (e.isBot ? "" : paid ? "paid" : "") : e.prizeUsdc > 0 ? `+${usd2.format(e.prizeUsdc)}` : ""}
                 </span>

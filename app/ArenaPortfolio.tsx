@@ -37,7 +37,8 @@ function resultLine(i: PortfolioItem): string {
   if (!me) return i.chain ? "You paid a seat but weren't seated — it's refunded in full." : "";
   const place = me.place ? `${ordinal(me.place)} of ${me.players}` : "Finished";
   const prize = me.prizeUsdc > 0 ? ` · won ${usd.format(me.prizeUsdc)} from the pool` : "";
-  if (i.format === "predictions") return `${place} · ${me.score ?? 0}/${me.questions} right${prize || " · no prize this time"}`;
+  if (i.format === "predictions") return `${place} · ${me.score ?? 0} pts${prize || " · no prize this time"}`;
+  if (i.format === "streak") return `${place} · lasted ${me.score ?? 0} leg${(me.score ?? 0) === 1 ? "" : "s"}${prize || " · no prize this time"}`;
   const out = me.eliminatedRound ? ` · knocked out in round ${me.eliminatedRound}` : "";
   return `${place}${out}${prize} · vault finished at ${usd.format(me.cash)}`;
 }
@@ -191,7 +192,7 @@ export default function ArenaPortfolio({ wallet, onToast }: { wallet: string; on
                 <p className="pf-sub">
                   {i.action === "claimed" ? <>Withdrawn ✓ {usd.format(i.chain.entitlementUsdc)}</>
                     : i.action === "settling" ? <>Settling on chain — your payout opens here in a minute or two.</>
-                    : i.chain.claimsOpen ? (i.format === "predictions" ? <>No prize this time — nothing to withdraw.</> : <>Nothing to withdraw — the vault finished at $0.</>)
+                    : i.chain.claimsOpen ? (i.format === "predictions" || i.format === "streak" ? <>No prize this time — nothing to withdraw.</> : <>Nothing to withdraw — the vault finished at $0.</>)
                     : <>Waiting for settlement.</>}
                   {" · "}<a href={explorer(i.chain.roundVault)} target="_blank" rel="noopener noreferrer">Vault ↗</a>
                 </p>
@@ -223,6 +224,12 @@ function ActiveCard({ i, now }: { i: PortfolioItem; now: number }) {
 
       {!me ? (
         <p className="pf-line">Your deposit is in — your seat is being registered.</p>
+      ) : i.format === "streak" && me.streak ? (
+        <p className="pf-line">
+          {!me.streak.alive ? <>Knocked out on leg {me.eliminatedRound} — you lasted {me.score ?? 0} leg{(me.score ?? 0) === 1 ? "" : "s"}.</>
+            : i.status === "enrolling" ? <>You&apos;re in. The streak starts when enrollment closes — keep the arena open, each leg gives 20 seconds to pick.</>
+            : <><b className="up">Still in</b> · leg {me.streak.leg} of up to {me.streak.maxLegs}{me.streak.picked ? "" : <> — <b className="down">open the arena to pick</b></>}.</>}
+        </p>
       ) : i.format === "predictions" ? (
         i.status === "enrolling" ? (
           <p className="pf-line">
@@ -273,7 +280,8 @@ function ActiveCard({ i, now }: { i: PortfolioItem; now: number }) {
       {me && i.status === "live" && (
         <p className="pf-sub">
           {i.format === "royale" ? `Round ${i.roundNumber} of ${i.roundLimit} · top ${me.survivors} survive the cut`
-            : i.format === "predictions" ? "Predictions · most right answers take the pool"
+            : i.format === "predictions" ? "Predictions · most points take the pool"
+            : i.format === "streak" ? "Streak · last caller standing takes the pool"
             : "Single round · top finishers split the pool"}
           {" · "}<a href={`/a/${i.arena}`}>Open arena →</a>
         </p>

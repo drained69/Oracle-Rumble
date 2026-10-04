@@ -14,7 +14,8 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { paidPlaces, scorePlace, type Entrant, type Round } from "@/lib/royale";
-import { changeOf } from "@/lib/predictions";
+import { answersFor, changeOf, optionLabel } from "@/lib/predictions";
+import { currentLeg } from "@/lib/streak";
 import { avatarDataUrl } from "@/lib/avatars";
 import { displayName } from "@/lib/username";
 
@@ -30,7 +31,7 @@ type Props = {
 
 type FeedKind = "trade" | "rank" | "cutline" | "round" | "champion" | "elim" | "info";
 type FeedEvent = { id: string; at: number; text: string; kind: FeedKind };
-type PodState = "winner" | "eliminated" | "below" | "line" | "safe" | "ready" | "picking" | "money" | "nomoney" | "bot";
+type PodState = "winner" | "eliminated" | "below" | "line" | "safe" | "ready" | "picking" | "picked" | "risk" | "money" | "nomoney" | "bot";
 
 type Snapshot = {
   roundId: string;
@@ -56,6 +57,8 @@ const STATE_LABEL: Record<PodState, string> = {
   safe: "Safe",
   ready: "Ready",
   picking: "Picking",
+  picked: "Picked",
+  risk: "At risk",
   money: "In the money",
   nomoney: "Out of the money",
   bot: "Bot"
@@ -75,8 +78,15 @@ export default function ArenaStage({ round, standings, survivors, yesPrice, spot
   // so it shows prize places; a royale shows its survival cut. Predictions
   // is a single round scored on right answers.
   const picks = round.config.format === "predictions";
+  const streak = round.streak ?? null;
   const single = round.config.format !== "royale";
   const totalQs = round.predictions?.questions.length ?? 0;
+  // Streak: the current leg, and its winning answer so far once it runs.
+  const leg = streak ? currentLeg(streak) : null;
+  const legRunning = !!streak && isLive && streak.phase === "running";
+  const legAnswer = legRunning && leg?.open
+    ? answersFor([leg.question], leg.open, (round.oracle?.last ?? {}) as Record<string, number>)[leg.question.id] ?? []
+    : null;
   // The cut only means something while a live round has more players than survivor slots.
   const cutActive = !single && isLive && alive.length > survivors;
   const lineBankroll = cutActive ? alive[survivors - 1]?.bankroll ?? null : null;
@@ -85,6 +95,16 @@ export default function ArenaStage({ round, standings, survivors, yesPrice, spot
 
   const stateOf = (e: Entrant, aliveIdx: number): PodState => {
     if (champion?.id === e.id) return "winner";
+    if (streak) {
+      if (e.eliminatedRound !== null) return "eliminated";
+      if (isComplete) return e.isBot ? "bot" : e.prizeUsdc > 0 ? "money" : "nomoney";
+      if (!leg) return "ready";
+      const picked = e.id in leg.picks;
+      if (!legRunning) return picked ? "picked" : round.status === "enrolling" ? "ready" : "picking";
+      const pick = leg.picks[e.id];
+      if (!legAnswer || legAnswer.length === 0) return "safe";
+      return pick && legAnswer.includes(pick) ? "safe" : "risk";
+    }
     if (round.status === "enrolling") return picks && Object.keys(e.picks ?? {}).length < totalQs ? "picking" : "ready";
     if (picks && isLive) return e.isBot ? "bot" : scorePlace(round, e, true) <= places ? "money" : "nomoney";
     if (picks && isComplete) return e.isBot ? "bot" : e.prizeUsdc > 0 ? "money" : "nomoney";
@@ -230,7 +250,9 @@ export default function ArenaStage({ round, standings, survivors, yesPrice, spot
       <div className="mr-stage-body">
         <div className="mr-arena">
           <div className="mr-legend" aria-hidden={!cutActive && !isComplete}>
-            {cutActive ? (
+            {streak && isLive ? (
+              <span className="mr-legend-cut">Leg {leg?.n} of up to {streak.maxLegs} · {alive.length} of {standings.length} still in</span>
+            ) : cutActive ? (
               <span className="mr-legend-cut">
                 Top {survivors} of {alive.length} survive
                 {lineBankroll != null && <> · line <b>${lineBankroll.toFixed(2)}</b></>}
@@ -245,7 +267,29 @@ export default function ArenaStage({ round, standings, survivors, yesPrice, spot
             )}
           </div>
 
-          {picks ? (
+          {streak && leg ? (
+            <div className={`mr-orb picks ${isLive ? "live" : ""}`} role="img" aria-label={`Leg ${leg.n}: ${leg.question.text}`}>
+              <div className="mr-orb-ring" aria-hidden="true" />
+              <div className="mr-orb-core">
+                <span className="mr-orb-q">{isComplete ? "Final" : `Leg ${leg.n}`}</span>
+                <span className="mr-orb-legq">{isComplete ? "Game over" : leg.question.text}</span>
+                {legRunning && leg.open ? (
+                  <span className="mr-orb-coins">
+                    {leg.question.assets.map((a) => {
+                      const c = changeOf(leg.open?.[a], (round.oracle?.last as Record<string, number> | undefined)?.[a]);
+                      return (
+                        <span key={a} className={c === null ? "" : c > 0 ? "up" : c < 0 ? "down" : ""}>
+                          <b>{a}</b> {c === null ? "—" : `${c > 0 ? "▲" : c < 0 ? "▼" : "•"} ${Math.abs(c * 100).toFixed(3)}%`}
+                        </span>
+                      );
+                    })}
+                  </span>
+                ) : (
+                  <span className="mr-orb-move">{round.status === "enrolling" ? "starts when enrollment locks" : isLive ? "pick window open" : ""}</span>
+                )}
+              </div>
+            </div>
+          ) : picks ? (
             <div className={`mr-orb picks ${isLive ? "live" : ""}`} role="img" aria-label={coinsLabel(round)}>
               <div className="mr-orb-ring" aria-hidden="true" />
               <div className="mr-orb-core">
@@ -264,7 +308,7 @@ export default function ArenaStage({ round, standings, survivors, yesPrice, spot
                 ) : (
                   <span className="mr-orb-move">{totalQs} picks · BTC ETH SOL</span>
                 )}
-                <span className="mr-orb-move">{round.status === "enrolling" ? "prices lock at the start" : isLive ? "most right answers wins" : ""}</span>
+                <span className="mr-orb-move">{round.status === "enrolling" ? "prices lock at the start" : isLive ? "most points wins" : ""}</span>
               </div>
             </div>
           ) : (
@@ -308,7 +352,7 @@ export default function ArenaStage({ round, standings, survivors, yesPrice, spot
               const state = stateOf(e, aIdx);
               const isMe = !!wallet && e.wallet === wallet;
               const pnl = e.bankroll - round.config.startingBankroll;
-              const rank = picks && round.status !== "enrolling" ? scorePlace(round, e) : i + 1;
+              const rank = (picks || streak) && round.status !== "enrolling" ? scorePlace(round, e) : i + 1;
               const made = Object.keys(e.picks ?? {}).length;
               const cls = [
                 "mr-pod", `s-${state}`, isMe ? "me" : "",
@@ -320,7 +364,9 @@ export default function ArenaStage({ round, standings, survivors, yesPrice, spot
                   key={e.id}
                   className={cls}
                   style={pinFor(i, pods.length)}
-                  aria-label={picks
+                  aria-label={streak
+                    ? `${displayName(e)}${isMe ? " (you)" : ""}, ${STATE_LABEL[state]}, ${e.score ?? 0} legs survived${legRunning && leg?.picks[e.id] ? `, picked ${optionLabel(leg.question, leg.picks[e.id])}` : ""}`
+                    : picks
                     ? `Rank ${rank}, ${displayName(e)}${isMe ? " (you)" : ""}, ${STATE_LABEL[state]}, ${round.status === "enrolling" ? `${made} of ${totalQs} picks made` : `${e.score ?? 0} of ${totalQs} right`}`
                     : `Rank ${rank}, ${displayName(e)}${isMe ? " (you)" : ""}, ${STATE_LABEL[state]}, vault $${e.bankroll.toFixed(2)}, P&L ${pnl >= 0 ? "+" : "-"}$${Math.abs(pnl).toFixed(2)}${e.side ? `, holding ${e.side === "YES" ? "UP" : "DOWN"}` : ""}`}
                 >
@@ -332,10 +378,19 @@ export default function ArenaStage({ round, standings, survivors, yesPrice, spot
                     {isMe && <em>you</em>}
                     {e.isBot && <em className="bot">bot</em>}
                   </span>
-                  {picks ? (
+                  {streak ? (
                     <>
-                      <span className="mr-pod-bank">{round.status === "enrolling" ? `${made}/${totalQs}` : `${e.score ?? 0}/${totalQs}`}</span>
-                      <span className="mr-pod-pnl">{round.status === "enrolling" ? "picked" : isComplete && e.prizeUsdc > 0 ? `+$${e.prizeUsdc.toFixed(2)}` : "right"}</span>
+                      <span className="mr-pod-bank">{e.score ?? 0} leg{(e.score ?? 0) === 1 ? "" : "s"}</span>
+                      <span className="mr-pod-pnl">
+                        {e.eliminatedRound !== null ? `out on leg ${e.eliminatedRound}`
+                          : legRunning && leg ? (leg.picks[e.id] ? `picked ${optionLabel(leg.question, leg.picks[e.id])}` : "no pick")
+                          : isComplete && e.prizeUsdc > 0 ? `+$${e.prizeUsdc.toFixed(2)}` : "still in"}
+                      </span>
+                    </>
+                  ) : picks ? (
+                    <>
+                      <span className="mr-pod-bank">{round.status === "enrolling" ? `${made}/${totalQs}` : `${e.score ?? 0} pts`}</span>
+                      <span className="mr-pod-pnl">{round.status === "enrolling" ? "picked" : isComplete && e.prizeUsdc > 0 ? `+$${e.prizeUsdc.toFixed(2)}` : "points"}</span>
                     </>
                   ) : (
                     <>
@@ -362,7 +417,8 @@ export default function ArenaStage({ round, standings, survivors, yesPrice, spot
               <div className="mr-champ-title">Champion</div>
               <div className="mr-champ-name">{displayName(champion)}</div>
               <div className="mr-champ-prize">
-                {picks ? `${champion.score ?? 0}/${totalQs} right${champion.prizeUsdc > 0 ? ` · +$${champion.prizeUsdc.toFixed(2)}` : ""}`
+                {streak ? `${champion.score ?? 0} legs${champion.prizeUsdc > 0 ? ` · +$${champion.prizeUsdc.toFixed(2)}` : ""}`
+                  : picks ? `${champion.score ?? 0} pts${champion.prizeUsdc > 0 ? ` · +$${champion.prizeUsdc.toFixed(2)}` : ""}`
                   : champion.prizeUsdc > 0 ? `+$${champion.prizeUsdc.toFixed(2)} prize` : "Last trader standing"}
               </div>
             </div>
@@ -375,7 +431,7 @@ export default function ArenaStage({ round, standings, survivors, yesPrice, spot
         <aside className="mr-feed" aria-label="Arena activity">
           <div className="mr-feed-head">Activity</div>
           <ul className="mr-feed-list" aria-live="polite">
-            {feed.length === 0 && <li className="empty">{picks ? "Activity appears here as players take their seats." : "Activity appears here as players trade."}</li>}
+            {feed.length === 0 && <li className="empty">{picks || streak ? "Activity appears here as players take their seats." : "Activity appears here as players trade."}</li>}
             {feed.map((ev) => (
               <li key={ev.id} className={`fe fe-${ev.kind}`}>
                 <span className="fe-dot" aria-hidden="true" />
@@ -399,8 +455,9 @@ function usdPrice(n: number): string {
 
 function kindOf(line: string): FeedKind {
   if (/bought|liquidated|parlay|cashed out/i.test(line)) return "trade";
-  if (/ wins \$|takes .* USDC| and split \$/i.test(line)) return "champion";
-  if (/ settled|locked|opened|closed at| live —|^Results:|^Closing prices/i.test(line)) return "round";
+  if (/ wins \$|takes .* USDC| and split \$|last caller standing/i.test(line)) return "champion";
+  if (/^Leg \d+: .* \d+ out,/i.test(line)) return "elim";
+  if (/ settled|locked|opened|closed at| live —|^Results:|^Closing prices|^Leg \d+ ·|^Leg \d+ is live/i.test(line)) return "round";
   if (/cancelled|eliminated/i.test(line)) return "elim";
   return "info";
 }

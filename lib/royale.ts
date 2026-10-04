@@ -19,7 +19,8 @@
  */
 
 import { jointProbability } from "@/lib/joint-prob";
-import { answersFor, normalizePicks, resultsLine, scorePicks, type Picks, type PredictionsState } from "@/lib/predictions";
+import { answersFor, normalizeLocks, normalizePicks, resultsLine, scorePicks, type Picks, type PredictionsState } from "@/lib/predictions";
+import type { StreakState } from "@/lib/streak";
 
 export type RoundStatus =
   | "enrolling"   // accepting entrants, before lock
@@ -56,7 +57,9 @@ export type Entrant = {
   openingCallPct?: number;
   /** Predictions arena: this player's answers (question id → option id). */
   picks?: Picks;
-  /** Predictions arena: right answers so far (live) or final. */
+  /** Predictions: questions locked together (2–3), a parlay inside the card. */
+  locks?: string[];
+  /** Predictions: points so far (live) or final. Streak: legs survived. */
   score?: number;
 };
 
@@ -97,9 +100,14 @@ export type PriceMap = Record<string, number>;
  * finishers. Royale is 2–4 rounds — each settlement cuts the bottom half and
  * survivors carry the bankroll they earned into the next round. Predictions
  * is a call contest with no trading: five hidden picks on BTC, ETH and SOL,
- * most right answers wins (lib/predictions.ts).
+ * most points wins (lib/predictions.ts).
  */
-export type RoundFormat = "single" | "royale" | "predictions";
+export type RoundFormat = "single" | "royale" | "predictions" | "streak";
+
+/** Formats played by picking answers rather than trading (entry only, no vault). */
+export function isPicksFormat(format: RoundFormat | undefined): boolean {
+  return format === "predictions" || format === "streak";
+}
 
 export type RoundConfig = {
   marketId: string;
@@ -135,7 +143,7 @@ export function hostAmountError(entry: number, vault: number, format: RoundForma
   const L = HOST_LIMITS;
   const e = amountErrorFor("Entry", entry, L.entryUsdc.min, L.entryUsdc.max);
   if (e) return e;
-  if (format === "predictions") return ""; // no trading vault
+  if (isPicksFormat(format)) return ""; // no trading vault
   return amountErrorFor("Vault", vault, L.startingBankroll.min, L.startingBankroll.max);
 }
 
@@ -155,7 +163,7 @@ const clamp = (n: number, lo: number, hi: number) =>
  * bigger vault, which is the core fairness rule of Market Royale.
  */
 export function normalizeConfig(base: RoundConfig, patch: Partial<RoundConfig>): RoundConfig {
-  const format: RoundFormat = patch.format === "single" || patch.format === "royale" || patch.format === "predictions"
+  const format: RoundFormat = patch.format === "single" || patch.format === "royale" || patch.format === "predictions" || patch.format === "streak"
     ? patch.format : base.format;
   const L = HOST_LIMITS;
   const capacity = clamp(patch.capacity ?? base.capacity, L.capacity.min, L.capacity.max);
@@ -169,8 +177,8 @@ export function normalizeConfig(base: RoundConfig, patch: Partial<RoundConfig>):
     host: typeof patch.host === "string" ? patch.host.slice(0, 64) : base.host,
     format,
     entryUsdc: clamp(patch.entryUsdc ?? base.entryUsdc, L.entryUsdc.min, L.entryUsdc.max),
-    // A predictions arena has nothing to trade, so no vault.
-    startingBankroll: format === "predictions" ? 0 : clamp(patch.startingBankroll ?? base.startingBankroll, L.startingBankroll.min, L.startingBankroll.max),
+    // Predictions and Streak have nothing to trade, so no vault.
+    startingBankroll: isPicksFormat(format) ? 0 : clamp(patch.startingBankroll ?? base.startingBankroll, L.startingBankroll.min, L.startingBankroll.max),
     capacity,
     minEntrants: clamp(patch.minEntrants ?? base.minEntrants, 2, capacity),
     enrollmentSec: clamp(patch.enrollmentSec ?? base.enrollmentSec, L.enrollmentSec.min, L.enrollmentSec.max),
@@ -188,7 +196,7 @@ export const PICKS_CHAIN_VAULT_USDC = 0.000001;
 
 /** Vault amount per seat in the on-chain escrow. */
 export function chainVaultUsdc(config: RoundConfig): number {
-  return config.format === "predictions" ? PICKS_CHAIN_VAULT_USDC : config.startingBankroll;
+  return isPicksFormat(config.format) ? PICKS_CHAIN_VAULT_USDC : config.startingBankroll;
 }
 
 /** What one seat deposits into the escrow: entry plus vault. */
@@ -299,7 +307,7 @@ export type RoundEscrowRecord = {
    * tx. If the deposit lands but the enroll request never arrives, the keeper
    * seats the wallet from its on-chain entry using these.
    */
-  pendingSeats?: Record<string, { nickname: string; openingCall: Side | null; openingCallPct?: number; picks?: Picks }>;
+  pendingSeats?: Record<string, { nickname: string; openingCall: Side | null; openingCallPct?: number; picks?: Picks; locks?: string[] }>;
 };
 
 /**
@@ -344,16 +352,20 @@ export type Round = {
   escrow?: RoundEscrowRecord;
   /** Predictions arena: the questions, and their answers once closed. */
   predictions?: PredictionsState;
+  /** Streak arena: the legs played so far and the current phase. */
+  streak?: StreakState;
 };
 
 /** The reserved code for the walk-in public arena that always has a live round. */
 export const PUBLIC_ARENA = "PUBLIC";
 /** Walk-in practice arena for the Predictions format. */
 export const PICKS_PRACTICE_ARENA = "PICKS";
+/** Walk-in practice arena for the Streak format. */
+export const STREAK_PRACTICE_ARENA = "STREAK";
 
 /** Free, ledger-only walk-in arenas that always have a round open. */
 export function isPracticeArena(code: string): boolean {
-  return code === PUBLIC_ARENA || code === PICKS_PRACTICE_ARENA;
+  return code === PUBLIC_ARENA || code === PICKS_PRACTICE_ARENA || code === STREAK_PRACTICE_ARENA;
 }
 
 /**
@@ -510,8 +522,9 @@ export type SeatOptions = {
   signature?: string;
   openingCall?: Side | null;
   openingCallPct?: number;
-  /** Predictions arena: the player's answers. */
+  /** Predictions arena: the player's answers, and which of them are locked together. */
   picks?: unknown;
+  locks?: unknown;
   /**
    * Seated from an on-chain deposit whose enroll request never arrived
    * (dropped connection, closed tab). Doesn't restart the enrollment clock.
@@ -531,6 +544,9 @@ export function seatPlayer(round: Round, wallet: string, nickname: string, opts:
   const entrant = makeEntrant(round, wallet, name, false);
   if (round.predictions) {
     entrant.picks = normalizePicks(round.predictions.questions, opts.picks);
+    entrant.locks = normalizeLocks(round.predictions.questions, opts.locks).filter((q) => entrant.picks?.[q]);
+    entrant.score = 0;
+  } else if (round.streak) {
     entrant.score = 0;
   } else {
     entrant.openingCall = opts.openingCall ?? null;
@@ -568,13 +584,23 @@ export function redactOpeningCalls(round: Round, viewer?: string | null): Round 
       // Keep how many questions are answered (not which way) so the room
       // can see who is ready.
       const answered = e.picks ? Object.fromEntries(Object.keys(e.picks).map((k) => [k, ""])) : undefined;
-      return { ...e, openingCall: null, openingCallPct: undefined, picks: answered };
+      return { ...e, openingCall: null, openingCallPct: undefined, picks: answered, locks: undefined };
     })
     : round.entrants;
+  // Streak: the current leg's picks stay hidden while its window is open.
+  let streak = round.streak;
+  if (streak && (round.status === "enrolling" || (round.status === "live" && streak.phase === "picking"))) {
+    const me = round.entrants.find((e) => e.wallet === viewer);
+    const legs = streak.legs.map((leg, i) => i < streak!.legs.length - 1 ? leg : {
+      ...leg,
+      picks: Object.fromEntries(Object.entries(leg.picks).map(([id, opt]) => [id, id === me?.id ? opt : ""]))
+    });
+    streak = { ...streak, legs };
+  }
   const escrow = round.escrow?.pendingSeats
     ? (({ pendingSeats: _omit, ...rest }) => rest)(round.escrow)
     : round.escrow;
-  return { ...round, entrants, escrow };
+  return { ...round, entrants, escrow, streak };
 }
 
 /** Opening-call sizes a player can pick (% of the vault). */
@@ -619,7 +645,7 @@ export const sellPriceOf = (sideCents: number) => Math.max(0, Math.round(sideCen
 
 /** Can players still trade in this round right now? */
 export function tradingOpen(round: Round, now = Date.now()): boolean {
-  return round.status === "live" && round.config.format !== "predictions" && now < round.liveDeadline - TRADE_CUTOFF_MS;
+  return round.status === "live" && !isPicksFormat(round.config.format) && now < round.liveDeadline - TRADE_CUTOFF_MS;
 }
 
 /**
@@ -808,7 +834,7 @@ export function settlePredictions(round: Round, close: Record<string, number>): 
   const st = round.predictions;
   const answers = answersFor(st?.questions ?? [], round.oracle?.open ?? {}, close);
   if (st) st.answers = answers;
-  for (const e of round.entrants) e.score = scorePicks(e.picks, answers);
+  for (const e of round.entrants) e.score = scorePicks(e.picks, answers, e.locks);
   for (const e of round.entrants) e.rank = scorePlace(round, e);
   const humans = standings(round).filter((e) => !e.isBot);
   const groups: Entrant[][] = [];
@@ -823,18 +849,17 @@ export function settlePredictions(round: Round, close: Record<string, number>): 
 
   round.status = "complete";
   round.endedAt = Date.now();
-  const total = st?.questions.length ?? 0;
   if (st) logEvent(round, `Results: ${resultsLine(st.questions, answers)}.`);
   const top = groups[0] ?? [];
   round.championId = top[0]?.id ?? standings(round)[0]?.id ?? null;
   const won = top.reduce((s, e) => s + e.prizeUsdc, 0);
   if (humans.length === 1) {
-    logEvent(round, `${humans[0].nickname} scored ${humans[0].score ?? 0}/${total} — the only player who paid in, so their $${won.toFixed(2)} entry comes back.`);
+    logEvent(round, `${humans[0].nickname} scored ${humans[0].score ?? 0} pts — the only player who paid in, so their $${won.toFixed(2)} entry comes back.`);
   } else if (top.length === 1) {
-    logEvent(round, `${top[0].nickname} wins $${won.toFixed(2)} with ${top[0].score ?? 0}/${total} right.`);
+    logEvent(round, `${top[0].nickname} wins $${won.toFixed(2)} with ${top[0].score ?? 0} pts.`);
   } else if (top.length > 1) {
     const names = top.length === 2 ? `${top[0].nickname} and ${top[1].nickname}` : `${top.length} players`;
-    logEvent(round, `${names} tie on ${top[0].score ?? 0}/${total} and split $${won.toFixed(2)}.`);
+    logEvent(round, `${names} tie on ${top[0].score ?? 0} pts and split $${won.toFixed(2)}.`);
   } else {
     logEvent(round, "Predictions complete.");
   }
@@ -846,7 +871,7 @@ export function settlePredictions(round: Round, close: Record<string, number>): 
  * the prize split at the final.
  */
 export function finishingOrder(round: Round): Entrant[] {
-  if (round.config.format === "predictions") return [...round.entrants].sort(byScore);
+  if (isPicksFormat(round.config.format)) return [...round.entrants].sort(byScore);
   return [...round.entrants].sort((a, b) => {
     const aAlive = a.eliminatedRound === null;
     const bAlive = b.eliminatedRound === null;
@@ -928,7 +953,7 @@ export function scorePlace(round: Round, e: Entrant, humansOnly = false): number
 }
 
 export function standings(round: Round): Entrant[] {
-  if (round.config.format === "predictions") return [...round.entrants].sort(byScore);
+  if (isPicksFormat(round.config.format)) return [...round.entrants].sort(byScore);
   return [...round.entrants].sort((a, b) => {
     if ((a.eliminatedRound === null) !== (b.eliminatedRound === null)) {
       return a.eliminatedRound === null ? -1 : 1; // alive first

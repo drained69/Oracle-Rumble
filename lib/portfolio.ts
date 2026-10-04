@@ -51,6 +51,8 @@ export type PortfolioItem = {
     picksMade: number | null;
     /** Predictions, live: would this score be paid if the round ended now? */
     inMoney: boolean | null;
+    /** Streak: current leg and whether this player is still in. */
+    streak: null | { leg: number; maxLegs: number; alive: boolean; picked: boolean };
   };
   chain: null | {
     roundVault: string;

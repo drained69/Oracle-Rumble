@@ -19,6 +19,7 @@ const SECTIONS: { id: string; title: string }[] = [
   { id: "overview", title: "Overview" },
   { id: "rules", title: "Game rules" },
   { id: "predictions", title: "Predictions arenas" },
+  { id: "streak", title: "Streak arenas" },
   { id: "money", title: "Seats, pool & payouts" },
   { id: "escrow", title: "Non-custodial escrow" },
   { id: "recovery", title: "Cancellations & recovery" },
@@ -95,7 +96,8 @@ export default function DocsPage() {
               from its opening price. Everyone is ranked by vault value. A single round pays the prize
               pool to the top finishers; a royale cuts the bottom half each round until the finalists
               split the pool. A <b>Predictions</b> arena has no trading at all: five hidden picks on
-              BTC, ETH and SOL, and the most right answers take the pool.
+              BTC, ETH and SOL, and the most points take the pool. A <b>Streak</b> arena is a chain of
+              quick calls where one wrong pick knocks you out — last caller standing wins.
             </p>
             <ol>
               <li><b>Arena engine</b> — server-side rounds (enrolling → live → settling → advancing/complete) persisted in Postgres.</li>
@@ -115,6 +117,7 @@ export default function DocsPage() {
                 <tr><td><b>Single</b></td><td>1</td><td>One trading window. Players are ranked by final vault value and the pool is paid out.</td></tr>
                 <tr><td><b>Royale</b></td><td>2–4</td><td>After each round the bottom half is eliminated. Survivors carry their vault into the next round until one player remains or the round limit is reached.</td></tr>
                 <tr><td><b>Predictions</b></td><td>1</td><td>No trading. Every player answers the same five questions before the start; at the close each right answer is a point and the top scores are paid. See <a href="#predictions">Predictions arenas</a>.</td></tr>
+                <tr><td><b>Streak</b></td><td>Up to 6 legs</td><td>No trading. One quick call per leg; a wrong pick knocks you out. Last caller standing takes the pool. See <a href="#streak">Streak arenas</a>.</td></tr>
               </tbody>
             </table>
             <div className="lifecycle-strip">
@@ -152,9 +155,26 @@ export default function DocsPage() {
               <li><b>Hidden picks</b> — nobody else can see your picks while enrollment is open (the server shows other players only how many questions they have answered, and the deposit memo never contains picks). You can change them until the round locks; then everyone&apos;s picks are revealed.</li>
               <li><b>Judged on the lock price</b> — when enrollment locks, the live BTC, ETH and SOL prices are recorded. At the close (the timeframe: 5 minutes, 15 minutes or an hour) each coin is compared with its own opening price. While the round runs, the arena shows which answers are winning and everyone&apos;s live score.</li>
               <li><b>Scoring</b> — one point per right answer. A question with an exact dead heat (or a missing price) scores for nobody. An unanswered question scores nothing.</li>
+              <li><b>Lock</b> — optionally lock 2 or 3 of your picks together, a parlay inside your card. If every locked pick is right, the lock lands and adds a bonus point per locked pick (they count double). If any locked pick is wrong, every locked pick scores 0. A locked question that ends level drops out and the rest decide the lock. Locks are hidden with your picks until the start. Because the coins usually move together, a lock on same-direction calls lands more often — and when the market turns, it all goes at once.</li>
               <li><b>Prizes</b> — the usual split of the pool: winner takes all in a duel, otherwise 62.5% / 23.44% / 14.06%. Players who tie share the places they cover equally — two players tied for first split first and second place.</li>
               <li><b>Seat</b> — just the entry. The escrow program needs a vault per seat, so a predictions seat carries a 1-unit vault (0.000001 USDC) that is returned at settlement.</li>
               <li><b>Practice</b> — the free walk-in arena at <a href="/a/PICKS">/a/PICKS</a> runs predictions rounds against bots.</li>
+            </ul>
+          </Section>
+
+          <Section id="streak" title="Streak arenas">
+            <p>
+              A parlay across time. The game is a chain of short legs, each asking one question about BTC,
+              ETH or SOL — a coin up or down, a head-to-head, or which of the three does best.
+            </p>
+            <ul>
+              <li><b>Pick window</b> — each leg opens with a 20-second window. Picks are hidden until it closes (players see only who has picked). Leg 1 can be picked as soon as you take a seat.</li>
+              <li><b>The leg</b> — when the window closes the leg starts at the live price of the coins it asks about and runs for the host&apos;s leg length: 1, 2 or 5 minutes. Everyone&apos;s picks are shown while it runs.</li>
+              <li><b>Out</b> — a wrong pick, or no pick, knocks you out. If every player still in misses, or the leg ends dead level, nobody goes out.</li>
+              <li><b>The end</b> — the game ends when one player is left, when no real player is left, or after 6 legs. Players are ranked by how many legs they survived.</li>
+              <li><b>Prizes</b> — the usual split of the pool (winner takes all in a duel; otherwise 62.5% / 23.44% / 14.06%), ties sharing their places. The seat is just the entry, like Predictions.</li>
+              <li><b>Strategy</b> — moves over a minute or two are close to a coin flip, so the edge is reading the room: if most players will call UP, DOWN is how you become the last one standing.</li>
+              <li><b>Practice</b> — the free walk-in arena at <a href="/a/STREAK">/a/STREAK</a> plays against a table of bots.</li>
             </ul>
           </Section>
 
@@ -325,7 +345,7 @@ withdraw  = prize share + vault pot × (your final vault ÷ all final vaults)`}<
                 <tr><td><code>POST /api/auth/challenge</code> · <code>/verify</code></td><td>Wallet sign-in (message signature → session cookie)</td></tr>
                 <tr><td><code>POST /api/round/enroll</code></td><td>Take a seat (signed in); returns <code>needsDeposit</code> until your on-chain deposit exists, <code>pending</code> while it confirms</td></tr>
                 <tr><td><code>POST /api/round/call</code></td><td>Change your opening UP/DOWN call while enrolling</td></tr>
-                <tr><td><code>POST /api/round/picks</code></td><td>Change your predictions picks while enrolling (signed in)</td></tr>
+                <tr><td><code>POST /api/round/picks</code></td><td>Predictions: change picks or your lock while enrolling. Streak: pick the open leg (signed in)</td></tr>
                 <tr><td><code>POST /api/round/cancel</code></td><td>Cancel an arena whose host never funded seat #1</td></tr>
                 <tr><td><code>POST /api/round/trade</code></td><td>Buy UP/DOWN or sell inside the arena (signed in)</td></tr>
                 <tr><td><code>GET /api/escrow/status</code></td><td>On-chain or practice mode</td></tr>
@@ -369,6 +389,10 @@ withdraw  = prize share + vault pot × (your final vault ÷ all final vaults)`}<
               <details>
                 <summary>In a Predictions arena, can anyone see my picks before the start?</summary>
                 <p>No. Until the round locks, other players only see how many of the five questions you have answered. Your picks aren&apos;t in the public deposit transaction either. Once the round starts, every player&apos;s picks are shown.</p>
+              </details>
+              <details>
+                <summary>In a Streak, what if I miss a pick window?</summary>
+                <p>No pick counts as a wrong pick, so you&apos;re out — unless every other player still in misses that leg too, or it ends level. Keep the arena open while you play; each window is 20 seconds.</p>
               </details>
               <details>
                 <summary>What if I close the tab mid-round?</summary>
