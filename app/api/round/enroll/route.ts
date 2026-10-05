@@ -65,12 +65,8 @@ export async function POST(request: Request) {
   if (denied) return denied;
   const arena = normalizeArenaCode(body.arena);
   const openingCall: Side | null = body.openingCall === "YES" || body.openingCall === "NO" ? body.openingCall : null;
-  // Usernames are X handles when Privy is set up (practice arenas excepted).
-  const who = await playerName(body.wallet, body.nickname, isPracticeArena(arena));
-  if (who.needsX) return NextResponse.json({ error: NEEDS_X_MESSAGE, needsX: true }, { status: 403 });
-  const nickname = who.name;
-
   const peek = await getActiveRound(arena);
+
   if (!peek) {
     // A deposit can confirm after the arena closed. Tell the player their
     // funds are safe and where to get them back, rather than a bare 404.
@@ -89,6 +85,12 @@ export async function POST(request: Request) {
   if (existing) {
     return NextResponse.json({ round: redactOpeningCalls(peek, body.wallet), arena, entrantId: existing.id, already: true });
   }
+
+  // Usernames are X handles when Privy is set up; X is required wherever
+  // real USDC moves (arenas without an escrow vault are practice).
+  const who = await playerName(body.wallet, body.nickname, isPracticeArena(arena) || !peek.escrow);
+  if (who.needsX) return NextResponse.json({ error: NEEDS_X_MESSAGE, needsX: true }, { status: 403 });
+  const nickname = who.name;
 
   // Never fall back to ledger-only for an arena that expects on-chain USDC.
   if (peek.escrow && !escrowReady()) {
