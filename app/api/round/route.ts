@@ -11,7 +11,9 @@ import { LOCK_HOLD_MAX_MS, unseatedDepositors, type SeatSync } from "@/lib/seat-
 
 export const dynamic = "force-dynamic";
 
-const HOLD_MS = 20_000; // keep a finished round on screen this long
+// Keep a finished practice round on screen this long before the next one
+// opens (hosted arenas keep their result until hosted again).
+const HOLD_MS = 60_000;
 
 /**
  * GET /api/round?arena=CODE

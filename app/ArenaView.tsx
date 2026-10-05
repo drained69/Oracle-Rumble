@@ -315,6 +315,18 @@ export default function ArenaView({ arenaCode }: { arenaCode: string }) {
     });
   }, [wallet, arenaCode, refresh, leg]);
 
+  // Streak: flag an open pick window in the tab title, so a player on another
+  // tab notices before the window closes (no pick and they're out).
+  const needsStreakPick = streakMode && round?.status === "live" && round.streak?.phase === "picking"
+    && !!me && me.eliminatedRound === null && !!leg && !leg.picks[me.id] && streakDraft?.n !== leg.n
+    && now < (round.streak?.phaseEndsAt ?? 0);
+  useEffect(() => {
+    if (!needsStreakPick) return;
+    const original = document.title;
+    document.title = `⏱ Pick now — leg ${leg?.n} · Oracle Rumble`;
+    return () => { document.title = original; };
+  }, [needsStreakPick, leg?.n]);
+
   // ── settlement, refunds + claim ───────────────────────────────────
   // Complete arena → record payouts on-chain. Cancelled arena → record a
   // full refund for every depositor. Any client can nudge; the server is
@@ -333,6 +345,7 @@ export default function ArenaView({ arenaCode }: { arenaCode: string }) {
     if (roundStatus !== "complete" && roundStatus !== "cancelled") return;
     let timer: number | undefined;
     let stopped = false;
+    let failures = 0;
     const run = async () => {
       const res = await serverSettleArena(arenaCode);
       if (stopped) return;
@@ -340,7 +353,14 @@ export default function ArenaView({ arenaCode }: { arenaCode: string }) {
         timer = window.setTimeout(run, Math.min(30_000, Math.max(3_000, res.retryInMs ?? 5_000)));
         return;
       }
-      if (res.error) setToast(`${roundStatus === "cancelled" ? "Refund" : "Settlement"}: ${res.error}`);
+      if (res.error) {
+        // Devnet RPC hiccups and expired blockhashes are common and the
+        // settle call is idempotent: keep trying with a growing delay, and
+        // only tell the player if it keeps failing.
+        failures += 1;
+        if (failures === 3) setToast(`${roundStatus === "cancelled" ? "Refund" : "Settlement"} is taking longer than usual (${res.error}). Still retrying — your funds are safe in escrow.`);
+        if (failures < 12) timer = window.setTimeout(run, Math.min(60_000, 5_000 * failures));
+      }
       await refresh();
       setEscrowNudge((n) => n + 1);
     };

@@ -298,11 +298,15 @@ export async function setStreakPick(wallet: string, arena: string, pick: string)
 
 /** Ask the server to sign + submit SettlePlayer + CloseSettlement for the arena. */
 export async function serverSettleArena(arena: string): Promise<{ ok?: boolean; signatures?: string[]; alreadySettled?: boolean; error?: string; escrow?: string; refund?: boolean; pending?: boolean; retryInMs?: number; depositors?: number }> {
-  const res = await fetch("/api/escrow/settle", {
-    method: "POST", headers: { "content-type": "application/json" },
-    body: JSON.stringify({ arena })
-  });
-  return res.json();
+  try {
+    const res = await fetch("/api/escrow/settle", {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ arena })
+    });
+    return await res.json();
+  } catch {
+    return { error: "network error" };
+  }
 }
 
 /** Claim my settled entitlement out of the arena's escrow to my wallet. */

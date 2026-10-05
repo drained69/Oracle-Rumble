@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { requireWallet } from "@/lib/session";
+import { overLimit } from "@/lib/rate-limit";
 import { mutateActiveRound } from "@/lib/round-store";
 import { normalizeArenaCode } from "@/lib/royale";
 import { normalizeLocks, normalizePicks, type Picks } from "@/lib/predictions";
@@ -24,6 +25,8 @@ export async function POST(request: Request) {
   // Only the wallet itself (signed-in session) may change its picks.
   const denied = requireWallet(request, body.wallet);
   if (denied) return denied;
+  // Each change is a locked write; a person clicking fast stays well under this.
+  if (overLimit("picks", body.wallet, 90, 60_000)) return NextResponse.json({ error: "Too many changes — slow down a moment." }, { status: 429 });
   const arena = normalizeArenaCode(body.arena);
   let pickError = "";
   let picks: Picks = {};
