@@ -417,7 +417,7 @@ export default function ArenaStage({ round, standings, survivors, yesPrice, spot
               <div className="mr-champ-title">Champion</div>
               <div className="mr-champ-name">{displayName(champion)}</div>
               <div className="mr-champ-prize">
-                {streak ? `${champion.score ?? 0} legs${champion.prizeUsdc > 0 ? ` · +$${champion.prizeUsdc.toFixed(2)}` : ""}`
+                {streak ? `${champion.score ?? 0} leg${(champion.score ?? 0) === 1 ? "" : "s"}${champion.prizeUsdc > 0 ? ` · +$${champion.prizeUsdc.toFixed(2)}` : ""}`
                   : picks ? `${champion.score ?? 0} pts${champion.prizeUsdc > 0 ? ` · +$${champion.prizeUsdc.toFixed(2)}` : ""}`
                   : champion.prizeUsdc > 0 ? `+$${champion.prizeUsdc.toFixed(2)} prize` : "Last trader standing"}
               </div>
