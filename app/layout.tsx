@@ -1,5 +1,6 @@
 import type { Metadata, Viewport } from "next";
 import "./globals.css";
+import PrivyMount from "@/app/PrivyMount";
 
 const DESCRIPTION =
   "A prediction-market battle royale on Solana. Equal seats, UP or DOWN calls on live BTC, ETH and SOL prices, the bottom half cut each round — survivors split the pool. Non-custodial USDC escrow.";
@@ -29,7 +30,10 @@ export const viewport: Viewport = {
 export default function RootLayout({ children }: Readonly<{ children: React.ReactNode }>) {
   return (
     <html lang="en">
-      <body>{children}</body>
+      <body>
+        {children}
+        <PrivyMount />
+      </body>
     </html>
   );
 }

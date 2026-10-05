@@ -66,7 +66,8 @@ async function refundCancelled(round: Round) {
   }
   // Entries already recovered on chain have their seat back; skip them.
   const depositors = all.filter((d) => !d.claimed);
-  const res = await settleArenaOnChain(escrow.roundVault, depositors.map((d) => ({ wallet: d.wallet, entitlementUsdc: seat })), vault.deposited);
+  // Closed as a refund: these claims carry no platform fee.
+  const res = await settleArenaOnChain(escrow.roundVault, depositors.map((d) => ({ wallet: d.wallet, entitlementUsdc: seat })), vault.deposited, true);
   if (!res.ok) {
     if ("retry" in res && res.retry) return NextResponse.json({ ok: false, refund: true, pending: true, retryInMs: 3_000 });
     return NextResponse.json({ error: res.error }, { status: 502 });
@@ -147,10 +148,13 @@ async function settle(arena: string) {
   // gain is capped away and no loss is left locked in the vault.
   const recoveredUsdc = recovered.length * (vault.entryUsdc + vault.vaultUsdc);
   const playerPot = Math.max(0, vault.totalEscrowedUsdc - recoveredUsdc - refunds.length * seatUsdc);
-  const shares = payoutShares(players.map((e) => ({ key: e.wallet, cash: e.cash, prize: e.prizeUsdc })), playerPot);
+  // The host's fee is paid into the host's own seat, alongside any prize.
+  const hostFee = round.hostFeeUsdc ?? 0;
+  const prizeOf = (e: (typeof players)[number]) => e.prizeUsdc + (e.wallet === round.config.host ? hostFee : 0);
+  const shares = payoutShares(players.map((e) => ({ key: e.wallet, cash: e.cash, prize: prizeOf(e) })), playerPot);
   const notes: string[] = [];
   let entries: SettleEntry[] = players.map((e) => ({ wallet: e.wallet, entitlementUsdc: shares[e.wallet] ?? 0 }));
-  const ledgerSum = players.reduce((s, e) => s + Math.max(0, e.cash) + e.prizeUsdc, 0);
+  const ledgerSum = players.reduce((s, e) => s + Math.max(0, e.cash) + prizeOf(e), 0);
   if (Math.abs(ledgerSum - playerPot) > 0.005) {
     notes.push(`Vault money shared by final vault value: ${usd(playerPot)} paid out across ${players.length} player${players.length === 1 ? "" : "s"}.`);
   }

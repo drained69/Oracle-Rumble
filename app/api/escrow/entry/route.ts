@@ -36,6 +36,8 @@ export async function GET(request: Request) {
     claimed: entry.claimed,
     entitlementUsdc: entry.entitlementUsdc,
     claimsOpen: !!vault?.settled,
+    // Platform fee the escrow takes from this claim (0 on refunds and old vaults).
+    claimFeeBps: vault?.claimFeeBps ?? 0,
     recoverAt: vault ? vault.settleDeadline * 1000 : null
   });
 }

@@ -33,6 +33,7 @@ export async function GET() {
         capacity: latest.config.capacity,
         entryUsdc: latest.config.entryUsdc,
         startingBankroll: latest.config.startingBankroll,
+        hostFeePct: latest.config.hostFeePct ?? 0,
         prizePoolUsdc: latest.prizePoolUsdc,
         humans,
         bots,

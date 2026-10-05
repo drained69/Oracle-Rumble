@@ -1,9 +1,9 @@
 import { NextResponse } from "next/server";
 import { requireWallet } from "@/lib/session";
 import { getActiveRound, getLatestRound, mutateActiveRound } from "@/lib/round-store";
-import { normalizeArenaCode, normalizeCallPct, redactOpeningCalls, seatPlayer, type Side } from "@/lib/royale";
+import { isPracticeArena, normalizeArenaCode, normalizeCallPct, redactOpeningCalls, seatPlayer, type Side } from "@/lib/royale";
 import { confirmSignature, escrowReady, verifyPlayerDeposited } from "@/lib/escrow-server";
-import { validateUsername } from "@/lib/username";
+import { NEEDS_X_MESSAGE, playerName } from "@/lib/identity";
 
 export const dynamic = "force-dynamic";
 
@@ -65,8 +65,10 @@ export async function POST(request: Request) {
   if (denied) return denied;
   const arena = normalizeArenaCode(body.arena);
   const openingCall: Side | null = body.openingCall === "YES" || body.openingCall === "NO" ? body.openingCall : null;
-  const name = validateUsername(body.nickname ?? "");
-  const nickname = name.ok ? name.value : "";
+  // Usernames are X handles when Privy is set up (practice arenas excepted).
+  const who = await playerName(body.wallet, body.nickname, isPracticeArena(arena));
+  if (who.needsX) return NextResponse.json({ error: NEEDS_X_MESSAGE, needsX: true }, { status: 403 });
+  const nickname = who.name;
 
   const peek = await getActiveRound(arena);
   if (!peek) {

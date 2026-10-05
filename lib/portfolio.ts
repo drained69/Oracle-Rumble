@@ -43,6 +43,8 @@ export type PortfolioItem = {
     survivors: number;
     eliminatedRound: number | null;
     prizeUsdc: number;
+    /** Host fee this wallet earned for hosting the arena (USDC). */
+    hostFeeUsdc: number;
     /** Predictions: right answers so far (live) or final; null in other formats. */
     score: number | null;
     /** Predictions: how many questions the round has. */
@@ -62,6 +64,8 @@ export type PortfolioItem = {
     claimed: boolean;
     claimsOpen: boolean;
     recoverAt: number | null; // ms
+    /** Platform fee on a claim from this vault (basis points; 0 = none). */
+    claimFeeBps: number;
   };
   action: PortfolioAction;
   /** USDC the action pays out (claim / recover). */

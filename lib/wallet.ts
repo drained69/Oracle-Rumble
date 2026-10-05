@@ -12,7 +12,9 @@
  * checks the wallet is on the account the page is playing as.
  */
 
-export type WalletKind = "phantom" | "backpack" | "solflare" | "brave" | "injected";
+import { getPrivyBridge, privyProvider, X_ICON, X_REQUIRED } from "@/lib/privy-client";
+
+export type WalletKind = "phantom" | "backpack" | "solflare" | "brave" | "injected" | "privy";
 
 type Pk = { toString(): string } | null | undefined;
 type Listener = (...args: unknown[]) => void;
@@ -44,7 +46,7 @@ export class WalletError extends Error {
 
 const KIND_KEY = "oracle-rumble/wallet-kind/v1";
 /** Wallets whose connect({ onlyIfTrusted }) reconnects without a popup. */
-const SILENT = new Set<WalletKind>(["phantom", "backpack", "brave"]);
+const SILENT = new Set<WalletKind>(["phantom", "backpack", "brave", "privy"]);
 
 const short = (a: string) => (a.length > 10 ? `${a.slice(0, 4)}…${a.slice(-4)}` : a);
 
@@ -114,7 +116,14 @@ export function listWallets(): WalletOption[] {
     if (out.some((o) => o.provider === p || o.name === f.name)) continue;
     out.push({ kind: f.kind, name: f.name, icon: icons.get(f.name.toLowerCase()) ?? null, provider: p });
   }
+  // Sign in with X and play with a Privy embedded wallet — no extension needed.
+  if (X_REQUIRED) out.push({ kind: "privy", name: "X account", icon: X_ICON, provider: privyProvider });
   return out;
+}
+
+/** True for the Privy embedded wallet (signs inside the page, not an extension). */
+export function isPrivyWallet(kind: WalletKind | null | undefined): boolean {
+  return kind === "privy" && !!getPrivyBridge();
 }
 
 export function rememberedKind(): WalletKind | null {

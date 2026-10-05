@@ -7,7 +7,7 @@
  */
 
 import { useCallback, useEffect, useState } from "react";
-import { useEscrowStatus, useWalletIdentity } from "@/lib/use-wallet";
+import { useEscrowStatus, useWalletIdentity, useXNotices } from "@/lib/use-wallet";
 import SiteHeader from "@/app/SiteHeader";
 import UsernameModal from "@/app/UsernameModal";
 import GitHubLink from "@/app/GitHubLink";
@@ -21,12 +21,13 @@ const SECTIONS: { id: string; title: string }[] = [
   { id: "predictions", title: "Predictions arenas" },
   { id: "streak", title: "Streak arenas" },
   { id: "money", title: "Seats, pool & payouts" },
+  { id: "fees", title: "Fees" },
   { id: "escrow", title: "Non-custodial escrow" },
   { id: "recovery", title: "Cancellations & recovery" },
   { id: "calls", title: "UP / DOWN & the price oracle" },
   { id: "trading", title: "Trading in an arena" },
   { id: "panta", title: "Panta integration" },
-  { id: "usernames", title: "Usernames" },
+  { id: "usernames", title: "Usernames & X" },
   { id: "wallet", title: "Wallets & signing" },
   { id: "api", title: "API reference" },
   { id: "trust", title: "Trust model" },
@@ -38,6 +39,7 @@ export default function DocsPage() {
   const escrow = useEscrowStatus();
   const [showUsername, setShowUsername] = useState(false);
   const [toast, setToast] = useState("");
+  useXNotices(setToast);
 
   useEffect(() => {
     document.body.classList.add("game-mode");
@@ -182,7 +184,8 @@ export default function DocsPage() {
             <pre className="code">{`seat      = entry + vault          (both deposited into escrow)
 pool      = entry × players who paid
 vault pot = vault × players who paid
-withdraw  = prize share + vault pot × (your final vault ÷ all final vaults)`}</pre>
+withdraw  = prize share + vault pot × (your final vault ÷ all final vaults)
+            (prizes come from the pool after any host fee; 0.1% platform fee on withdrawal)`}</pre>
             <table className="docs-table">
               <thead><tr><th>Players</th><th>Prize split</th></tr></thead>
               <tbody>
@@ -201,7 +204,25 @@ withdraw  = prize share + vault pot × (your final vault ÷ all final vaults)`}<
               Example: two players each deposit $6 ($1 entry + $5 vault). A calls UP, B calls DOWN, SOL closes
               higher: A&apos;s vault finishes at $10, B&apos;s at $0, so A withdraws $10 + the $2 pool = $12 and B
               withdraws $0. Playing alone against practice bots, your vault money simply comes back — there&apos;s
-              no one to win it from. Oracle Rumble takes no cut.
+              no one to win it from. Oracle Rumble takes only a 0.1% fee on withdrawals (see <a href="#fees">Fees</a>).
+            </p>
+          </Section>
+
+          <Section id="fees" title="Fees">
+            <table className="docs-table">
+              <thead><tr><th>Fee</th><th>Who sets it</th><th>How it works</th></tr></thead>
+              <tbody>
+                <tr><td><b>Host fee</b> · 0–5%</td><td>The arena&apos;s host</td><td>A share of the prize pool (the entries), paid into the host&apos;s own seat at settlement. It comes off the pool before the prize split, and players see it before they join. Cancelled arenas pay no host fee.</td></tr>
+                <tr><td><b>Platform fee</b> · 0.1%</td><td>Oracle Rumble</td><td>Taken by the escrow program from each withdrawal of a settled arena&apos;s payout. Refunds of a cancelled arena and on-chain recoveries are free.</td></tr>
+              </tbody>
+            </table>
+            <pre className="code">{`host fee  = pool × host fee %
+prizes    = split of (pool − host fee)
+withdraw  = payout − 0.1% platform fee`}</pre>
+            <p>
+              The platform fee is fixed in each arena&apos;s escrow vault when it is created and capped by the
+              program at 1%, so it can&apos;t be raised on an arena that already exists. Arenas created before
+              fees were introduced withdraw with no fee.
             </p>
           </Section>
 
@@ -303,16 +324,22 @@ withdraw  = prize share + vault pot × (your final vault ÷ all final vaults)`}<
             </table>
           </Section>
 
-          <Section id="usernames" title="Usernames">
+          <Section id="usernames" title="Usernames & X">
             <p>
               Your username is how other players see you on the arena stage, standings, activity
-              feed and results. You&apos;re asked to set one when you first connect a wallet, and you can
-              also type it straight into the host card or the seat dialog. Change it any time from
-              the account button in the header.
+              feed and results. It is your <b>X (Twitter) handle</b>: connect X once and that handle
+              becomes your wallet&apos;s username for good — it can&apos;t be changed, and an X account can
+              be linked to only one wallet, so nobody can play under someone else&apos;s name.
             </p>
+            <ul>
+              <li><b>Paid arenas and hosting</b> need a linked X account.</li>
+              <li><b>Practice arenas</b> work without X — you play under your wallet&apos;s short address.</li>
+              <li><b>No wallet?</b> Choose <em>X account</em> when connecting: sign in with X and you get a Solana
+                wallet inside the app (a Privy embedded wallet) that deposits, signs and withdraws like any other.</li>
+            </ul>
             <p>
-              It must be 3–16 letters, numbers or underscores and unique within an arena
-              (case-insensitive). It&apos;s saved on this device for your wallet.
+              On a deployment without X sign-in set up, players choose a username instead (3–16 letters,
+              numbers or underscores, unique within an arena).
             </p>
           </Section>
 

@@ -69,6 +69,7 @@ function myView(round: Round, me: Entrant, yes: number | null, showCall: boolean
     survivors: predictions ? paidPlaces(round) : cutLine(round),
     eliminatedRound: me.eliminatedRound,
     prizeUsdc: round2(me.prizeUsdc),
+    hostFeeUsdc: round2(me.wallet === round.config.host ? round.hostFeeUsdc ?? 0 : 0),
     score: predictions ? me.score ?? 0 : null,
     questions,
     picksMade: predictions && showCall ? pickCount(round.predictions?.questions, me.picks) : null,
@@ -134,7 +135,8 @@ export async function GET(request: Request) {
         settled: dep.settled,
         claimed: dep.claimed,
         claimsOpen: !!dep.vault?.settled,
-        recoverAt: dep.vault ? dep.vault.settleDeadline * 1000 : null
+        recoverAt: dep.vault ? dep.vault.settleDeadline * 1000 : null,
+        claimFeeBps: dep.vault?.claimFeeBps ?? 0
       } : null,
       action,
       actionUsdc: round2(usdc)
@@ -154,7 +156,8 @@ export async function GET(request: Request) {
         settled: dep.settled,
         claimed: dep.claimed,
         claimsOpen: !!dep.vault?.settled,
-        recoverAt: dep.vault ? dep.vault.settleDeadline * 1000 : null
+        recoverAt: dep.vault ? dep.vault.settleDeadline * 1000 : null,
+        claimFeeBps: dep.vault?.claimFeeBps ?? 0
       },
       action, actionUsdc: round2(usdc)
     });

@@ -17,7 +17,7 @@
  */
 
 import { answersFor, bestQuestion, directionQuestion, duelQuestion, DUEL_PAIRS, randomPicks, seedHash, type AssetPrices, type PickQuestion } from "@/lib/predictions";
-import { computeGroupPayouts, logEvent, standings, type Entrant, type Round } from "@/lib/royale";
+import { computeGroupPayouts, logEvent, standings, takeHostFee, type Entrant, type Round } from "@/lib/royale";
 
 /** How long players have to pick before each leg runs. */
 export const PICK_MS = 20_000;
@@ -193,7 +193,7 @@ export function settleStreak(round: Round, now: number): void {
     else groups.push([e]);
   }
   const funded = round.config.entryUsdc > 0 ? Math.round(round.prizePoolUsdc / round.config.entryUsdc) : humans.length;
-  const payouts = computeGroupPayouts(round.prizePoolUsdc, groups.map((g) => g.map((e) => e.id)), funded);
+  const payouts = computeGroupPayouts(takeHostFee(round), groups.map((g) => g.map((e) => e.id)), funded);
   for (const e of round.entrants) e.prizeUsdc = payouts[e.id] ?? 0;
   round.status = "complete";
   round.endedAt = now;

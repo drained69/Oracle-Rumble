@@ -11,8 +11,12 @@
     "seed:dry": "node scripts/seed-markets.mjs --dry"
   },
   "dependencies": {
+    "@privy-io/react-auth": "^3.47.0",
+    "@solana-program/memo": "^0.10.0",
+    "@solana/kit": "^5.5.1",
     "@solana/web3.js": "^1.99.0",
     "@types/pg": "^8.23.1",
+    "jose": "^6.2.12",
     "next": "15.5.26",
     "pg": "^8.23.0",
     "react": "19.1.1",

@@ -4293,3 +4293,16 @@ a.pf-code:hover { background: rgba(34, 211, 238, 0.08); }
   .pk-editor.compact .pk-q:has(.pk-lock) { grid-template-columns: 1fr; }
   .pk-editor.compact .pk-lock { justify-self: start; }
 }
+
+/* Fees */
+.fee-note { font-style: normal; font-weight: 500; font-size: 0.85em; color: var(--text-3); }
+
+/* X (Twitter) usernames */
+.x-connect { background: #000; color: #fff; border-color: #2f3336; }
+.x-connect:hover:not(:disabled) { background: #16181c; color: #fff; }
+.x-playing-as { margin: 12px 0 4px; font-size: 14px; color: var(--text-2); }
+.x-playing-as b { color: var(--text); }
+.x-playing-as em { font-style: normal; color: var(--text-3); font-size: 12px; }
+.x-needed { margin: 12px 0 4px; padding: 12px; border-radius: 10px; border: 1px solid var(--border-strong); background: rgba(15, 19, 27, 0.6); }
+.x-needed p { font-size: 13px; color: var(--text-2); line-height: 1.5; margin-bottom: 10px; }
+.x-needed b { color: var(--text); }

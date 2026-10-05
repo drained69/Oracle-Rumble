@@ -111,20 +111,23 @@ export type InitRoundParams = {
   vaultUsdc: number;
   capacity: number;
   settleDeadline: number; // unix seconds
+  /** v2 vault: platform fee on claims (basis points) and who receives it. */
+  claimFee?: { bps: number; recipient: PublicKey };
 };
 
-/** InitRound (tag 0). */
+/** InitRound (tag 0), or InitRoundV2 (tag 6) when a claim fee is given. */
 export function ixInitRound(p: InitRoundParams): TransactionInstruction {
   const [roundVault] = roundVaultPda(p.host, p.roundSeed);
   const [vaultAuthority] = vaultAuthorityPda(roundVault);
   const escrowTa = associatedTokenAddress(vaultAuthority, p.mint);
   const data = Buffer.concat([
-    Buffer.from([0]),
+    Buffer.from([p.claimFee ? 6 : 0]),
     Buffer.from(p.roundSeed),
     u64le(toBaseUnits(p.entryUsdc)),
     u64le(toBaseUnits(p.vaultUsdc)),
     u16le(p.capacity),
-    i64le(BigInt(Math.floor(p.settleDeadline)))
+    i64le(BigInt(Math.floor(p.settleDeadline))),
+    ...(p.claimFee ? [u16le(p.claimFee.bps), p.claimFee.recipient.toBuffer()] : [])
   ]);
   return new TransactionInstruction({
     programId: pid(),
@@ -213,15 +216,18 @@ export function ixSettlePlayer(params: {
   });
 }
 
-/** CloseSettlement (tag 3) — host locks settlement so players can claim. */
-export function ixCloseSettlement(params: { host: PublicKey; roundVault: PublicKey }): TransactionInstruction {
+/**
+ * CloseSettlement (tag 3) — host locks settlement so players can claim.
+ * `refund` uses CloseRefund (tag 7): a cancelled arena's refunds carry no fee.
+ */
+export function ixCloseSettlement(params: { host: PublicKey; roundVault: PublicKey; refund?: boolean }): TransactionInstruction {
   return new TransactionInstruction({
     programId: pid(),
     keys: [
       { pubkey: params.host, isSigner: true, isWritable: false },
       { pubkey: params.roundVault, isSigner: false, isWritable: true }
     ],
-    data: Buffer.from([3])
+    data: Buffer.from([params.refund ? 7 : 3])
   });
 }
 
@@ -231,6 +237,8 @@ export function ixWithdraw(params: {
   roundVault: PublicKey;
   mint: PublicKey;
   recover?: boolean;
+  /** v2 vault with an active claim fee: the fee recipient (its USDC ATA receives the fee). */
+  feeRecipient?: PublicKey;
 }): TransactionInstruction {
   const { player, roundVault, mint } = params;
   const [vaultAuthority] = vaultAuthorityPda(roundVault);
@@ -247,5 +255,6 @@ export function ixWithdraw(params: {
     { pubkey: TOKEN_PROGRAM_ID, isSigner: false, isWritable: false }
   ];
   if (params.recover) keys.push({ pubkey: SYSVAR_CLOCK_PUBKEY, isSigner: false, isWritable: false });
+  else if (params.feeRecipient) keys.push({ pubkey: associatedTokenAddress(params.feeRecipient, mint), isSigner: false, isWritable: true });
   return new TransactionInstruction({ programId: pid(), keys, data: Buffer.from([params.recover ? 5 : 4]) });
 }

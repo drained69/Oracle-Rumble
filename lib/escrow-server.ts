@@ -37,6 +37,7 @@ import {
   playerEntryPda,
   roundVaultPda
 } from "@/lib/escrow";
+import { PLATFORM_CLAIM_FEE_BPS } from "@/lib/fees";
 
 const RPC = process.env.NEXT_PUBLIC_SOLANA_RPC ?? "https://api.devnet.solana.com";
 
@@ -103,6 +104,18 @@ async function signSendConfirm(tx: Transaction, signers: Keypair[]): Promise<str
   throw new Error(`tx ${sig} not confirmed within ${CONFIRM_TIMEOUT_MS}ms`);
 }
 
+/**
+ * Who receives the platform's 0.1% claim fee: PLATFORM_FEE_WALLET if set,
+ * otherwise the operator key itself.
+ */
+export function platformFeeWallet(): PublicKey | null {
+  const raw = process.env.PLATFORM_FEE_WALLET ?? "";
+  if (raw) {
+    try { return new PublicKey(raw); } catch { /* fall back to the operator */ }
+  }
+  return hostKeypair()?.publicKey ?? null;
+}
+
 /** Fully-configured escrow: program id, USDC mint, and host key present. */
 export function escrowReady(): boolean {
   return ESCROW_ACTIVE && !!hostKeypair() && !!USDC_MINT;
@@ -143,17 +156,35 @@ export async function initArenaOnChain(p: InitArenaParams): Promise<{ ok: true; 
   // round with its oracle wait, plus an hour of slack for settlement.
   const longestGameSec = 3 * 60 + Math.max(p.enrollmentSec, 30) + Math.max(1, p.roundLimit) * (p.liveSec + 120);
   const settleDeadline = Math.floor(Date.now() / 1000) + longestGameSec + 60 * 60;
-  const ix = ixInitRound({
-    host: host.publicKey,
-    roundSeed,
-    mint: USDC_MINT,
-    entryUsdc: p.entryUsdc,
-    vaultUsdc: p.vaultUsdc,
-    capacity: p.capacity,
-    settleDeadline
-  });
+  // New vaults carry the platform's claim fee; make sure the fee recipient's
+  // USDC account exists so every claim can pay it.
+  const feeWallet = platformFeeWallet();
+  const mint = USDC_MINT;
+  const build = (withFee: boolean) => {
+    const tx = new Transaction();
+    if (withFee && feeWallet) tx.add(ixCreateAtaIdempotent({ payer: host.publicKey, owner: feeWallet, mint }));
+    return tx.add(ixInitRound({
+      host: host.publicKey,
+      roundSeed,
+      mint,
+      entryUsdc: p.entryUsdc,
+      vaultUsdc: p.vaultUsdc,
+      capacity: p.capacity,
+      settleDeadline,
+      claimFee: withFee && feeWallet && PLATFORM_CLAIM_FEE_BPS > 0 ? { bps: PLATFORM_CLAIM_FEE_BPS, recipient: feeWallet } : undefined
+    }));
+  };
   try {
-    const sig = await signSendConfirm(new Transaction().add(ix), [host]);
+    let sig: string;
+    try {
+      sig = await signSendConfirm(build(true), [host]);
+    } catch (err) {
+      // A program without fee support rejects InitRoundV2 as invalid
+      // instruction data: open the arena with a fee-less vault instead.
+      if (!/invalid instruction data/i.test(err instanceof Error ? err.message : String(err))) throw err;
+      console.warn("[escrow] program has no claim-fee support yet — opening a fee-less vault");
+      sig = await signSendConfirm(build(false), [host]);
+    }
     return {
       ok: true,
       record: {
@@ -258,7 +289,10 @@ export async function buildWithdrawTx(player: PublicKey, roundVault: PublicKey, 
   if (!escrowReady() || !USDC_MINT) return { error: "escrow inactive" };
   // Ditto: recover/claim may be the first time the wallet touches USDC.
   const createAta = ixCreateAtaIdempotent({ payer: player, owner: player, mint: USDC_MINT });
-  const withdraw = ixWithdraw({ player, roundVault, mint: USDC_MINT, recover });
+  // A claim on a v2 vault pays the platform fee to the recipient's account.
+  const vault = recover ? null : await readVault(roundVault.toBase58());
+  const feeRecipient = vault?.feeActive && vault.claimFeeBps > 0 && vault.feeRecipient ? new PublicKey(vault.feeRecipient) : undefined;
+  const withdraw = ixWithdraw({ player, roundVault, mint: USDC_MINT, recover, feeRecipient });
   return buildTx([createAta, withdraw], player);
 }
 
@@ -272,7 +306,7 @@ export type SettleEntry = { wallet: string; entitlementUsdc: number };
  * unsettled entry can't claim, a closed vault can't recover), so we stop
  * before closing and report `retry` — SettlePlayer is idempotent.
  */
-export async function settleArenaOnChain(roundVaultPk: string, players: SettleEntry[], expectDeposited?: number): Promise<{ ok: true; signatures: string[] } | { ok: false; error: string; retry?: boolean }> {
+export async function settleArenaOnChain(roundVaultPk: string, players: SettleEntry[], expectDeposited?: number, refund = false): Promise<{ ok: true; signatures: string[] } | { ok: false; error: string; retry?: boolean }> {
   const host = hostKeypair();
   if (!escrowReady() || !host) return { ok: false, error: "escrow inactive" };
   const roundVault = new PublicKey(roundVaultPk);
@@ -295,7 +329,8 @@ export async function settleArenaOnChain(roundVaultPk: string, players: SettleEn
         return { ok: false, retry: true, error: "a new deposit landed during settlement — settling again" };
       }
     }
-    const closeIx = ixCloseSettlement({ host: host.publicKey, roundVault });
+    // A cancelled arena closes as a refund: its claims carry no platform fee.
+    const closeIx = ixCloseSettlement({ host: host.publicKey, roundVault, refund });
     const closeSig = await signSendConfirm(new Transaction().add(closeIx), [host]);
     sigs.push(closeSig);
     return { ok: true, signatures: sigs };
@@ -357,7 +392,15 @@ export type VaultState = {
   settledTotalUsdc: number;
   settleDeadline: number; // unix seconds
   settled: boolean;       // CloseSettlement ran — claims are open
+  /** v2 vaults: platform fee on claims (0 for v1 vaults or a refund close). */
+  claimFeeBps: number;
+  feeRecipient: string | null;
+  feeActive: boolean;
 };
+
+/** Where the fee config starts in a v2 RoundVault (see program/src/lib.rs). */
+const FEE_EXT_OFFSET = 168;
+const FEE_EXT_LEN = 35;
 
 /** Decode a RoundVault account's data (layout mirrors program/src/lib.rs). */
 function decodeVault(d: Buffer): VaultState | null {
@@ -374,7 +417,14 @@ function decodeVault(d: Buffer): VaultState | null {
   u64(); // claimed_total
   const deadline = Number(d.readBigInt64LE(o)); o += 8;
   const status = d.readUInt8(o);
+  const v2 = d.length >= FEE_EXT_OFFSET + FEE_EXT_LEN;
+  const feeRecipient = v2 ? new PublicKey(d.subarray(FEE_EXT_OFFSET, FEE_EXT_OFFSET + 32)).toBase58() : null;
+  const claimFeeBps = v2 ? d.readUInt16LE(FEE_EXT_OFFSET + 32) : 0;
+  const feeActive = v2 ? d.readUInt8(FEE_EXT_OFFSET + 34) === 1 : false;
   return {
+    claimFeeBps: feeActive ? claimFeeBps : 0,
+    feeRecipient,
+    feeActive,
     entryUsdc: entry / 1e6,
     vaultUsdc: vault / 1e6,
     deposited,

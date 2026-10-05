@@ -9,6 +9,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { Portfolio, PortfolioItem } from "@/lib/portfolio";
 import { claimFromEscrow, serverSettleArena, seatStepText } from "@/lib/round-client";
+import { netOfClaimFee } from "@/lib/fees";
 
 const usd = new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", minimumFractionDigits: 2, maximumFractionDigits: 2 });
 const CLUSTER = (process.env.NEXT_PUBLIC_SOLANA_CLUSTER ?? "devnet").toLowerCase();
@@ -36,7 +37,8 @@ function resultLine(i: PortfolioItem): string {
   if (i.status === "cancelled") return i.chain ? "Arena cancelled before it started — your seat is refunded in full." : "Arena cancelled before it started.";
   if (!me) return i.chain ? "You paid a seat but weren't seated — it's refunded in full." : "";
   const place = me.place ? `${ordinal(me.place)} of ${me.players}` : "Finished";
-  const prize = me.prizeUsdc > 0 ? ` · won ${usd.format(me.prizeUsdc)} from the pool` : "";
+  const prize = (me.prizeUsdc > 0 ? ` · won ${usd.format(me.prizeUsdc)} from the pool` : "")
+    + (me.hostFeeUsdc > 0 ? ` · ${usd.format(me.hostFeeUsdc)} host fee` : "");
   if (i.format === "predictions") return `${place} · ${me.score ?? 0} pts${prize || " · no prize this time"}`;
   if (i.format === "streak") return `${place} · lasted ${me.score ?? 0} leg${(me.score ?? 0) === 1 ? "" : "s"}${prize || " · no prize this time"}`;
   const out = me.eliminatedRound ? ` · knocked out in round ${me.eliminatedRound}` : "";
@@ -158,12 +160,19 @@ export default function ArenaPortfolio({ wallet, onToast }: { wallet: string; on
                     ? "This arena was never settled and its recovery window is open — take your full seat back."
                     : resultLine(i)}
                 </p>
-                <div className="pf-foot">
-                  <b className="pf-amount">{usd.format(i.actionUsdc)}</b>
-                  <button className="btn primary" onClick={() => withdraw(i)} disabled={busy !== null}>
-                    {busy === key ? "Confirm in your wallet…" : i.action === "recover" ? `Recover ${usd.format(i.actionUsdc)}` : `Withdraw ${usd.format(i.actionUsdc)}`}
-                  </button>
-                </div>
+                {(() => {
+                  // Claims from newer vaults pay the 0.1% platform fee; recoveries don't.
+                  const bps = i.action === "claim" ? i.chain?.claimFeeBps ?? 0 : 0;
+                  const net = netOfClaimFee(i.actionUsdc, bps);
+                  return (
+                    <div className="pf-foot">
+                      <b className="pf-amount">{usd.format(net)}{bps > 0 && <em className="fee-note"> after {(bps / 100).toFixed(1)}% fee</em>}</b>
+                      <button className="btn primary" onClick={() => withdraw(i)} disabled={busy !== null}>
+                        {busy === key ? "Confirm in your wallet…" : i.action === "recover" ? `Recover ${usd.format(net)}` : `Withdraw ${usd.format(net)}`}
+                      </button>
+                    </div>
+                  );
+                })()}
               </article>
             );
           })}

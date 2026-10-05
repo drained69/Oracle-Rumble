@@ -21,6 +21,7 @@
 import { jointProbability } from "@/lib/joint-prob";
 import { answersFor, normalizeLocks, normalizePicks, resultsLine, scorePicks, type Picks, type PredictionsState } from "@/lib/predictions";
 import type { StreakState } from "@/lib/streak";
+import { hostFeeOf, normalizeHostFeePct } from "@/lib/fees";
 
 export type RoundStatus =
   | "enrolling"   // accepting entrants, before lock
@@ -123,6 +124,8 @@ export type RoundConfig = {
   enrollmentSec: number;  // enrollment window
   liveSec: number;        // trading window per round
   roundLimit: number;     // rounds before forced finish (1 for single, 2–4 royale)
+  /** Host's cut of the prize pool, 0–5 (%). Paid to the host's seat at settlement. */
+  hostFeePct?: number;
 };
 
 // Host-configurable bounds. The host picks values inside these; the engine
@@ -183,7 +186,8 @@ export function normalizeConfig(base: RoundConfig, patch: Partial<RoundConfig>):
     minEntrants: clamp(patch.minEntrants ?? base.minEntrants, 2, capacity),
     enrollmentSec: clamp(patch.enrollmentSec ?? base.enrollmentSec, L.enrollmentSec.min, L.enrollmentSec.max),
     liveSec: clamp(patch.liveSec ?? base.liveSec, L.liveSec.min, L.liveSec.max),
-    roundLimit
+    roundLimit,
+    hostFeePct: normalizeHostFeePct(patch.hostFeePct ?? base.hostFeePct ?? 0)
   };
 }
 
@@ -207,7 +211,7 @@ export function seatCostUsdc(config: RoundConfig): number {
 // Market-Royale prize split of the shared pool among the top finishers.
 // A 2-player game is a duel — winner takes the whole pool. With 3+ funded
 // players the pool splits 62.5% / 23.4375% / 14.0625%, and 1st absorbs any
-// rounding remainder. The arena takes no cut.
+// rounding remainder. Any host fee comes off the pool first (takeHostFee).
 const SPLIT_3 = [0.625, 0.234375, 0.140625] as const;
 
 /**
@@ -354,7 +358,22 @@ export type Round = {
   predictions?: PredictionsState;
   /** Streak arena: the legs played so far and the current phase. */
   streak?: StreakState;
+  /** Host fee taken from the pool at the final settlement (USDC), paid to config.host. */
+  hostFeeUsdc?: number;
 };
+
+/**
+ * Take the host's fee off the pool at the final settlement and return what
+ * is left to split as prizes. Only a host who is seated in the arena (and
+ * so has an escrow entry to be paid into) earns it.
+ */
+export function takeHostFee(round: Round): number {
+  const hostSeated = !!round.config.host && round.entrants.some((e) => !e.isBot && e.wallet === round.config.host);
+  const fee = hostSeated ? hostFeeOf(round.prizePoolUsdc, round.config.hostFeePct) : 0;
+  round.hostFeeUsdc = fee;
+  if (fee > 0) logEvent(round, `Host fee: $${fee.toFixed(2)} (${normalizeHostFeePct(round.config.hostFeePct)}% of the pool) to the host.`);
+  return Math.max(0, Math.round((round.prizePoolUsdc - fee) * 1e6) / 1e6);
+}
 
 /** The reserved code for the walk-in public arena that always has a live round. */
 export const PUBLIC_ARENA = "PUBLIC";
@@ -812,7 +831,7 @@ export function settle(round: Round, finalYesPrice: number, priceMap?: PriceMap)
     const funded = round.config.entryUsdc > 0
       ? Math.round(round.prizePoolUsdc / round.config.entryUsdc)
       : humanWinners.length;
-    const payouts = computePayouts(round.prizePoolUsdc, humanWinners.slice(0, 3), funded);
+    const payouts = computePayouts(takeHostFee(round), humanWinners.slice(0, 3), funded);
     for (const e of round.entrants) e.prizeUsdc = payouts[e.id] ?? 0;
     round.championId = humanWinners[0] ?? survivors[0]?.id ?? null;
     const champ = round.entrants.find((e) => e.id === round.championId);
@@ -844,7 +863,7 @@ export function settlePredictions(round: Round, close: Record<string, number>): 
     else groups.push([e]);
   }
   const funded = round.config.entryUsdc > 0 ? Math.round(round.prizePoolUsdc / round.config.entryUsdc) : humans.length;
-  const payouts = computeGroupPayouts(round.prizePoolUsdc, groups.map((g) => g.map((e) => e.id)), funded);
+  const payouts = computeGroupPayouts(takeHostFee(round), groups.map((g) => g.map((e) => e.id)), funded);
   for (const e of round.entrants) e.prizeUsdc = payouts[e.id] ?? 0;
 
   round.status = "complete";

@@ -5,6 +5,7 @@ import { streakSpanSec } from "@/lib/streak";
 import { PICKS_PRACTICE_ARENA, STREAK_PRACTICE_ARENA, chainVaultUsdc, cutLine, humanCount, isPracticeArena, newArenaCode, normalizeArenaCode, redactOpeningCalls, seatCostUsdc, seatPlayer, standings, type Round, logEvent } from "@/lib/royale";
 import { escrowReady, initArenaOnChain, playerBalances } from "@/lib/escrow-server";
 import { sessionWallet } from "@/lib/session";
+import { NEEDS_X_MESSAGE, playerName } from "@/lib/identity";
 import { limitByIp, overLimit } from "@/lib/rate-limit";
 import { PublicKey } from "@solana/web3.js";
 import { LOCK_HOLD_MAX_MS, unseatedDepositors, type SeatSync } from "@/lib/seat-sync";
@@ -185,6 +186,9 @@ export async function POST(request: Request) {
   const host = sessionWallet(request);
   if (onChain && !host) {
     return NextResponse.json({ error: "Sign in with your wallet to host an arena.", needsAuth: true }, { status: 401 });
+  }
+  if (onChain && (await playerName(host!, undefined, false)).needsX) {
+    return NextResponse.json({ error: `${NEEDS_X_MESSAGE.replace(" to play", " to host")}`, needsX: true }, { status: 403 });
   }
   if (onChain && overLimit("host-wallet", host!, 6, 10 * 60_000)) {
     return NextResponse.json({ error: "You've opened several arenas in the last few minutes — wait a little before hosting another." }, { status: 429 });

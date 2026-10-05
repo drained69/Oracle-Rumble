@@ -11,9 +11,10 @@ import { cancelArena, checkSeatFunds, enrollWithEscrow, newRound, prepareWallet,
 import { shortPk, USERNAME_MAX, validateUsername } from "@/lib/username";
 import { DEFAULT_OPENING_CALL_PCT, PICKS_CHAIN_VAULT_USDC, hostAmountError, isPicksFormat, type RoundFormat } from "@/lib/royale";
 import { DEFAULT_LEG_SEC, LEG_LENGTHS, MAX_LEGS } from "@/lib/streak";
+import { HOST_FEE_OPTIONS } from "@/lib/fees";
 import CallSizePicker, { callSizeText } from "@/app/CallSizePicker";
 import { avatarDataUrl } from "@/lib/avatars";
-import { useEscrowStatus, useWalletIdentity } from "@/lib/use-wallet";
+import { useEscrowStatus, useWalletIdentity, useXNotices } from "@/lib/use-wallet";
 import SiteHeader from "@/app/SiteHeader";
 import UsernameModal from "@/app/UsernameModal";
 import PantaGraduationBanner from "@/app/PantaGraduationBanner";
@@ -38,6 +39,7 @@ type ArenaItem = {
   capacity: number;
   entryUsdc: number;
   startingBankroll: number;
+  hostFeePct?: number;
   prizePoolUsdc: number;
   humans: number;
   bots: number;
@@ -72,13 +74,14 @@ const QUICK_ENROLL_SEC = 120;
 type HostStep = "" | "checking" | "opening" | SeatStep;
 
 export default function ArenasDirectory() {
-  const { wallet, username, toggleConnect, saveUsername } = useWalletIdentity();
+  const { wallet, username, toggleConnect, saveUsername, connectX, xRequired } = useWalletIdentity();
   const escrow = useEscrowStatus();
   const [arenas, setArenas] = useState<ArenaItem[]>([]);
   const [loaded, setLoaded] = useState(false);
   const [now, setNow] = useState(0);
   const [hostStep, setHostStep] = useState<HostStep>("");
   const [toast, setToast] = useState("");
+  useXNotices(setToast);
   const [tab, setTab] = useState<Tab>("play");
   const [showUsername, setShowUsername] = useState(false);
   const [nameDraft, setNameDraft] = useState("");
@@ -88,6 +91,7 @@ export default function ArenasDirectory() {
   const [hHorizon, setHHorizon] = useState<"MIN5" | "MIN15" | "HOUR" | "DAY">("MIN5");
   const [hFormat, setHFormat] = useState<RoundFormat>("single");
   const [hLegSec, setHLegSec] = useState<number>(DEFAULT_LEG_SEC);
+  const [hHostFee, setHHostFee] = useState<number>(0);
   const [hRounds, setHRounds] = useState(2);
   const [hCapacity, setHCapacity] = useState(8);
   const [hEntry, setHEntry] = useState("2");
@@ -155,6 +159,10 @@ export default function ArenasDirectory() {
       return;
     }
     let hostName = username;
+    if (wallet && !hostName && xRequired) {
+      setToast("Connect your X account to host — your X handle becomes your username.");
+      return;
+    }
     if (wallet && !hostName) {
       // Username typed inline in the host card — save it on the way through.
       const r = saveUsername(nameDraft);
@@ -184,7 +192,7 @@ export default function ArenasDirectory() {
         entryUsdc: entryNum, startingBankroll: vaultNum,
         capacity: hCapacity, roundLimit: hFormat === "royale" ? hRounds : 1,
         ...(hFormat === "streak" ? { liveSec: hLegSec } : {}),
-        enrollmentSec, host: wallet ?? ""
+        enrollmentSec, host: wallet ?? "", hostFeePct: hHostFee
       });
       if (v.error || !v.arena) { setToast(v.error ?? "Could not open the arena."); return; }
       const url = `${window.location.origin}/a/${v.arena}`;
@@ -227,7 +235,7 @@ export default function ArenasDirectory() {
         : `Arena ${v.arena} is open — you're in seat 1. Share the link.`);
       refresh();
     } finally { setHostStep(""); }
-  }, [hostInputError, escrow, wallet, username, nameDraft, saveUsername, hostSeat, hMode, hStartInMin, hAsset, hHorizon, hFormat, entryNum, vaultNum, hCapacity, hRounds, hCall, hCallPct, refresh, picks, hLegSec]);
+  }, [hostInputError, escrow, wallet, username, nameDraft, saveUsername, hostSeat, hMode, hStartInMin, hAsset, hHorizon, hFormat, entryNum, vaultNum, hCapacity, hRounds, hCall, hCallPct, refresh, picks, hLegSec, hHostFee]);
 
   const doCopy = useCallback(async (url: string) => {
     try { await navigator.clipboard.writeText(url); setToast("Invite link copied."); }
@@ -314,7 +322,7 @@ export default function ArenasDirectory() {
           <ul className="jt-trust">
             <li>Non-custodial USDC escrow</li>
             <li>Live price oracle</li>
-            <li>No house cut</li>
+            <li>0.1% platform fee</li>
           </ul>
 
           <ActivityFeed />
@@ -357,6 +365,7 @@ export default function ArenasDirectory() {
                 hHorizon={hHorizon} setHHorizon={setHHorizon}
                 hFormat={hFormat} setHFormat={setHFormat}
                 hLegSec={hLegSec} setHLegSec={setHLegSec}
+                hHostFee={hHostFee} setHHostFee={setHHostFee}
                 hRounds={hRounds} setHRounds={setHRounds}
                 hCapacity={hCapacity} setHCapacity={setHCapacity}
                 hEntry={hEntry} setHEntry={setHEntry}
@@ -367,6 +376,7 @@ export default function ArenasDirectory() {
                 wallet={wallet} escrowActive={!!escrow?.active} escrowKnown={escrow != null}
                 username={username} nameDraft={nameDraft} setNameDraft={setNameDraft}
                 onEditUsername={() => setShowUsername(true)} onConnect={connect}
+                xRequired={xRequired} onConnectX={async () => { const r = await connectX(); if (!r.ok) setToast(r.message); }}
                 step={hostStep} onSubmit={doHostAndJoin}
               />
             )}
@@ -448,6 +458,7 @@ function PlayPanel({
           <div><span>Seat</span><b>{usd2.format(featured.entryUsdc + featured.startingBankroll)}</b></div>
           {featured.format === "predictions" && <div><span>Game</span><b>5 picks</b></div>}
           {featured.format === "streak" && <div><span>Game</span><b>Streak</b></div>}
+          {(featured.hostFeePct ?? 0) > 0 && <div><span>Host fee</span><b>{featured.hostFeePct}%</b></div>}
           <div><span>Players</span><b>{seats}</b></div>
           <div><span>{featured.status === "enrolling" ? "Locks in" : "Ends in"}</span><b className="neon">{deadline ? fmtClock(timeLeft) : "—"}</b></div>
           <div><span>Tier</span><b className={tier === "S" ? "gold" : tier === "A" ? "neon" : ""}>{tier}</b></div>
@@ -485,10 +496,10 @@ function PlayPanel({
 function HostPanel({
   hMode, setHMode, hStartInMin, setHStartInMin,
   hAsset, setHAsset, hHorizon, setHHorizon,
-  hFormat, setHFormat, hLegSec, setHLegSec, hRounds, setHRounds,
+  hFormat, setHFormat, hLegSec, setHLegSec, hHostFee, setHHostFee, hRounds, setHRounds,
   hCapacity, setHCapacity, hEntry, setHEntry, hVault, setHVault, hCall, setHCall, hCallPct, setHCallPct,
   hostSeat, poolIfFull, inputError, wallet, escrowActive, escrowKnown,
-  username, nameDraft, setNameDraft, onEditUsername, onConnect, step, onSubmit
+  username, nameDraft, setNameDraft, onEditUsername, onConnect, xRequired, onConnectX, step, onSubmit
 }: {
   hMode: "quick" | "scheduled"; setHMode: (v: "quick" | "scheduled") => void;
   hStartInMin: number; setHStartInMin: (v: number) => void;
@@ -496,6 +507,7 @@ function HostPanel({
   hHorizon: "MIN5" | "MIN15" | "HOUR" | "DAY"; setHHorizon: (v: "MIN5" | "MIN15" | "HOUR" | "DAY") => void;
   hFormat: RoundFormat; setHFormat: (v: RoundFormat) => void;
   hLegSec: number; setHLegSec: (v: number) => void;
+  hHostFee: number; setHHostFee: (v: number) => void;
   hRounds: number; setHRounds: (v: number) => void;
   hCapacity: number; setHCapacity: (v: number) => void;
   hEntry: string; setHEntry: (v: string) => void;
@@ -506,6 +518,7 @@ function HostPanel({
   wallet: string | null; escrowActive: boolean; escrowKnown: boolean;
   username: string; nameDraft: string; setNameDraft: (v: string) => void;
   onEditUsername: () => void; onConnect: () => void;
+  xRequired: boolean; onConnectX: () => void;
   step: HostStep; onSubmit: () => void;
 }) {
   const busy = step !== "";
@@ -534,8 +547,13 @@ function HostPanel({
         <div className="host-id">
           {/* eslint-disable-next-line @next/next/no-img-element */}
           <img src={avatarDataUrl(wallet, 26)} width={26} height={26} alt="" className="host-id-avatar" />
-          <span>Hosting as <b>{username}</b></span>
-          <button className="link-btn" onClick={onEditUsername}>Change</button>
+          <span>Hosting as <b>{xRequired ? `@${username}` : username}</b></span>
+          {!xRequired && <button className="link-btn" onClick={onEditUsername}>Change</button>}
+        </div>
+      ) : wallet && xRequired ? (
+        <div className="host-id">
+          <span>Connect X to host — your X handle becomes your username, set once.</span>
+          <button className="host-id-btn" onClick={onConnectX}>Connect X</button>
         </div>
       ) : wallet ? (
         <label className="host-name">
@@ -653,6 +671,19 @@ function HostPanel({
           </label>
         )}
       </div>
+
+      <FieldRow label="Host fee">
+        <div className="gm-seg">
+          {HOST_FEE_OPTIONS.map((p) => (
+            <button key={p} className={`opt ${hHostFee === p ? "on" : ""}`} onClick={() => setHHostFee(p)}>{p}%</button>
+          ))}
+        </div>
+      </FieldRow>
+      <p className="jc-help">
+        {hHostFee > 0
+          ? `You keep ${hHostFee}% of the prize pool (${usd2.format((poolIfFull * hHostFee) / 100)} if full), paid with your own payout. Players see it before they join.`
+          : "Optional: keep up to 5% of the prize pool for hosting. Players see it before they join."}
+      </p>
 
       <div className="jc-host-preview">
         <div><span>Seat cost</span><b>{usd2.format(hostSeat)}</b></div>

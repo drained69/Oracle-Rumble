@@ -5,7 +5,7 @@ import { buildDepositTx, buildWithdrawTx, escrowReady, playerBalances, readPlaye
 import { getActiveRound, getLatestRound, mutateActiveRound } from "@/lib/round-store";
 import { normalizeArenaCode, normalizeCallPct, seatCostUsdc, type Side } from "@/lib/royale";
 import { normalizeLocks, normalizePicks } from "@/lib/predictions";
-import { validateUsername } from "@/lib/username";
+import { NEEDS_X_MESSAGE, playerName } from "@/lib/identity";
 
 /** Cap on remembered pending seats per arena (anti-spam). */
 const MAX_PENDING_SEATS = 64;
@@ -80,6 +80,10 @@ export async function POST(request: Request) {
     // BUG F — pre-flight checks so the wallet is never asked to sign a tx
     // that will predictably fail on-chain.
     if (body.action === "deposit") {
+      // A paid seat needs a linked X account when usernames come from X.
+      if ((await playerName(body.wallet, body.nickname, false)).needsX) {
+        return NextResponse.json({ error: NEEDS_X_MESSAGE, needsX: true }, { status: 403 });
+      }
       if (round.status !== "enrolling") {
         return NextResponse.json({ error: `deposits closed (round is ${round.status})` }, { status: 409 });
       }
@@ -137,7 +141,8 @@ export async function POST(request: Request) {
     if (body.action === "deposit" && sessionWallet(request) === body.wallet) {
       // Remember who this wallet wants to be, so if its deposit lands but the
       // enroll request never arrives the keeper still seats it correctly.
-      const name = validateUsername(body.nickname ?? "");
+      const who = await playerName(body.wallet, body.nickname, false);
+      const name = { ok: !!who.name, value: who.name };
       const openingCall = body.openingCall === "YES" || body.openingCall === "NO" ? body.openingCall : null;
       await mutateActiveRound(arena, (r) => {
         if (r.status !== "enrolling" || !r.escrow) return;

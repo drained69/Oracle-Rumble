@@ -46,6 +46,10 @@ function memLatest(arena: string): Round | null {
 }
 
 const _gp = globalThis as unknown as { __rr_pool?: Pool; __rr_ready?: Promise<void> };
+/** The shared Postgres pool (other stores reuse it). */
+export function dbPool(): Pool {
+  return pool();
+}
 function pool(): Pool {
   if (!_gp.__rr_pool) {
     _gp.__rr_pool = new Pool({

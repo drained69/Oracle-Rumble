@@ -3,13 +3,14 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { availableFor, buyPriceOf, DEFAULT_OPENING_CALL_PCT, hostAmountError, paidPlaces, payoutShares, scorePlace, seatCostUsdc, sellPriceOf, tradingOpen, TRADE_CUTOFF_MS, TRADE_SPREAD } from "@/lib/royale";
 import { changeOf, LOCK_MAX, pickCount, scoreCard, type Picks } from "@/lib/predictions";
+import { claimFeeOf, HOST_FEE_OPTIONS, netOfClaimFee, PLATFORM_CLAIM_FEE_BPS } from "@/lib/fees";
 import { PicksBoard, PicksEditor, PicksRoster, judgedPrices, pctText, picksMade } from "@/app/Predictions";
 import { StreakHistory, StreakLegCard, StreakRoster, phaseText } from "@/app/Streak";
 import { canPick, currentLeg, DEFAULT_LEG_SEC, LEG_LENGTHS, MAX_LEGS, PICK_MS } from "@/lib/streak";
 import { useEscapeKey } from "@/lib/use-escape";
 import CallSizePicker, { callSizeText } from "@/app/CallSizePicker";
 import { getRound, enrollWithEscrow, tradeRound, newRound, claimFromEscrow, serverSettleArena, cancelArena, checkSeatFunds, setOpeningCall, setPicks, setStreakPick, prepareWallet, seatStepText, type OpeningCall, type RoundView, type SeatStep } from "@/lib/round-client";
-import { useEscrowStatus, useWalletIdentity } from "@/lib/use-wallet";
+import { useEscrowStatus, useWalletIdentity, useXNotices } from "@/lib/use-wallet";
 import SiteHeader from "@/app/SiteHeader";
 import UsernameModal from "@/app/UsernameModal";
 import type { Entrant, Round } from "@/lib/royale";
@@ -59,7 +60,7 @@ const STATUS_LABEL: Record<string, string> = {
 
 export default function ArenaView({ arenaCode }: { arenaCode: string }) {
   const isPublic = isPracticeArena(arenaCode);
-  const { wallet, username, toggleConnect, saveUsername } = useWalletIdentity();
+  const { wallet, username, toggleConnect, saveUsername, connectX, xRequired } = useWalletIdentity();
   const escrow = useEscrowStatus();
   const [showUsername, setShowUsername] = useState(false);
   const [nickname, setNickname] = useState("");
@@ -71,6 +72,7 @@ export default function ArenaView({ arenaCode }: { arenaCode: string }) {
   // Which wallet step a seat/host request is waiting on (null = idle).
   const [seatStep, setSeatStep] = useState<SeatStep | null>(null);
   const [toast, setToast] = useState("");
+  useXNotices(setToast);
   const [showEnroll, setShowEnroll] = useState(false);
   // UP / DOWN / decide-later pick in the seat modal ("" = not chosen yet).
   const [callPick, setCallPick] = useState<"YES" | "NO" | "LATER" | "">("");
@@ -81,6 +83,7 @@ export default function ArenaView({ arenaCode }: { arenaCode: string }) {
   const [hHorizon, setHHorizon] = useState<"MIN5" | "MIN15" | "HOUR" | "DAY">("MIN5");
   const [hFormat, setHFormat] = useState<"single" | "royale" | "predictions" | "streak">("royale");
   const [hLegSec, setHLegSec] = useState<number>(DEFAULT_LEG_SEC);
+  const [hHostFee, setHHostFee] = useState<number>(0);
   const [hRounds, setHRounds] = useState(3);
   const [hCapacity, setHCapacity] = useState(8);
   const [hEntry, setHEntry] = useState("2");
@@ -197,10 +200,12 @@ export default function ArenaView({ arenaCode }: { arenaCode: string }) {
   // ── actions (all arena-scoped) ────────────────────────────────────
   const doEnroll = useCallback(async () => {
     if (!wallet) { setShowEnroll(false); setToast("Connect a wallet first."); return; }
-    const v = validateUsername(nickname);
+    // With X usernames the server names the seat (X handle, or the wallet in practice).
+    const v = xRequired ? { ok: true as const, value: username } : validateUsername(nickname);
     if (!v.ok) { setToast(v.reason); return; }
+    if (xRequired && !username && round?.escrow) { setToast("Connect your X account to play — your X handle becomes your username."); return; }
     const nick = v.value;
-    if (round && !isUsernameFreeInArena(nick, round.entrants, wallet)) {
+    if (!xRequired && round && !isUsernameFreeInArena(nick, round.entrants, wallet)) {
       setToast(`Username "${nick}" is taken in this arena — pick another.`);
       return;
     }
@@ -241,7 +246,7 @@ export default function ArenaView({ arenaCode }: { arenaCode: string }) {
       }
       await refresh();
     } finally { setBusy(false); setSeatStep(null); }
-  }, [wallet, nickname, arenaCode, refresh, round, saveUsername, callPick, callPct, seatPicks, seatLocks]);
+  }, [wallet, nickname, arenaCode, refresh, round, saveUsername, callPick, callPct, seatPicks, seatLocks, xRequired, username]);
 
   /** Add or remove a question from a lock (2–3 picks). */
   const nextLocks = useCallback((current: string[], questionId: string): string[] | null => {
@@ -370,7 +375,7 @@ export default function ArenaView({ arenaCode }: { arenaCode: string }) {
 
   // This wallet's on-chain position in the arena — drives the refund card,
   // including deposits that landed after the round closed.
-  type MyEscrow = { deposited: boolean; seatUsdc?: number; settled?: boolean; claimed?: boolean; entitlementUsdc?: number; claimsOpen?: boolean; recoverAt?: number | null };
+  type MyEscrow = { deposited: boolean; seatUsdc?: number; settled?: boolean; claimed?: boolean; entitlementUsdc?: number; claimsOpen?: boolean; recoverAt?: number | null; claimFeeBps?: number };
   const [myEscrow, setMyEscrow] = useState<MyEscrow | null>(null);
   const loadMyEscrow = useCallback(async () => {
     if (!wallet || !hasVault) { setMyEscrow(null); return; }
@@ -496,6 +501,7 @@ export default function ArenaView({ arenaCode }: { arenaCode: string }) {
         capacity: hCapacity,
         roundLimit: hFormat === "royale" ? hRounds : 1,
         enrollmentSec: 120, // counted from the host's confirmed seat
+        hostFeePct: hHostFee,
         ...(hFormat === "streak" ? { liveSec: hLegSec } : {}),
         host: wallet ?? ""
       });
@@ -538,7 +544,7 @@ export default function ArenaView({ arenaCode }: { arenaCode: string }) {
       setInviteInfo({ code: v.arena, url });
       setToast(`Arena ${v.arena} is open. Share the link.`);
     } finally { setBusy(false); setSeatStep(null); }
-  }, [hAsset, hHorizon, hFormat, hEntry, hVault, hCapacity, hRounds, wallet, escrow, username, hCall, hCallPct, hostSeat, hostError, hostPicks, hLegSec]);
+  }, [hAsset, hHorizon, hFormat, hEntry, hVault, hCapacity, hRounds, wallet, escrow, username, hCall, hCallPct, hostSeat, hostError, hostPicks, hLegSec, hHostFee]);
 
   const doCopyInvite = useCallback(async (url?: string) => {
     const link = url ?? currentInviteUrl;
@@ -732,11 +738,16 @@ export default function ArenaView({ arenaCode }: { arenaCode: string }) {
               // Projected payout under the escrow's rule (same function the
               // server settles with); the on-chain figure replaces it once recorded.
               const humansNow = standings.filter((e) => !e.isBot);
+              const hostFee = round.hostFeeUsdc ?? 0;
               const projected = payoutShares(
-                humansNow.map((e) => ({ key: e.wallet, cash: e.cash, prize: e.prizeUsdc })),
+                humansNow.map((e) => ({ key: e.wallet, cash: e.cash, prize: e.prizeUsdc + (e.wallet === round.config.host ? hostFee : 0) })),
                 humansNow.length * (round.config.entryUsdc + round.config.startingBankroll)
               );
               const myEntitlement = me ? projected[me.wallet] ?? 0 : 0;
+              const hostEntrant = hostFee > 0 ? standings.find((e) => e.wallet === round.config.host) : undefined;
+              // What actually reaches the wallet after the platform's claim fee.
+              const claimBps = myEscrow?.claimFeeBps ?? 0;
+              const gross = myEscrow?.entitlementUsdc ?? myEntitlement;
               const escrowSettled = !!round.escrow?.settleSignatures?.length || chainSettled || !!myEscrow?.claimsOpen;
               const canClaim = !!wallet && !!round.escrow && escrowSettled && (myEscrow?.entitlementUsdc ?? myEntitlement) > 0.0001 && !myEscrow?.claimed;
               const explorerBase = `https://explorer.solana.com/tx`;
@@ -782,6 +793,7 @@ export default function ArenaView({ arenaCode }: { arenaCode: string }) {
                     {paid.length > 1
                       ? `${usd.format(round.prizePoolUsdc)} pool split across the top ${paid.length}.`
                       : `${usd.format(round.prizePoolUsdc)} pool to the winner.`}
+                    {hostEntrant ? <>{" "}{displayName(hostEntrant)} took a {usd2.format(hostFee)} host fee ({round.config.hostFeePct}% of the pool).</> : null}
                     {entryOnly ? <>{" "}Players who tie split the places they share.</>
                       : round.escrow ? <>{" "}Players also share the vault money by how their vaults finished — one player&apos;s trading losses fund another&apos;s gains.</> : null}
                   </p>
@@ -798,14 +810,18 @@ export default function ArenaView({ arenaCode }: { arenaCode: string }) {
                         <p className="claimed"><b>Withdrawn ✓</b> {usd2.format(myEscrow.entitlementUsdc ?? myEntitlement)} is back in your wallet.</p>
                       ) : (myEscrow?.entitlementUsdc ?? myEntitlement) > 0.0001 ? (
                         <>
-                          <p><b>Your withdrawal:</b> {usd2.format(myEscrow?.entitlementUsdc ?? myEntitlement)}{entryOnly ? " — your prize" : me.prizeUsdc > 0 ? ` — includes your ${usd2.format(me.prizeUsdc)} prize` : " — your share of the vault money"}</p>
+                          <p>
+                            <b>Your withdrawal:</b> {usd2.format(gross)}
+                            {me.wallet === round.config.host && hostFee > 0 ? ` — includes your ${usd2.format(hostFee)} host fee` : entryOnly ? " — your prize" : me.prizeUsdc > 0 ? ` — includes your ${usd2.format(me.prizeUsdc)} prize` : " — your share of the vault money"}
+                            {claimBps > 0 && <span className="fee-note"> · {(claimBps / 100).toFixed(1)}% platform fee ({usd2.format(claimFeeOf(gross, claimBps))}) — you receive {usd2.format(netOfClaimFee(gross, claimBps))}</span>}
+                          </p>
                           <button
                             className="btn primary full"
                             onClick={() => doClaim(false)}
                             disabled={busy || !canClaim}
                             title={!wallet ? "Connect the wallet you played with" : ""}
                           >
-                            {busy ? "Confirm in your wallet…" : `Withdraw ${usd2.format(myEscrow?.entitlementUsdc ?? myEntitlement)} to my wallet`}
+                            {busy ? "Confirm in your wallet…" : `Withdraw ${usd2.format(netOfClaimFee(gross, claimBps))} to my wallet`}
                           </button>
                           <div className="claim-links">
                             {(round.escrow.settleSignatures ?? []).filter((s) => s.length > 60).slice(-2).map((s) => (
@@ -1320,7 +1336,8 @@ export default function ArenaView({ arenaCode }: { arenaCode: string }) {
       {showEnroll && round && (() => {
         const v = validateUsername(nickname);
         const clash = v.ok && !isUsernameFreeInArena(v.value, round.entrants, wallet ?? undefined);
-        const ok = v.ok && !clash;
+        // X usernames: a linked handle, or (practice only) the wallet's short name.
+        const ok = xRequired ? (!!username || !round.escrow) : v.ok && !clash;
         const hint = nickname.length === 0
           ? "3–16 characters: letters, numbers and underscores."
           : !v.ok ? v.reason
@@ -1403,6 +1420,8 @@ export default function ArenaView({ arenaCode }: { arenaCode: string }) {
 
                 <dl className="seat-breakdown">
                   <div><dt>Entry → shared prize pool</dt><dd>{usd2.format(round.config.entryUsdc)}</dd></div>
+                  {(round.config.hostFeePct ?? 0) > 0 && <div><dt>Host fee</dt><dd>{round.config.hostFeePct}% of the pool</dd></div>}
+                  {round.escrow && <div><dt>Platform fee</dt><dd>{(PLATFORM_CLAIM_FEE_BPS / 100).toFixed(1)}% when you withdraw</dd></div>}
                   {!entryOnly && <div><dt>Vault → your trading bankroll</dt><dd>{usd2.format(vault)}</dd></div>}
                   <div className="total">
                     <dt>{round.escrow ? "Total deposit" : "Practice seat"}</dt>
@@ -1410,23 +1429,43 @@ export default function ArenaView({ arenaCode }: { arenaCode: string }) {
                   </div>
                 </dl>
 
-                <label>
-                  Username
-                  <input
-                    value={nickname}
-                    onChange={(e) => setNickname(e.target.value)}
-                    placeholder="e.g. nova_9"
-                    maxLength={USERNAME_MAX}
-                    autoComplete="off"
-                    spellCheck={false}
-                    aria-invalid={nickname.length > 0 && !ok}
-                    aria-describedby="seat-hint"
-                  />
-                </label>
-                <p id="seat-hint" className={`username-hint ${nickname.length === 0 ? "" : ok ? "ok" : "bad"}`} role="status">{hint}</p>
+                {xRequired ? (
+                  username ? (
+                    <p className="x-playing-as">Playing as <b>@{username}</b> <em>· your X handle</em></p>
+                  ) : (
+                    <div className="x-needed">
+                      <p>
+                        {round.escrow
+                          ? <>Your username is your X handle — connect X once to play for real. You&apos;ll come straight back here.</>
+                          : <>You&apos;ll play as <b>{wallet ? shortPk(wallet) : "your wallet"}</b>. Connect X to use your handle instead.</>}
+                      </p>
+                      <button type="button" className="btn secondary full x-connect" disabled={busy} onClick={async () => { const r = await connectX(); if (!r.ok) setToast(r.message); }}>
+                        Connect X
+                      </button>
+                    </div>
+                  )
+                ) : (
+                  <>
+                    <label>
+                      Username
+                      <input
+                        value={nickname}
+                        onChange={(e) => setNickname(e.target.value)}
+                        placeholder="e.g. nova_9"
+                        maxLength={USERNAME_MAX}
+                        autoComplete="off"
+                        spellCheck={false}
+                        aria-invalid={nickname.length > 0 && !ok}
+                        aria-describedby="seat-hint"
+                      />
+                    </label>
+                    <p id="seat-hint" className={`username-hint ${nickname.length === 0 ? "" : ok ? "ok" : "bad"}`} role="status">{hint}</p>
+                  </>
+                )}
                 <button type="submit" className="btn primary full" disabled={busy || !ok || !wallet || !ready} style={{ marginTop: 10 }}>
                   {busy ? (seatStep ? seatStepText(seatStep, seat, callPick === "YES" || callPick === "NO" ? callPick : null).button : "Checking your wallet…")
                     : !wallet ? "Connect a wallet first"
+                    : xRequired && !username && round.escrow ? "Connect X above to play"
                     : streakMode ? (round.escrow ? `Deposit ${usd2.format(seat)} & take a seat` : "Take a practice seat")
                     : picksMode && !ready ? `Answer all ${questions.length} questions · ${seatPicked}/${questions.length}`
                     : picksMode ? (round.escrow ? `Deposit ${usd2.format(seat)} & lock in my picks` : "Take a practice seat")
@@ -1585,6 +1624,15 @@ export default function ArenaView({ arenaCode }: { arenaCode: string }) {
                   </div>
                 </div>
 
+                <div className="host-field">
+                  <span className="host-label">Host fee</span>
+                  <div className="seg">
+                    {HOST_FEE_OPTIONS.map((p) => (
+                      <button key={p} className={hHostFee === p ? "seg-opt on" : "seg-opt"} onClick={() => setHHostFee(p)}>{p}%</button>
+                    ))}
+                  </div>
+                </div>
+
                 <div className="host-2col">
                   <label className="host-num">
                     Entry (USDC)
@@ -1603,6 +1651,7 @@ export default function ArenaView({ arenaCode }: { arenaCode: string }) {
                 <div className="host-summary">
                   <div><span>Seat per player</span><b>{usd2.format(hostSeat)}</b></div>
                   <div><span>Pool if full</span><b className="accent">{usd2.format((Number(hEntry) || 0) * hCapacity)}</b></div>
+                  {hHostFee > 0 && <div><span>Your fee if full</span><b>{usd2.format(((Number(hEntry) || 0) * hCapacity * hHostFee) / 100)}</b></div>}
                   <div><span>Format</span><b>{hostStreak ? `Up to ${MAX_LEGS} legs` : hostPicks ? "5 picks · 1 round" : hFormat === "single" ? "1 round" : `${hRounds} rounds · cut`}</b></div>
                 </div>
 

@@ -19,6 +19,13 @@
 //! ranking depends on off-chain price history. The host is NOT trusted with
 //! CUSTODY — it cannot withdraw, cannot exceed the escrowed total, and cannot
 //! stop a player from recovering after the deadline.
+//!
+//! Fees (v2 vaults, `InitRoundV2`): a vault can carry a platform fee on
+//! claims, fixed when the vault is created and capped at MAX_CLAIM_FEE_BPS.
+//! `Claim` sends the fee to the recipient's token account and the rest to the
+//! player. A vault closed with `CloseRefund` (cancelled arena) claims fee-free,
+//! and `Recover` never charges a fee. Vaults created with `InitRound` (v1) have
+//! no fee and behave exactly as before.
 
 use borsh::{BorshDeserialize, BorshSerialize};
 use solana_program::{
@@ -118,6 +125,21 @@ pub struct PlayerEntry {
 }
 pub const PLAYER_ENTRY_LEN: usize = 84;
 
+/// v2 vaults are allocated larger; the fee config sits after the base state.
+pub const FEE_EXT_OFFSET: usize = 168;
+pub const FEE_EXT_LEN: usize = 35;
+pub const ROUND_VAULT_V2_LEN: usize = 232;
+/// The most a vault may charge on claims: 1%.
+pub const MAX_CLAIM_FEE_BPS: u16 = 100;
+
+#[derive(BorshSerialize, BorshDeserialize, Debug, Clone)]
+pub struct FeeConfig {
+    pub fee_recipient: Pubkey,
+    pub claim_fee_bps: u16,
+    /// Cleared by `CloseRefund`: refunds of a cancelled arena are fee-free.
+    pub active: bool,
+}
+
 // ── instructions ────────────────────────────────────────────────────────
 #[derive(BorshSerialize, BorshDeserialize, Debug)]
 pub enum EscrowInstruction {
@@ -157,6 +179,21 @@ pub enum EscrowInstruction {
     /// 3 vault_authority PDA 4 escrow_token_account (writable)
     /// 5 player_usdc_ata (writable, dest) 6 token_program 7 clock sysvar
     Recover,
+    /// `InitRound` plus a claim fee. Same accounts as `InitRound`. A Claim on
+    /// this vault takes `claim_fee_bps` of the amount for `fee_recipient` and
+    /// passes the recipient's token account as account 7.
+    InitRoundV2 {
+        round_seed: [u8; 32],
+        entry_amount: u64,
+        vault_amount: u64,
+        capacity: u16,
+        settle_deadline: i64,
+        claim_fee_bps: u16,
+        fee_recipient: Pubkey,
+    },
+    /// `CloseSettlement` for a cancelled arena: refunds claim without a fee.
+    /// Accounts: 0 host (signer) 1 round_vault (writable)
+    CloseRefund,
 }
 
 entrypoint!(process_instruction);
@@ -183,14 +220,39 @@ pub fn process_instruction(
             vault_amount,
             capacity,
             settle_deadline,
+            None,
         ),
         EscrowInstruction::Deposit => process_deposit(program_id, accounts),
         EscrowInstruction::SettlePlayer { entitlement } => {
             process_settle_player(program_id, accounts, entitlement)
         }
-        EscrowInstruction::CloseSettlement => process_close_settlement(program_id, accounts),
+        EscrowInstruction::CloseSettlement => process_close_settlement(program_id, accounts, false),
         EscrowInstruction::Claim => process_withdraw(program_id, accounts, false),
         EscrowInstruction::Recover => process_withdraw(program_id, accounts, true),
+        EscrowInstruction::InitRoundV2 {
+            round_seed,
+            entry_amount,
+            vault_amount,
+            capacity,
+            settle_deadline,
+            claim_fee_bps,
+            fee_recipient,
+        } => {
+            if claim_fee_bps > MAX_CLAIM_FEE_BPS {
+                return Err(EscrowError::InvalidAmount.into());
+            }
+            process_init_round(
+                program_id,
+                accounts,
+                round_seed,
+                entry_amount,
+                vault_amount,
+                capacity,
+                settle_deadline,
+                Some(FeeConfig { fee_recipient, claim_fee_bps, active: true }),
+            )
+        }
+        EscrowInstruction::CloseRefund => process_close_settlement(program_id, accounts, true),
     }
 }
 
@@ -217,6 +279,65 @@ fn load_round(ai: &AccountInfo, program_id: &Pubkey) -> Result<RoundVault, Progr
 fn store_round(ai: &AccountInfo, v: &RoundVault) -> ProgramResult {
     v.serialize(&mut &mut ai.data.borrow_mut()[..])
         .map_err(|_| ProgramError::AccountDataTooSmall.into())
+}
+
+/// The fee config of a v2 vault; None for v1 vaults (no fee).
+fn load_fee(ai: &AccountInfo) -> Result<Option<FeeConfig>, ProgramError> {
+    let data = ai.data.borrow();
+    if data.len() < FEE_EXT_OFFSET + FEE_EXT_LEN {
+        return Ok(None);
+    }
+    let mut cursor: &[u8] = &data[FEE_EXT_OFFSET..];
+    let fee = FeeConfig::deserialize(&mut cursor).map_err(|_| ProgramError::InvalidAccountData)?;
+    Ok(Some(fee))
+}
+
+fn store_fee(ai: &AccountInfo, fee: &FeeConfig) -> ProgramResult {
+    let mut data = ai.data.borrow_mut();
+    if data.len() < FEE_EXT_OFFSET + FEE_EXT_LEN {
+        return Err(ProgramError::AccountDataTooSmall);
+    }
+    fee.serialize(&mut &mut data[FEE_EXT_OFFSET..])
+        .map_err(|_| ProgramError::AccountDataTooSmall)
+}
+
+/// Create a program-owned PDA account even if someone pre-funded its address
+/// (a bare `create_account` fails on an address that already holds lamports,
+/// which would let anyone block a player's deposit by sending them dust).
+fn create_pda_account<'a>(
+    payer: &AccountInfo<'a>,
+    target: &AccountInfo<'a>,
+    system_program: &AccountInfo<'a>,
+    owner: &Pubkey,
+    space: usize,
+    seeds: &[&[u8]],
+) -> ProgramResult {
+    let required = Rent::get()?.minimum_balance(space);
+    let current = target.lamports();
+    if current == 0 {
+        return invoke_signed(
+            &system_instruction::create_account(payer.key, target.key, required, space as u64, owner),
+            &[payer.clone(), target.clone(), system_program.clone()],
+            &[seeds],
+        );
+    }
+    let top_up = required.saturating_sub(current);
+    if top_up > 0 {
+        invoke(
+            &system_instruction::transfer(payer.key, target.key, top_up),
+            &[payer.clone(), target.clone(), system_program.clone()],
+        )?;
+    }
+    invoke_signed(
+        &system_instruction::allocate(target.key, space as u64),
+        &[target.clone(), system_program.clone()],
+        &[seeds],
+    )?;
+    invoke_signed(
+        &system_instruction::assign(target.key, owner),
+        &[target.clone(), system_program.clone()],
+        &[seeds],
+    )
 }
 
 fn spl_transfer<'a>(
@@ -280,6 +401,7 @@ fn process_init_round(
     vault_amount: u64,
     capacity: u16,
     settle_deadline: i64,
+    fee: Option<FeeConfig>,
 ) -> ProgramResult {
     let it = &mut accounts.iter();
     let host = next_account_info(it)?;
@@ -324,19 +446,17 @@ fn process_init_round(
         return Err(EscrowError::AccountMismatch.into());
     }
 
-    // Create the round_vault PDA account (program-owned data account).
-    let rent = Rent::from_account_info(rent_sysvar)?;
-    let lamports = rent.minimum_balance(ROUND_VAULT_LEN);
-    invoke_signed(
-        &system_instruction::create_account(
-            host.key,
-            round_vault.key,
-            lamports,
-            ROUND_VAULT_LEN as u64,
-            program_id,
-        ),
-        &[host.clone(), round_vault.clone(), system_program.clone()],
-        &[&[ROUND_SEED, host.key.as_ref(), &round_seed, &[rv_bump]]],
+    // Create the round_vault PDA account (program-owned data account); v2
+    // vaults are larger to hold the fee config.
+    let _ = rent_sysvar;
+    let space = if fee.is_some() { ROUND_VAULT_V2_LEN } else { ROUND_VAULT_LEN };
+    create_pda_account(
+        host,
+        round_vault,
+        system_program,
+        program_id,
+        space,
+        &[ROUND_SEED, host.key.as_ref(), &round_seed, &[rv_bump]],
     )?;
 
     // Create the escrow ATA owned by the vault authority PDA.
@@ -371,7 +491,11 @@ fn process_init_round(
         bump: rv_bump,
         vault_authority_bump: auth_bump,
     };
-    store_round(round_vault, &state)
+    store_round(round_vault, &state)?;
+    if let Some(fee) = fee {
+        store_fee(round_vault, &fee)?;
+    }
+    Ok(())
 }
 
 // ── Deposit ─────────────────────────────────────────────────────────────
@@ -410,18 +534,13 @@ fn process_deposit(program_id: &Pubkey, accounts: &[AccountInfo]) -> ProgramResu
     if player_entry.owner == program_id && !player_entry.data_is_empty() {
         return Err(EscrowError::AlreadyInitialized.into());
     }
-    let rent = Rent::get()?;
-    let lamports = rent.minimum_balance(PLAYER_ENTRY_LEN);
-    invoke_signed(
-        &system_instruction::create_account(
-            player.key,
-            player_entry.key,
-            lamports,
-            PLAYER_ENTRY_LEN as u64,
-            program_id,
-        ),
-        &[player.clone(), player_entry.clone(), system_program.clone()],
-        &[&[PLAYER_SEED, round_vault.key.as_ref(), player.key.as_ref(), &[pe_bump]]],
+    create_pda_account(
+        player,
+        player_entry,
+        system_program,
+        program_id,
+        PLAYER_ENTRY_LEN,
+        &[PLAYER_SEED, round_vault.key.as_ref(), player.key.as_ref(), &[pe_bump]],
     )?;
 
     let seat = round
@@ -511,7 +630,7 @@ fn process_settle_player(
 }
 
 // ── CloseSettlement ─────────────────────────────────────────────────────
-fn process_close_settlement(program_id: &Pubkey, accounts: &[AccountInfo]) -> ProgramResult {
+fn process_close_settlement(program_id: &Pubkey, accounts: &[AccountInfo], refund: bool) -> ProgramResult {
     let it = &mut accounts.iter();
     let host = next_account_info(it)?;
     let round_vault = next_account_info(it)?;
@@ -526,7 +645,14 @@ fn process_close_settlement(program_id: &Pubkey, accounts: &[AccountInfo]) -> Pr
         return Err(EscrowError::NotOpen.into());
     }
     round.status = STATUS_SETTLED;
-    store_round(round_vault, &round)
+    store_round(round_vault, &round)?;
+    if refund {
+        if let Some(mut fee) = load_fee(round_vault)? {
+            fee.active = false;
+            store_fee(round_vault, &fee)?;
+        }
+    }
+    Ok(())
 }
 
 // ── Claim / Recover (shared withdraw path) ──────────────────────────────
@@ -606,13 +732,47 @@ fn process_withdraw(
         return Err(EscrowError::AccountMismatch.into());
     }
 
-    if amount > 0 {
+    // Claims on a v2 vault pay the platform fee (never on Recover or refunds).
+    let mut fee_amount: u64 = 0;
+    let mut fee_ta: Option<&AccountInfo> = None;
+    if !recovery && amount > 0 {
+        if let Some(fee) = load_fee(round_vault)? {
+            if fee.active && fee.claim_fee_bps > 0 {
+                fee_amount = ((amount as u128) * (fee.claim_fee_bps as u128) / 10_000u128) as u64;
+                if fee_amount > 0 {
+                    let fta = next_account_info(it)?;
+                    if fta.owner != token_program.key {
+                        return Err(EscrowError::AccountMismatch.into());
+                    }
+                    let acct = spl_token::state::Account::unpack(&fta.data.borrow())
+                        .map_err(|_| ProgramError::InvalidAccountData)?;
+                    if acct.mint != round.usdc_mint || acct.owner != fee.fee_recipient {
+                        return Err(EscrowError::AccountMismatch.into());
+                    }
+                    fee_ta = Some(fta);
+                }
+            }
+        }
+    }
+    let to_player = amount.checked_sub(fee_amount).ok_or(EscrowError::Overflow)?;
+
+    if to_player > 0 {
         spl_transfer_signed(
             token_program,
             escrow_ta,
             player_ata,
             vault_authority,
-            amount,
+            to_player,
+            auth_seeds,
+        )?;
+    }
+    if let Some(fta) = fee_ta {
+        spl_transfer_signed(
+            token_program,
+            escrow_ta,
+            fta,
+            vault_authority,
+            fee_amount,
             auth_seeds,
         )?;
     }

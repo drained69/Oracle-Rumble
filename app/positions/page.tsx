@@ -3,7 +3,7 @@
 /** /positions — the connected wallet's arenas, positions and payouts, plus Panta holdings. */
 
 import { useCallback, useEffect, useState } from "react";
-import { useEscrowStatus, useWalletIdentity } from "@/lib/use-wallet";
+import { useEscrowStatus, useWalletIdentity, useXNotices } from "@/lib/use-wallet";
 import SiteHeader from "@/app/SiteHeader";
 import UsernameModal from "@/app/UsernameModal";
 import PantaPositions from "@/app/PantaPositions";
@@ -14,6 +14,7 @@ export default function PositionsPage() {
   const escrow = useEscrowStatus();
   const [showUsername, setShowUsername] = useState(false);
   const [toast, setToast] = useState("");
+  useXNotices(setToast);
 
   useEffect(() => {
     document.body.classList.add("game-mode");
