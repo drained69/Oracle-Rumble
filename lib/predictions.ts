@@ -191,6 +191,12 @@ export function normalizeLocks(questions: PickQuestion[] | undefined, raw: unkno
   return [...new Set(raw.filter((x): x is string => typeof x === "string" && ids.has(x)))].slice(0, LOCK_MAX);
 }
 
+/** "1 pt" / "6 pts". */
+export function ptsText(n: number | null | undefined): string {
+  const v = n ?? 0;
+  return `${v} pt${v === 1 ? "" : "s"}`;
+}
+
 /** Highest possible score for a round's card: every pick right and a full lock. */
 export function maxScore(questions: PickQuestion[] | undefined): number {
   return (questions?.length ?? 0) + LOCK_MAX;

@@ -14,7 +14,7 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { paidPlaces, scorePlace, type Entrant, type Round } from "@/lib/royale";
-import { answersFor, changeOf, optionLabel } from "@/lib/predictions";
+import { answersFor, changeOf, optionLabel, ptsText } from "@/lib/predictions";
 import { currentLeg } from "@/lib/streak";
 import { avatarDataUrl } from "@/lib/avatars";
 import { displayName } from "@/lib/username";
@@ -389,7 +389,7 @@ export default function ArenaStage({ round, standings, survivors, yesPrice, spot
                     </>
                   ) : picks ? (
                     <>
-                      <span className="mr-pod-bank">{round.status === "enrolling" ? `${made}/${totalQs}` : `${e.score ?? 0} pts`}</span>
+                      <span className="mr-pod-bank">{round.status === "enrolling" ? `${made}/${totalQs}` : ptsText(e.score)}</span>
                       <span className="mr-pod-pnl">{round.status === "enrolling" ? "picked" : isComplete && e.prizeUsdc > 0 ? `+$${e.prizeUsdc.toFixed(2)}` : "points"}</span>
                     </>
                   ) : (
@@ -418,7 +418,7 @@ export default function ArenaStage({ round, standings, survivors, yesPrice, spot
               <div className="mr-champ-name">{displayName(champion)}</div>
               <div className="mr-champ-prize">
                 {streak ? `${champion.score ?? 0} leg${(champion.score ?? 0) === 1 ? "" : "s"}${champion.prizeUsdc > 0 ? ` · +$${champion.prizeUsdc.toFixed(2)}` : ""}`
-                  : picks ? `${champion.score ?? 0} pts${champion.prizeUsdc > 0 ? ` · +$${champion.prizeUsdc.toFixed(2)}` : ""}`
+                  : picks ? `${ptsText(champion.score)}${champion.prizeUsdc > 0 ? ` · +$${champion.prizeUsdc.toFixed(2)}` : ""}`
                   : champion.prizeUsdc > 0 ? `+$${champion.prizeUsdc.toFixed(2)} prize` : "Last trader standing"}
               </div>
             </div>

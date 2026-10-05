@@ -39,7 +39,7 @@ function resultLine(i: PortfolioItem): string {
   const place = me.place ? `${ordinal(me.place)} of ${me.players}` : "Finished";
   const prize = (me.prizeUsdc > 0 ? ` · won ${usd.format(me.prizeUsdc)} from the pool` : "")
     + (me.hostFeeUsdc > 0 ? ` · ${usd.format(me.hostFeeUsdc)} host fee` : "");
-  if (i.format === "predictions") return `${place} · ${me.score ?? 0} pts${prize || " · no prize this time"}`;
+  if (i.format === "predictions") return `${place} · ${me.score ?? 0} pt${me.score === 1 ? "" : "s"}${prize || " · no prize this time"}`;
   if (i.format === "streak") return `${place} · lasted ${me.score ?? 0} leg${(me.score ?? 0) === 1 ? "" : "s"}${prize || " · no prize this time"}`;
   const out = me.eliminatedRound ? ` · knocked out in round ${me.eliminatedRound}` : "";
   return `${place}${out}${prize} · vault finished at ${usd.format(me.cash)}`;

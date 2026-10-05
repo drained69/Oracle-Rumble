@@ -872,13 +872,15 @@ export function settlePredictions(round: Round, close: Record<string, number>): 
   const top = groups[0] ?? [];
   round.championId = top[0]?.id ?? standings(round)[0]?.id ?? null;
   const won = top.reduce((s, e) => s + e.prizeUsdc, 0);
+  const pts = (n: number | undefined) => `${n ?? 0} pt${(n ?? 0) === 1 ? "" : "s"}`;
   if (humans.length === 1) {
-    logEvent(round, `${humans[0].nickname} scored ${humans[0].score ?? 0} pts — the only player who paid in, so their $${won.toFixed(2)} entry comes back.`);
+    // Alone, the prize plus any host fee is simply the player's own entry.
+    logEvent(round, `${humans[0].nickname} scored ${pts(humans[0].score)} — the only player who paid in, so their entry comes back.`);
   } else if (top.length === 1) {
-    logEvent(round, `${top[0].nickname} wins $${won.toFixed(2)} with ${top[0].score ?? 0} pts.`);
+    logEvent(round, `${top[0].nickname} wins $${won.toFixed(2)} with ${pts(top[0].score)}.`);
   } else if (top.length > 1) {
     const names = top.length === 2 ? `${top[0].nickname} and ${top[1].nickname}` : `${top.length} players`;
-    logEvent(round, `${names} tie on ${top[0].score ?? 0} pts and split $${won.toFixed(2)}.`);
+    logEvent(round, `${names} tie on ${pts(top[0].score)} and split $${won.toFixed(2)}.`);
   } else {
     logEvent(round, "Predictions complete.");
   }

@@ -202,7 +202,7 @@ export function settleStreak(round: Round, now: number): void {
   const won = top.reduce((s, e) => s + e.prizeUsdc, 0);
   const legs = (e: Entrant) => `${e.score ?? 0} leg${(e.score ?? 0) === 1 ? "" : "s"}`;
   if (humans.length === 1) {
-    logEvent(round, `${humans[0].nickname} lasted ${legs(humans[0])} — the only player who paid in, so their $${won.toFixed(2)} entry comes back.`);
+    logEvent(round, `${humans[0].nickname} lasted ${legs(humans[0])} — the only player who paid in, so their entry comes back.`);
   } else if (top.length === 1) {
     logEvent(round, top[0].eliminatedRound === null
       ? `${top[0].nickname} is the last caller standing after ${legs(top[0])} and wins $${won.toFixed(2)}.`

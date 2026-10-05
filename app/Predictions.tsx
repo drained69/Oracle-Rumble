@@ -6,7 +6,7 @@
  * All state comes from the round; nothing here decides an outcome.
  */
 
-import { answersFor, changeOf, LOCK_MAX, LOCK_MIN, optionLabel, scoreCard, type PickQuestion, type Picks } from "@/lib/predictions";
+import { answersFor, changeOf, LOCK_MAX, LOCK_MIN, optionLabel, ptsText, scoreCard, type PickQuestion, type Picks } from "@/lib/predictions";
 import { paidPlaces, scorePlace, type Entrant, type Round } from "@/lib/royale";
 import { avatarDataUrl } from "@/lib/avatars";
 import { displayName } from "@/lib/username";
@@ -181,9 +181,12 @@ export function PicksBoard({ round, me, entrants }: { round: Round; me: Entrant 
     </ol>
     {card && card.lock !== "none" && (
       <p className={`pk-lock-line ${card.lock === "landed" ? "on" : "miss"}`} role="status">
-        🔒 Your lock {final ? (card.lock === "landed" ? "landed" : "missed") : (card.lock === "landed" ? "is landing" : "is missing")}:{" "}
-        <b className={card.lockDelta >= 0 ? "up" : "down"}>{card.lockDelta >= 0 ? "+" : "−"}{Math.abs(card.lockDelta)}</b>
-        {" "}· {card.right} right {card.lockDelta >= 0 ? "+" : "−"} {Math.abs(card.lockDelta)} = <b>{card.total} pts</b>
+        🔒 Your lock {final ? (card.lock === "landed" ? "landed" : "missed") : (card.lock === "landed" ? "is landing" : "is missing")}
+        {card.lock === "landed"
+          ? <>: <b className="up">+{card.lockDelta}</b> · {card.right} right + {card.lockDelta} = <b>{ptsText(card.total)}</b></>
+          : card.lockDelta < 0
+            ? <>: <b className="down">−{Math.abs(card.lockDelta)}</b> (the locked picks that were right score 0) · <b>{ptsText(card.total)}</b></>
+            : <> — none of the locked picks {final ? "were" : "are"} right, so it costs nothing extra · <b>{ptsText(card.total)}</b></>}
       </p>
     )}
     </>
@@ -221,7 +224,7 @@ export function PicksRoster({ round, standings, wallet }: { round: Round; standi
                 {/* eslint-disable-next-line @next/next/no-img-element */}
                 <img className="r-avatar" src={avatarDataUrl(e.wallet, 24)} width={24} height={24} alt="" />
                 <span className="r-name">{displayName(e)}{e.isBot ? <em>bot</em> : ""}{e.wallet === wallet ? <em>you</em> : ""}</span>
-                <span className="r-bank">{enrolling ? `${made}/${total}` : `${e.score ?? 0} pts`}</span>
+                <span className="r-bank">{enrolling ? `${made}/${total}` : ptsText(e.score)}</span>
                 <span className={`r-pnl ${enrolling ? (made >= total ? "up" : "") : live && paid ? "up" : ""}`}>
                   {enrolling ? (made >= total ? "ready" : "picking") : live ? (e.isBot ? "" : paid ? "paid" : "") : e.prizeUsdc > 0 ? `+${usd2.format(e.prizeUsdc)}` : ""}
                 </span>

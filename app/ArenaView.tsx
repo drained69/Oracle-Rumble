@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { availableFor, buyPriceOf, DEFAULT_OPENING_CALL_PCT, hostAmountError, paidPlaces, payoutShares, scorePlace, seatCostUsdc, sellPriceOf, tradingOpen, TRADE_CUTOFF_MS, TRADE_SPREAD } from "@/lib/royale";
-import { changeOf, LOCK_MAX, pickCount, scoreCard, type Picks } from "@/lib/predictions";
+import { changeOf, LOCK_MAX, pickCount, ptsText, scoreCard, type Picks } from "@/lib/predictions";
 import { claimFeeOf, HOST_FEE_OPTIONS, netOfClaimFee, PLATFORM_CLAIM_FEE_BPS } from "@/lib/fees";
 import { PicksBoard, PicksEditor, PicksRoster, judgedPrices, pctText, picksMade } from "@/app/Predictions";
 import { StreakHistory, StreakLegCard, StreakRoster, phaseText } from "@/app/Streak";
@@ -775,7 +775,7 @@ export default function ArenaView({ arenaCode }: { arenaCode: string }) {
                         <p className="pk-results-me">
                           {(() => {
                             const card = scoreCard(me.picks, me.locks, round.predictions?.answers);
-                            return <>You scored <b>{card.total} pts</b> — {card.right} of {questions.length} right{card.lock === "landed" ? `, lock +${card.lockDelta}` : card.lock === "missed" ? `, lock missed (−${Math.abs(card.lockDelta)})` : ""}</>;
+                            return <>You scored <b>{ptsText(card.total)}</b> — {card.right} of {questions.length} right{card.lock === "landed" ? `, lock +${card.lockDelta}` : card.lock === "missed" ? (card.lockDelta < 0 ? `, lock missed (−${Math.abs(card.lockDelta)})` : ", lock missed") : ""}</>;
                           })()}
                           {standings.filter((e) => !e.isBot).length === 1 ? <>. No one else paid in, so your entry comes back.</>
                             : me.prizeUsdc > 0 ? <> and won <b>{usd2.format(me.prizeUsdc)}</b>.</> : <>.</>}
@@ -865,7 +865,7 @@ export default function ArenaView({ arenaCode }: { arenaCode: string }) {
                       <div key={e.id} className={`fb-row ${e.wallet === wallet ? "me" : ""}`}>
                         <span className="fb-rank">{entryOnly ? scorePlace(round, e) : i + 1}</span>
                         <span className="fb-name">{displayName(e)}{e.isBot ? " ·bot" : ""}</span>
-                        <span className="fb-bank">{picksMode ? `${e.score ?? 0} pts` : streakMode ? `${e.score ?? 0} leg${(e.score ?? 0) === 1 ? "" : "s"}` : usd2.format(e.bankroll)}</span>
+                        <span className="fb-bank">{picksMode ? ptsText(e.score) : streakMode ? `${e.score ?? 0} leg${(e.score ?? 0) === 1 ? "" : "s"}` : usd2.format(e.bankroll)}</span>
                         <span className="fb-prize">
                           {e.isBot ? "" : round.escrow ? usd2.format(projected[e.wallet] ?? 0) : e.prizeUsdc > 0 ? `+${usd2.format(e.prizeUsdc)}` : ""}
                         </span>
@@ -1061,7 +1061,7 @@ export default function ArenaView({ arenaCode }: { arenaCode: string }) {
                     {round.oracle?.open
                       ? <>Every coin is judged against its price when picks locked. </>
                       : <>Waiting for the opening prices… </>}
-                    {me ? <>Right now you have <b>{me.score ?? 0} pts</b>{scorePlace(round, me, true) <= paidPlaces(round) ? " — in the money" : ""}.</> : <>You&apos;re watching — enrollment has closed.</>}
+                    {me ? <>Right now you have <b>{ptsText(me.score)}</b>{scorePlace(round, me, true) <= paidPlaces(round) ? " — in the money" : ""}.</> : <>You&apos;re watching — enrollment has closed.</>}
                   </p>
                   <PicksBoard round={round} me={me} entrants={standings} />
                   <p className="pk-key">
