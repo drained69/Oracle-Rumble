@@ -700,6 +700,11 @@ main { min-height: 100vh; }
   position: relative;
 }
 .modal.host-modal { max-width: 560px; }
+/* Phones: never wider than the screen, and room for four-option selectors. */
+@media (max-width: 480px) {
+  .modal { min-width: 0; padding: 22px 18px; }
+  .modal .seg-opt { min-width: 0; padding-left: 6px; padding-right: 6px; letter-spacing: 0.2px; font-size: 10px; flex: 1 1 auto; }
+}
 .modal .close { position: absolute; top: 12px; right: 14px; width: 30px; height: 30px; border: 1px solid var(--border); border-radius: var(--r-sm); color: var(--text-2); font-size: 18px; display: grid; place-items: center; background: transparent; }
 .modal .close:hover { color: var(--text); border-color: var(--border-strong); }
 .modal h2 { font-size: 22px; font-weight: 700; color: var(--text); margin-bottom: 6px; }
@@ -2325,13 +2330,17 @@ body.no-scroll { overflow: hidden; }
 }
 .jc-field .gm-seg { padding: 3px; }
 .jc-field .gm-seg .opt { padding: 6px 8px; font-size: 10px; letter-spacing: 1.2px; }
+/* Four game types must fit a phone-width host form. */
+@media (max-width: 480px) {
+  .gm-seg .opt, .jc-field .gm-seg .opt { min-width: 0; padding-left: 4px; padding-right: 4px; letter-spacing: 0.6px; }
+}
 
-.jc-host-inputs { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin: 10px 0; }
+.jc-host-inputs { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 10px; margin: 10px 0; }
 .jc-host-inputs .gm-num span {
   font-family: 'JetBrains Mono', monospace; font-size: 9.5px; letter-spacing: 1.4px;
   color: var(--text-3); text-transform: uppercase; font-weight: 700;
 }
-.jc-host-inputs .gm-num input { height: 40px; font-size: 14px; }
+.jc-host-inputs .gm-num input { height: 40px; font-size: 14px; width: 100%; min-width: 0; }
 
 .jc-host-preview {
   display: grid; grid-template-columns: repeat(3, 1fr); gap: 4px;

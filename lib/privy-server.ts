@@ -12,8 +12,14 @@
 
 import { createRemoteJWKSet, jwtVerify } from "jose";
 
-export const PRIVY_APP_ID = process.env.NEXT_PUBLIC_PRIVY_APP_ID ?? "";
-const PRIVY_APP_SECRET = process.env.PRIVY_APP_SECRET ?? "";
+const RAW_APP_ID = (process.env.NEXT_PUBLIC_PRIVY_APP_ID ?? "").trim();
+// Same rule as the browser (lib/privy-client): a malformed ID means Privy is off.
+export const PRIVY_APP_ID = RAW_APP_ID.length === 25 ? RAW_APP_ID : "";
+const PRIVY_APP_SECRET = (process.env.PRIVY_APP_SECRET ?? "").trim();
+
+if (RAW_APP_ID && !PRIVY_APP_ID) {
+  console.warn("NEXT_PUBLIC_PRIVY_APP_ID isn't a Privy app ID (25 characters); X usernames are off.");
+}
 
 /** Privy is configured: X-linked usernames are enforced. */
 export const PRIVY_ENABLED = PRIVY_APP_ID.length > 0;

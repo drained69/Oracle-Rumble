@@ -17,9 +17,15 @@
 
 import type { SolanaProvider } from "@/lib/wallet";
 
-export const PRIVY_APP_ID = process.env.NEXT_PUBLIC_PRIVY_APP_ID ?? "";
+const RAW_APP_ID = (process.env.NEXT_PUBLIC_PRIVY_APP_ID ?? "").trim();
+/** Privy app IDs are 25 characters; the SDK throws on anything else, so a bad value means "off". */
+export const PRIVY_APP_ID = RAW_APP_ID.length === 25 ? RAW_APP_ID : "";
 /** Usernames are X handles on this deployment. */
 export const X_REQUIRED = PRIVY_APP_ID.length > 0;
+
+if (RAW_APP_ID && !PRIVY_APP_ID && typeof window !== "undefined") {
+  console.error("NEXT_PUBLIC_PRIVY_APP_ID isn't a Privy app ID (25 characters), so X sign-in is off.");
+}
 
 export type PrivyBridge = {
   ready: boolean;
@@ -38,7 +44,15 @@ export type PrivyBridge = {
 };
 
 let bridge: PrivyBridge | null = null;
+let failed = false;
 const waiters = new Set<() => void>();
+
+/** Privy couldn't start: stop waiting for it (X sign-in reports itself unavailable). */
+export function setPrivyFailed(): void {
+  failed = true;
+  waiters.forEach((f) => f());
+  waiters.clear();
+}
 
 export function setPrivyBridge(b: PrivyBridge | null): void {
   bridge = b;
@@ -52,7 +66,7 @@ export function getPrivyBridge(): PrivyBridge | null {
 
 /** Wait (briefly) for Privy to finish loading. */
 export function waitForPrivy(timeoutMs = 8_000): Promise<PrivyBridge | null> {
-  if (!X_REQUIRED) return Promise.resolve(null);
+  if (!X_REQUIRED || failed) return Promise.resolve(null);
   if (bridge?.ready) return Promise.resolve(bridge);
   return new Promise((resolve) => {
     const done = () => { clearTimeout(t); resolve(bridge?.ready ? bridge : null); };
@@ -94,6 +108,23 @@ function runReturnHandlers() {
   returnHandlers.forEach((fn) => fn(pending, b));
 }
 
+/** A problem with X sign-in itself (not a cancelled wallet prompt); its message is shown as is. */
+export class XSignInError extends Error {}
+
+export const X_UNAVAILABLE = "X sign-in isn't available right now — try again later.";
+
+/** Start X sign-in; `pending` runs once Privy is back (usually after the redirect). */
+export async function startXSignIn(b: PrivyBridge, pending: Pending): Promise<void> {
+  setPending(pending);
+  try {
+    await b.loginWithX();
+  } catch (err) {
+    setPending(null);
+    const msg = String((err as { message?: unknown } | null)?.message ?? err ?? "").trim();
+    throw new XSignInError(msg ? `X sign-in failed: ${msg.slice(0, 160)}` : "X sign-in failed — try again.");
+  }
+}
+
 // ---- The embedded wallet as a SolanaProvider ------------------------------
 
 type Serializable = { serialize(opts?: { requireAllSignatures?: boolean; verifySignatures?: boolean }): Uint8Array };
@@ -105,12 +136,11 @@ export const privyProvider: SolanaProvider = {
   get isConnected() { return !!bridge?.authenticated && !!bridge.embeddedAddress; },
   async connect(opts?: { onlyIfTrusted?: boolean }) {
     const b = await waitForPrivy();
-    if (!b) throw { code: 4001, message: "X sign-in isn't available right now." };
+    if (!b) throw new XSignInError(X_UNAVAILABLE);
     if (b.authenticated && b.embeddedAddress) return { publicKey: pk(b.embeddedAddress) };
     if (opts?.onlyIfTrusted) throw { code: 4001, message: "Not signed in with X." };
     if (!b.authenticated) {
-      setPending("embedded");
-      await b.loginWithX();
+      await startXSignIn(b, "embedded");
       // OAuth usually redirects away; if it completed in place, carry on.
       if (!getPrivyBridge()?.authenticated) throw { code: 4001, message: "X sign-in didn't finish." };
     }

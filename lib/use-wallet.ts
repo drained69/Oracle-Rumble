@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useState, useSyncExternalStore } from "react";
 import { ensureSession, signOut } from "@/lib/session-client";
-import { getPrivyBridge, onXReturn, setPending, X_REQUIRED } from "@/lib/privy-client";
+import { getPrivyBridge, onXReturn, startXSignIn, waitForPrivy, X_REQUIRED, X_UNAVAILABLE } from "@/lib/privy-client";
 import { getStoredUsername, saveStoredUsername, shortPk, validateUsername } from "@/lib/username";
 import {
   connectWallet, describeWalletError, disconnectWallet, listWallets, reconnectSilently,
@@ -60,8 +60,8 @@ async function linkX(wallet: string): Promise<{ ok: boolean; message: string }> 
   if (!b?.authenticated) return { ok: false, message: "Sign in with X first." };
   const auth = await ensureSession(wallet);
   if (!auth.ok) return { ok: false, message: auth.error };
-  const tokens = await b.tokens();
   try {
+    const tokens = await b.tokens();
     const res = await fetch("/api/profile/x", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(tokens) });
     const r = (await res.json()) as { profile?: { username: string }; error?: string; note?: string; created?: boolean };
     if (!res.ok || !r.profile) return { ok: false, message: r.error ?? "Couldn't link your X account — try again." };
@@ -192,14 +192,14 @@ export function useWalletIdentity() {
   const connectX = useCallback(async (): Promise<{ ok: boolean; message: string }> => {
     const w = identity.wallet;
     if (!w) return { ok: false, message: "Connect a wallet first." };
-    const b = getPrivyBridge();
-    if (!b?.ready) return { ok: false, message: "X sign-in is still loading — try again in a moment." };
+    const b = await waitForPrivy();
+    if (!b) return { ok: false, message: X_UNAVAILABLE };
     if (b.authenticated && b.xUsername) return linkX(w);
     // Make sure the wallet session exists before leaving for X.
     const auth = await ensureSession(w);
     if (!auth.ok) return { ok: false, message: auth.error };
-    setPending("link");
-    await b.loginWithX();
+    try { await startXSignIn(b, "link"); }
+    catch (err) { return { ok: false, message: describeWalletError(err, "X sign-in") }; }
     return { ok: true, message: "Opening X…" };
   }, []);
 

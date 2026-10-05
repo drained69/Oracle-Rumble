@@ -12,7 +12,7 @@
  * checks the wallet is on the account the page is playing as.
  */
 
-import { getPrivyBridge, privyProvider, X_ICON, X_REQUIRED } from "@/lib/privy-client";
+import { getPrivyBridge, privyProvider, X_ICON, X_REQUIRED, XSignInError } from "@/lib/privy-client";
 
 export type WalletKind = "phantom" | "backpack" | "solflare" | "brave" | "injected" | "privy";
 
@@ -145,7 +145,7 @@ export function activeWallet(): WalletOption | null {
 
 /** Turn anything a wallet throws into one plain sentence for the player. */
 export function describeWalletError(err: unknown, action = "The request"): string {
-  if (err instanceof WalletError) return err.message;
+  if (err instanceof WalletError || err instanceof XSignInError) return err.message;
   const e = err as { code?: unknown; message?: unknown; error?: { code?: unknown; message?: unknown } } | null;
   const code = Number(e?.code ?? e?.error?.code);
   const msg = String(e?.message ?? e?.error?.message ?? (typeof err === "string" ? err : "")).trim();
