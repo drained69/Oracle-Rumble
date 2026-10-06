@@ -20,9 +20,9 @@ export async function POST(request: Request) {
   if (limited) return limited;
   if (!PANTA_LIVE) return NextResponse.json({ error: "Market creation needs a Panta API key on this server." }, { status: 503 });
   const wallet = sessionWallet(request);
-  if (!wallet) return NextResponse.json({ error: "Sign in with your wallet first.", needsAuth: true }, { status: 401 });
+  if (!wallet) return NextResponse.json({ error: "Sign in with X first.", needsAuth: true }, { status: 401 });
   const body = (await request.json().catch(() => ({}))) as { draftId?: string; signature?: string };
-  const draft = body.draftId ? getDraft(body.draftId) : null;
+  const draft = body.draftId ? await getDraft(body.draftId) : null;
   if (!draft) return NextResponse.json({ error: "That market draft expired — start again." }, { status: 410 });
   if (draft.wallet !== wallet) return NextResponse.json({ error: "This draft belongs to another wallet." }, { status: 403 });
   if (draft.marketId) return NextResponse.json({ marketId: draft.marketId, draftId: draft.draftId, sandbox: PANTA_SANDBOX });
@@ -36,7 +36,7 @@ export async function POST(request: Request) {
       "/markets/register", { method: "POST", body: JSON.stringify({ createId: draft.createId, signature }) }
     );
     if (!r.marketId) return NextResponse.json({ error: "Panta didn't return a market id — try registering again." }, { status: 502 });
-    markDraftRegistered(draft.draftId, r.marketId, signature);
+    await markDraftRegistered(draft.draftId, r.marketId, signature);
     return NextResponse.json({ marketId: r.marketId, draftId: draft.draftId, status: r.status ?? "registered", sandbox: PANTA_SANDBOX });
   } catch (err) {
     console.error("panta /markets/register failed:", err);

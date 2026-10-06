@@ -5,14 +5,12 @@
 import { useCallback, useEffect, useState } from "react";
 import { useEscrowStatus, useWalletIdentity, useXNotices } from "@/lib/use-wallet";
 import SiteHeader from "@/app/SiteHeader";
-import UsernameModal from "@/app/UsernameModal";
 import PantaPositions from "@/app/PantaPositions";
 import ArenaPortfolio from "@/app/ArenaPortfolio";
 
 export default function PositionsPage() {
-  const { wallet, username, toggleConnect, saveUsername } = useWalletIdentity();
+  const { wallet, status, signIn } = useWalletIdentity();
   const escrow = useEscrowStatus();
-  const [showUsername, setShowUsername] = useState(false);
   const [toast, setToast] = useState("");
   useXNotices(setToast);
 
@@ -28,10 +26,9 @@ export default function PositionsPage() {
   }, [toast]);
 
   const connect = useCallback(async () => {
-    const r = await toggleConnect();
-    setToast(r.message);
-    if (r.needsUsername) setShowUsername(true);
-  }, [toggleConnect]);
+    const r = await signIn();
+    if (r.message) setToast(r.message);
+  }, [signIn]);
 
   return (
     <main className="game-main">
@@ -40,19 +37,16 @@ export default function PositionsPage() {
 
       <SiteHeader
         active="positions"
-        wallet={wallet}
-        username={username}
         escrow={escrow}
-        onConnect={connect}
-        onEditUsername={() => setShowUsername(true)}
+        onToast={setToast}
       />
 
       <section className="page-hero">
         <p className="jt-eyebrow">Portfolio</p>
         <h1>Positions</h1>
         <p className="page-lead">
-          Every arena your wallet is in: your UP/DOWN position and vault value in live rounds, where you
-          stand against the cut, and payouts or refunds ready to withdraw — read from the game and the
+          Every pit you&apos;re in: your position and vault value in live rounds, where you stand against
+          the cut, and payouts or refunds ready to withdraw to your X wallet — read from the game and the
           on-chain escrow.
         </p>
       </section>
@@ -70,8 +64,8 @@ export default function PositionsPage() {
         ) : (
           <div className="positions-shell">
             <div className="positions-empty">
-              <p>Connect a Solana wallet to see your pits, positions and payouts.</p>
-              <button className="btn-cta" onClick={connect} style={{ marginTop: 14 }}>Connect wallet</button>
+              <p>{status === "loading" ? "Checking your sign-in…" : "Sign in with X to see your pits, positions and payouts."}</p>
+              {status !== "loading" && <button className="btn-cta" onClick={connect} disabled={status === "busy"} style={{ marginTop: 14 }}>Sign in with X</button>}
             </div>
           </div>
         )}
@@ -82,13 +76,6 @@ export default function PositionsPage() {
           <span>{toast}</span>
           <button onClick={() => setToast("")} aria-label="Dismiss">×</button>
         </div>
-      )}
-      {showUsername && (
-        <UsernameModal
-          initial={username}
-          onSave={(v) => { const r = saveUsername(v); if (r.ok) setToast(r.message); return r; }}
-          onClose={() => setShowUsername(false)}
-        />
       )}
     </main>
   );

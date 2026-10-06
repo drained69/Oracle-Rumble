@@ -15,6 +15,8 @@ export type PortfolioItem = {
   status: RoundStatus | "unknown";
   question: string;
   asset: string;
+  /** A pit on a Panta market: sides read YES/NO (crypto pits read UP/DOWN). */
+  pantaPit?: boolean;
   format: RoundFormat;
   roundNumber: number;
   roundLimit: number;

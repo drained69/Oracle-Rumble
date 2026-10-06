@@ -11,6 +11,8 @@
 
 import { escrowReady, listDepositors, readVault } from "@/lib/escrow-server";
 import { humanCount, type Round } from "@/lib/royale";
+import { getProfiles } from "@/lib/profile-store";
+import { PRIVY_ENABLED } from "@/lib/privy-server";
 
 /** How often an enrolling arena re-checks its vault between polls. */
 const CHECK_EVERY_MS = 8_000;
@@ -48,8 +50,15 @@ export async function unseatedDepositors(round: Round | null): Promise<SeatSync>
     if (vault.deposited <= humans) return none;
     const seated = new Set(round.entrants.filter((e) => !e.isBot).map((e) => e.wallet));
     const deps = await listDepositors(round.escrow.roundVault);
+    let wallets = deps.map((d) => d.wallet).filter((w) => !seated.has(w));
+    // X-only: a deposit made straight to the program from a wallet with no X
+    // account is not a seat — it stays unseated and is refunded in full.
+    if (PRIVY_ENABLED && wallets.length) {
+      const profiles = await getProfiles(wallets);
+      wallets = wallets.filter((w) => profiles.has(w));
+    }
     return {
-      wallets: deps.map((d) => d.wallet).filter((w) => !seated.has(w)),
+      wallets,
       // The account index can lag the vault counter by a moment.
       failed: deps.length < vault.deposited
     };

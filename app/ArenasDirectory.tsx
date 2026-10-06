@@ -9,7 +9,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { cancelArena, checkSeatFunds, enrollWithEscrow, newRound, prepareWallet, seatStepText, type SeatStep } from "@/lib/round-client";
 import { finishMarket, quoteMarket, type MarketQuote } from "@/lib/panta-client";
-import { shortPk, USERNAME_MAX, validateUsername } from "@/lib/username";
 import { DEFAULT_OPENING_CALL_PCT, PICKS_CHAIN_VAULT_USDC, hostAmountError, isPicksFormat, type RoundFormat } from "@/lib/royale";
 import { DEFAULT_LEG_SEC, LEG_LENGTHS, MAX_LEGS } from "@/lib/streak";
 import { HOST_FEE_OPTIONS } from "@/lib/fees";
@@ -17,7 +16,6 @@ import CallSizePicker, { callSizeText } from "@/app/CallSizePicker";
 import { avatarDataUrl } from "@/lib/avatars";
 import { useEscrowStatus, useWalletIdentity, useXNotices } from "@/lib/use-wallet";
 import SiteHeader from "@/app/SiteHeader";
-import UsernameModal from "@/app/UsernameModal";
 import PantaGraduationBanner from "@/app/PantaGraduationBanner";
 import AmbientLife from "@/app/AmbientLife";
 import ActivityFeed from "@/app/ActivityFeed";
@@ -94,7 +92,7 @@ const QUICK_ENROLL_SEC = 120;
 type HostStep = "" | "checking" | "opening" | "quoting" | "building" | "signing" | "registering" | SeatStep;
 
 export default function ArenasDirectory() {
-  const { wallet, username, toggleConnect, saveUsername, connectX, xRequired } = useWalletIdentity();
+  const { wallet, username, status: authStatus, signIn } = useWalletIdentity();
   const escrow = useEscrowStatus();
   const [arenas, setArenas] = useState<ArenaItem[]>([]);
   const [loaded, setLoaded] = useState(false);
@@ -103,8 +101,6 @@ export default function ArenasDirectory() {
   const [toast, setToast] = useState("");
   useXNotices(setToast);
   const [tab, setTab] = useState<Tab>("play");
-  const [showUsername, setShowUsername] = useState(false);
-  const [nameDraft, setNameDraft] = useState("");
 
   const [hMode, setHMode] = useState<"quick" | "scheduled">("quick");
   const [hAsset, setHAsset] = useState<"BTC" | "ETH" | "SOL">("SOL");
@@ -142,8 +138,12 @@ export default function ArenasDirectory() {
   const pantaHost = hSource !== "crypto";
   // Predictions and Streak run on the BTC/ETH/SOL spot oracle — Panta pits trade.
   useEffect(() => { if (pantaHost && (hFormat === "predictions" || hFormat === "streak")) setHFormat("single"); }, [pantaHost, hFormat]);
-  // Any edit to the market invalidates its quote.
-  useEffect(() => { setMQuote(null); setMFieldError(null); }, [mQuestion, mCategory, mRule, mSource, mEndsSec, mBreaking]);
+  // Any edit to the market invalidates its quote — until it's created on
+  // Panta (paid): then the form is locked so a retry reuses that market.
+  useEffect(() => {
+    setMQuote((q) => (q?.created ? q : null));
+    setMFieldError(null);
+  }, [mQuestion, mCategory, mRule, mSource, mEndsSec, mBreaking]);
   // A sensible default rule and source until the host writes their own.
   useEffect(() => {
     if (!mRuleTouched) {
@@ -165,8 +165,16 @@ export default function ArenasDirectory() {
 
   useEffect(() => {
     document.body.classList.add("game-mode", "no-scroll");
-    // Deep link from other pages' "Host" nav item.
-    if (new URLSearchParams(window.location.search).get("tab") === "host") setTab("host");
+    // Deep link from other pages' "Host" links: ?tab=host[&format=…][&source=panta&market=ID]
+    const q = new URLSearchParams(window.location.search);
+    if (q.get("tab") === "host") setTab("host");
+    const f = q.get("format");
+    if (f === "single" || f === "royale" || f === "predictions" || f === "streak") setHFormat(f);
+    if (q.get("source") === "panta") {
+      setHSource("panta");
+      const id = q.get("market");
+      if (id && /^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(id)) setHPantaId(id);
+    }
     return () => { document.body.classList.remove("game-mode", "no-scroll"); };
   }, []);
 
@@ -197,10 +205,9 @@ export default function ArenasDirectory() {
   }, [toast]);
 
   const connect = useCallback(async () => {
-    const r = await toggleConnect();
-    setToast(r.message);
-    if (r.needsUsername) setShowUsername(true);
-  }, [toggleConnect]);
+    const r = await signIn();
+    if (r.message) setToast(r.message);
+  }, [signIn]);
 
   // Entry-only games (Predictions, Streak): seat 1 has no call.
   const picks = isPicksFormat(hFormat);
@@ -212,28 +219,15 @@ export default function ArenasDirectory() {
   const hostInputError = hostAmountError(entryNum, vaultNum, hFormat);
 
   const doHostAndJoin = useCallback(async () => {
+    // Every pit has a signed-in host who takes seat 1.
+    if (!wallet) { await connect(); return; }
     if (hostInputError) { setToast(hostInputError); return; }
     if (hSource === "panta" && !hPantaId) { setToast("Pick a Panta market for the pit."); return; }
-    if (hSource === "create" && !wallet) { setToast("Connect a wallet to create a market — you're its creator on Panta."); return; }
-    if (!hCall && !picks) {
+    // Checking a new market with Panta comes before the call; seat 1 needs one.
+    const quoting = hSource === "create" && !mQuote;
+    if (!quoting && !hCall && !picks) {
       setToast(pantaHost ? "Pick YES or NO (or decide later) before taking seat 1." : `Pick UP or DOWN on ${hAsset} (or decide later) before taking seat 1.`);
       return;
-    }
-    // On-chain hosting needs the host's own seat deposit signature.
-    if (escrow?.active && !wallet) {
-      setToast("Connect a wallet first — hosting on-chain needs your seat deposit.");
-      return;
-    }
-    let hostName = username;
-    if (wallet && !hostName && xRequired) {
-      setToast("Connect your X account to host — your X handle becomes your username.");
-      return;
-    }
-    if (wallet && !hostName) {
-      // Username typed inline in the host card — save it on the way through.
-      const r = saveUsername(nameDraft);
-      if (!r.ok) { setToast(nameDraft ? r.message : "Set a username so players know who is hosting."); return; }
-      hostName = nameDraft.trim();
     }
 
     const call = picks || hCall === "LATER" || !hCall ? null : hCall;
@@ -254,23 +248,24 @@ export default function ArenasDirectory() {
           : `Market checks out. Panta charges ${usd2.format(q.data.feeUsdc)} to create it. Press again to sign and open the pit.`);
         return;
       }
-      // Check funds and the wallet BEFORE the operator pays for an on-chain
-      // InitRound, so a declined sign-in doesn't leave a cancelled arena.
-      if (wallet && escrow?.active) {
+      // Check funds and the wallet BEFORE paying Panta or the operator paying
+      // for an on-chain InitRound — the seat, plus the market fee if one is due.
+      const marketFee = hSource === "create" && mQuote && !mQuote.created && !mQuote.sandbox ? mQuote.feeUsdc : 0;
+      if (escrow?.active) {
         setHostStep("checking");
-        const short = await checkSeatFunds(wallet, hostSeat);
+        const short = await checkSeatFunds(wallet, hostSeat + marketFee, marketFee > 0 ? `the ${usd2.format(marketFee)} market fee plus your seat` : undefined);
         if (short) { setToast(short); return; }
       }
-      if (wallet) {
-        const ready = await prepareWallet(wallet, onStep);
-        if (!ready.ok) { setToast(ready.error); return; }
-      }
+      // Something to sign: an on-chain seat deposit, or a real market-creation transaction.
+      const willSign = !!escrow?.active || (hSource === "create" && !!mQuote && !mQuote.created && !mQuote.sandbox);
+      const ready = await prepareWallet(wallet, onStep, willSign);
+      if (!ready.ok) { setToast(ready.error); return; }
 
       // New market, second press: build → sign (pays the fee) → register.
       if (hSource === "create" && mQuote && !mQuote.created) {
-        const made = await finishMarket(mQuote.draftId, wallet!, (st) => {
+        const made = await finishMarket(mQuote.draftId, wallet, (st) => {
           setHostStep(st);
-          setToast(st === "building" ? "Building the market on Panta…" : st === "signing" ? "Approve the market creation in your wallet…" : "Registering the market with Panta…");
+          setToast(st === "building" ? "Building the market on Panta…" : st === "signing" ? "Approve the market creation in your X wallet…" : "Registering the market with Panta…");
         }, mQuestion.trim());
         if (!made.ok) { setToast(`Market not created — ${made.error}`); return; }
         setMQuote({ ...mQuote, created: true });
@@ -286,23 +281,17 @@ export default function ArenasDirectory() {
         entryUsdc: entryNum, startingBankroll: vaultNum,
         capacity: hCapacity, roundLimit: hFormat === "royale" ? hRounds : 1,
         ...(hFormat === "streak" ? { liveSec: hLegSec } : {}),
-        enrollmentSec, host: wallet ?? "", hostFeePct: hHostFee
-      });
+        enrollmentSec, hostFeePct: hHostFee
+      }, wallet);
       if (v.error || !v.arena) { setToast(v.error ?? "Could not open the pit."); return; }
       const url = `${window.location.origin}/a/${v.arena}`;
-
-      if (!wallet) {
-        setInviteInfo({ code: v.arena, url });
-        refresh();
-        return;
-      }
 
       // The host takes seat #1. If that deposit isn't signed, roll the
       // arena back so no unfunded room is left behind.
       let enrollError = "";
       let refundable = false;
       try {
-        const r = await enrollWithEscrow(wallet, hostName || shortPk(wallet).replace("…", ""), v.arena, call, onStep, hCallPct);
+        const r = await enrollWithEscrow(wallet, username, v.arena, call, onStep, hCallPct);
         // A signed deposit means the room is funded — never tear it down;
         // the seat is registered from the on-chain entry if this call lags.
         if (r.error && !(r.entrantId || r.already)) { enrollError = r.error; refundable = !!r.refundable || !!r.deposited; }
@@ -322,7 +311,7 @@ export default function ArenasDirectory() {
       }
 
       setInviteInfo({ code: v.arena, url });
-      if (hSource === "create") { setMQuote(null); setMQuestion(""); setMRuleTouched(false); }
+      if (hSource === "create") { setMQuote(null); setMQuestion(""); setMRuleTouched(false); setMSourceTouched(false); }
       setToast(hFormat === "streak"
         ? `Pit ${v.arena} is open — you're in seat 1. Pick leg 1 in the pit, then share the link.`
         : picks
@@ -330,7 +319,7 @@ export default function ArenasDirectory() {
         : `Pit ${v.arena} is open — you're in seat 1. Share the link.`);
       refresh();
     } finally { setHostStep(""); }
-  }, [hostInputError, escrow, wallet, username, nameDraft, saveUsername, hostSeat, hMode, hStartInMin, hAsset, hHorizon, hFormat, entryNum, vaultNum, hCapacity, hRounds, hCall, hCallPct, refresh, picks, hLegSec, hHostFee,
+  }, [connect, hostInputError, escrow, wallet, username, hostSeat, hMode, hStartInMin, hAsset, hHorizon, hFormat, entryNum, vaultNum, hCapacity, hRounds, hCall, hCallPct, refresh, picks, hLegSec, hHostFee,
       hSource, hPantaId, pantaHost, hWindowMin, mQuote, mQuestion, mCategory, mRule, mSource, mEndsSec, mBreaking]);
 
   const doCopy = useCallback(async (url: string) => {
@@ -366,11 +355,8 @@ export default function ArenasDirectory() {
 
       <SiteHeader
         active={tab === "play" ? "arenas" : "host"}
-        wallet={wallet}
-        username={username}
         escrow={escrow}
-        onConnect={connect}
-        onEditUsername={() => setShowUsername(true)}
+        onToast={setToast}
         onNav={(k) => setTab(k === "arenas" ? "play" : "host")}
       />
 
@@ -470,9 +456,7 @@ export default function ArenasDirectory() {
                 hostSeat={hostSeat} poolIfFull={poolIfFull}
                 inputError={hostInputError}
                 wallet={wallet} escrowActive={!!escrow?.active} escrowKnown={escrow != null}
-                username={username} nameDraft={nameDraft} setNameDraft={setNameDraft}
-                onEditUsername={() => setShowUsername(true)} onConnect={connect}
-                xRequired={xRequired} onConnectX={async () => { const r = await connectX(); if (!r.ok) setToast(r.message); }}
+                username={username} authStatus={authStatus}
                 step={hostStep} onSubmit={doHostAndJoin}
                 market={{
                   source: hSource, setSource: setHSource, catalog, pantaId: hPantaId, setPantaId: setHPantaId,
@@ -481,7 +465,8 @@ export default function ArenasDirectory() {
                   rule: mRule, setRule: (v: string) => { setMRuleTouched(true); setMRule(v); },
                   source2: mSource, setSource2: (v: string) => { setMSourceTouched(true); setMSource(v); },
                   endsSec: mEndsSec, setEndsSec: setMEndsSec, breaking: mBreaking, setBreaking: setMBreaking,
-                  quote: mQuote, fieldError: mFieldError
+                  quote: mQuote, fieldError: mFieldError,
+                  startOver: () => { setMQuote(null); setMQuestion(""); setMRuleTouched(false); setMSourceTouched(false); }
                 }}
               />
             )}
@@ -496,13 +481,6 @@ export default function ArenasDirectory() {
         </div>
       )}
 
-      {showUsername && (
-        <UsernameModal
-          initial={username}
-          onSave={(v) => { const r = saveUsername(v); if (r.ok) setToast(r.message); return r; }}
-          onClose={() => setShowUsername(false)}
-        />
-      )}
 
       <PantaGraduationBanner />
     </main>
@@ -604,7 +582,7 @@ function HostPanel({
   hFormat, setHFormat, hLegSec, setHLegSec, hHostFee, setHHostFee, hRounds, setHRounds,
   hCapacity, setHCapacity, hEntry, setHEntry, hVault, setHVault, hCall, setHCall, hCallPct, setHCallPct,
   hostSeat, poolIfFull, inputError, wallet, escrowActive, escrowKnown,
-  username, nameDraft, setNameDraft, onEditUsername, onConnect, xRequired, onConnectX, step, onSubmit, market
+  username, authStatus, step, onSubmit, market
 }: {
   hMode: "quick" | "scheduled"; setHMode: (v: "quick" | "scheduled") => void;
   hStartInMin: number; setHStartInMin: (v: number) => void;
@@ -621,9 +599,7 @@ function HostPanel({
   hCallPct: number; setHCallPct: (v: number) => void;
   hostSeat: number; poolIfFull: number; inputError: string;
   wallet: string | null; escrowActive: boolean; escrowKnown: boolean;
-  username: string; nameDraft: string; setNameDraft: (v: string) => void;
-  onEditUsername: () => void; onConnect: () => void;
-  xRequired: boolean; onConnectX: () => void;
+  username: string; authStatus: "loading" | "out" | "busy" | "in";
   step: HostStep; onSubmit: () => void;
   market: MarketProps;
 }) {
@@ -636,63 +612,38 @@ function HostPanel({
   const subject = pantaHost ? (src === "create" ? "your market" : "this market") : hAsset;
   const picks = isPicksFormat(hFormat);
   const streak = hFormat === "streak";
-  const draftCheck = validateUsername(nameDraft);
-  const needsWallet = escrowActive && !wallet;
+  const created = !!market.quote?.created;
+  const quoting = src === "create" && !market.quote;
   const label =
+    !wallet ? (authStatus === "busy" ? "Signing in with X…" : authStatus === "loading" ? "Checking your sign-in…" : "Sign in with X to host") :
     step === "checking" ? "Checking balance…" :
     step === "opening" ? "Opening pit…" :
     step === "quoting" ? "Checking the market with Panta…" :
     step === "building" ? "Building the market…" :
-    step === "signing" ? "Approve the market in your wallet…" :
+    step === "signing" ? "Approve the market in your X wallet…" :
     step === "registering" ? "Registering with Panta…" :
     step ? seatStepText(step, hostSeat, undefined, undefined, pantaHost).button :
     src === "create" && !market.quote ? "Check market & see the creation fee" :
     src === "panta" && !market.pantaId ? "Pick a Panta market above" :
-    src === "create" && market.quote && !market.quote.created && !hCall ? `Pick YES or NO` :
-    !wallet && !escrowActive ? "Host practice pit" :
-    picks ? `Deposit & take seat 1 · ${usd2.format(hostSeat)}${escrowActive ? "" : " · practice"}` :
+    src === "create" && market.quote && !created && !hCall ? `Pick YES or NO` :
+    picks ? (escrowActive ? `Deposit ${usd2.format(hostSeat)} & take seat 1` : "Take seat 1 · practice") :
     !hCall ? `Pick ${Yw} or ${Nw} on ${subject}` :
-    `${src === "create" && market.quote && !market.quote.created ? (market.quote.sandbox ? "Create market & " : `Pay ${usd2.format(market.quote.feeUsdc)} fee & `) : ""}${hCall === "YES" ? `deposit & call ${Yw}` : hCall === "NO" ? `deposit & call ${Nw}` : "deposit & take seat 1"} · ${usd2.format(hostSeat)}${escrowActive ? "" : " · practice"}`.replace(/^./, (c) => c.toUpperCase());
+    `${src === "create" && market.quote && !created ? (market.quote.sandbox ? "create market, " : `pay ${usd2.format(market.quote.feeUsdc)} fee, `) : ""}${escrowActive ? `deposit ${usd2.format(hostSeat)} & ` : ""}${hCall === "YES" ? `call ${Yw}` : hCall === "NO" ? `call ${Nw}` : "take seat 1"}${escrowActive ? "" : " · practice"}`.replace(/^./, (c) => c.toUpperCase());
 
   return (
     <div className="jc-host">
-      {/* Who is hosting — set the username right here if it's missing. */}
-      {needsWallet ? (
-        <div className="host-id">
-          <span>Connect a wallet to host — you take seat 1 with a real deposit.</span>
-          <button className="host-id-btn" onClick={onConnect}>Connect wallet</button>
-        </div>
-      ) : wallet && username ? (
+      {/* Who is hosting: the signed-in X account, which takes seat 1. */}
+      {wallet ? (
         <div className="host-id">
           {/* eslint-disable-next-line @next/next/no-img-element */}
           <img src={avatarDataUrl(wallet, 26)} width={26} height={26} alt="" className="host-id-avatar" />
-          <span>Hosting as <b>{xRequired ? `@${username}` : username}</b></span>
-          {!xRequired && <button className="link-btn" onClick={onEditUsername}>Change</button>}
+          <span>Hosting as <b>{username ? `@${username}` : "you"}</b> · you take seat 1</span>
         </div>
-      ) : wallet && xRequired ? (
+      ) : (
         <div className="host-id">
-          <span>Connect X to host — your X handle becomes your username, set once.</span>
-          <button className="host-id-btn" onClick={onConnectX}>Connect X</button>
+          <span>Sign in with X to host — you take seat 1, and your X handle is shown as the host.</span>
         </div>
-      ) : wallet ? (
-        <label className="host-name">
-          <span className="jc-field-label">Your username</span>
-          <input
-            value={nameDraft}
-            onChange={(e) => setNameDraft(e.target.value)}
-            placeholder="e.g. nova_9"
-            maxLength={USERNAME_MAX}
-            autoComplete="off"
-            autoCapitalize="off"
-            spellCheck={false}
-            aria-invalid={nameDraft.length > 0 && !draftCheck.ok}
-            aria-describedby="host-name-hint"
-          />
-          <span id="host-name-hint" className={`username-hint ${nameDraft.length === 0 ? "" : draftCheck.ok ? "ok" : "bad"}`}>
-            {nameDraft.length === 0 ? "How players will see you — 3–16 letters, numbers or _" : draftCheck.ok ? "Saved when you host." : draftCheck.reason}
-          </span>
-        </label>
-      ) : null}
+      )}
 
       <FieldRow label="Market">
         <div className="gm-seg" role="radiogroup" aria-label="Market source">
@@ -719,7 +670,13 @@ function HostPanel({
                 <span className="mkt-px">{m.yesCents}¢ YES{m.endMs ? ` · ${closesIn(m.endMs)}` : ""}</span>
               </button>
             ))}
-          {market.catalog.sandbox && market.catalog.loaded && (
+          {pickedMarket?.endMs != null && pickedMarket.endMs - Date.now() < ((hMode === "scheduled" ? hStartInMin : 2) + market.windowMin) * 60_000 && (
+        <p className="jc-note" role="status">
+          Trading on this market ends {closesIn(pickedMarket.endMs) === "closed" ? "now" : `in ${closesIn(pickedMarket.endMs).replace(" left", "")}`} — before your pit would finish.
+          The pit still settles on the room&apos;s average, but pick a shorter window or another market to trade alongside Panta.
+        </p>
+      )}
+      {market.catalog.sandbox && market.catalog.loaded && (
             <p className="jc-note mkt-sandbox">Panta sandbox key: Panta lists one test market. A live key lists every open market.</p>
           )}
         </div>
@@ -729,28 +686,28 @@ function HostPanel({
         <div className="mkt-create">
           <label className="mkt-field">
             <span className="jc-field-label">Question</span>
-            <input value={market.question} onChange={(e) => market.setQuestion(e.target.value.slice(0, 200))} placeholder="Will the Lakers beat the Celtics tonight?" aria-invalid={market.fieldError?.field === "question"} />
+            <input disabled={created || busy} value={market.question} onChange={(e) => market.setQuestion(e.target.value.slice(0, 200))} placeholder="Will the Lakers beat the Celtics tonight?" aria-invalid={market.fieldError?.field === "question"} />
           </label>
           <div className="gm-seg mkt-cats" role="radiogroup" aria-label="Category">
             {CREATE_CATEGORIES.map((c) => (
-              <button key={c} role="radio" aria-checked={market.category === c} className={`opt ${market.category === c ? "on" : ""}`} onClick={() => market.setCategory(c)}>{c}</button>
+              <button key={c} role="radio" aria-checked={market.category === c} disabled={created || busy} className={`opt ${market.category === c ? "on" : ""}`} onClick={() => market.setCategory(c)}>{c}</button>
             ))}
           </div>
           <label className="mkt-field">
             <span className="jc-field-label">Resolves YES if…</span>
-            <textarea rows={2} value={market.rule} onChange={(e) => market.setRule(e.target.value.slice(0, 600))} aria-invalid={market.fieldError?.field === "resolutionRule"} />
+            <textarea rows={2} disabled={created || busy} value={market.rule} onChange={(e) => market.setRule(e.target.value.slice(0, 600))} aria-invalid={market.fieldError?.field === "resolutionRule"} />
           </label>
           <label className="mkt-field">
             <span className="jc-field-label">Source of truth</span>
-            <input value={market.source2} onChange={(e) => market.setSource2(e.target.value.slice(0, 300))} placeholder="https://…" inputMode="url" aria-invalid={market.fieldError?.field === "sourcesOfTruth"} />
+            <input disabled={created || busy} value={market.source2} onChange={(e) => market.setSource2(e.target.value.slice(0, 300))} placeholder="https://…" inputMode="url" aria-invalid={market.fieldError?.field === "sourcesOfTruth"} />
           </label>
           <div className="mkt-row2">
-            <button className={`mkt-toggle ${market.breaking ? "on" : ""}`} role="switch" aria-checked={market.breaking} onClick={() => market.setBreaking(!market.breaking)}>
+            <button className={`mkt-toggle ${market.breaking ? "on" : ""}`} role="switch" aria-checked={market.breaking} disabled={created || busy} onClick={() => market.setBreaking(!market.breaking)}>
               <span className="knob" aria-hidden="true" /> Live event — trades on Panta now
             </button>
             <div className="gm-seg" role="radiogroup" aria-label="Trading on the market ends in">
               {MARKET_ENDS.filter((o) => market.breaking || o.sec >= 3 * 3_600).map((o) => (
-                <button key={o.label} role="radio" aria-checked={market.endsSec === o.sec} className={`opt ${market.endsSec === o.sec ? "on" : ""}`} onClick={() => market.setEndsSec(o.sec)}>{o.label}</button>
+                <button key={o.label} role="radio" aria-checked={market.endsSec === o.sec} disabled={created || busy} className={`opt ${market.endsSec === o.sec ? "on" : ""}`} onClick={() => market.setEndsSec(o.sec)}>{o.label}</button>
               ))}
             </div>
           </div>
@@ -761,7 +718,7 @@ function HostPanel({
           {market.fieldError && <p className="jc-error" role="alert">{market.fieldError.message}</p>}
           {market.quote && (
             <div className={`mkt-fee ${market.quote.sandbox ? "free" : ""}`} role="status">
-              {market.quote.created ? <><b>Market created on Panta.</b> Opening your pit on it.</>
+              {market.quote.created ? <><b>Market created on Panta.</b> Your pit opens on it — press below to try again if it didn&apos;t. <button type="button" className="link-btn" onClick={market.startOver} disabled={busy}>Write a different market</button></>
                 : market.quote.sandbox ? <><b>No creation fee — Panta sandbox.</b> On mainnet Panta charges a creation fee (it seeds the market&apos;s liquidity); you&apos;d see it here before signing.</>
                 : <><b>Creation fee {usd2.format(market.quote.feeUsdc)}</b> — paid to Panta when you sign{market.quote.liquidityUsdc > 0 ? <>, {usd2.format(market.quote.liquidityUsdc)} of it seeds the market&apos;s liquidity</> : null}. As creator you earn a share of trading fees once it graduates.</>}
             </div>
@@ -930,10 +887,17 @@ function HostPanel({
 
       {inputError && <p className="jc-error" role="alert">{inputError}</p>}
       {escrowKnown && !escrowActive && (
-        <p className="jc-note"><b>Practice mode.</b> Hosting works, but no USDC moves and your wallet won&apos;t be asked to sign.</p>
+        <p className="jc-note"><b>Practice mode.</b> Hosting works, but no USDC moves and nothing is signed.</p>
       )}
 
-      <button className="gm-host-cta" onClick={onSubmit} disabled={busy || !!inputError || needsWallet || (!!wallet && !hCall && !picks) || (src === "panta" && !market.pantaId) || (src === "create" && market.question.trim().length < 10)} aria-busy={busy}>
+      <button
+        className="gm-host-cta"
+        onClick={onSubmit}
+        disabled={!wallet
+          ? authStatus === "busy" || authStatus === "loading"
+          : busy || !!inputError || (!hCall && !picks && !quoting) || (src === "panta" && !market.pantaId) || (src === "create" && market.question.trim().length < 10)}
+        aria-busy={busy || authStatus === "busy"}
+      >
         {label}
       </button>
     </div>
@@ -953,6 +917,7 @@ type MarketProps = {
   breaking: boolean; setBreaking: (v: boolean) => void;
   quote: (MarketQuote & { created?: boolean }) | null;
   fieldError: { field?: string; message: string } | null;
+  startOver: () => void;
 };
 
 function closesIn(endMs: number): string {

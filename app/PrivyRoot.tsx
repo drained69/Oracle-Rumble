@@ -1,17 +1,17 @@
 "use client";
 
 /**
- * Mounts Privy (X sign-in + embedded Solana wallets) and registers the
- * bridge in lib/privy-client. Loaded lazily by <PrivyMount/> only when
- * NEXT_PUBLIC_PRIVY_APP_ID is set, so the SDK never ships otherwise.
+ * Mounts Privy (X sign-in + the player's embedded Solana wallet) and
+ * registers the bridge in lib/privy-client. Loaded lazily by <PrivyMount/>
+ * only when NEXT_PUBLIC_PRIVY_APP_ID is set.
  *
  * It renders nothing of its own: the app's components talk to Privy through
  * the bridge, so Privy doesn't need to wrap the page.
  */
 
 import { useEffect, useMemo } from "react";
-import { PrivyProvider, useIdentityToken, useLoginWithOAuth, usePrivy } from "@privy-io/react-auth";
-import { useCreateWallet, useSignMessage, useSignTransaction, useWallets } from "@privy-io/react-auth/solana";
+import { getIdentityToken, PrivyProvider, useLoginWithOAuth, usePrivy, useUser } from "@privy-io/react-auth";
+import { useCreateWallet, useExportWallet, useSignTransaction, useWallets } from "@privy-io/react-auth/solana";
 import { createSolanaRpc, createSolanaRpcSubscriptions } from "@solana/kit";
 import { PRIVY_APP_ID, setPrivyBridge } from "@/lib/privy-client";
 
@@ -21,14 +21,14 @@ const CHAIN = (CLUSTER === "mainnet-beta" ? "solana:mainnet" : `solana:${CLUSTER
 
 function Bridge() {
   const { ready, authenticated, user, getAccessToken, logout } = usePrivy();
-  const { identityToken } = useIdentityToken();
+  const { refreshUser } = useUser();
   const { initOAuth } = useLoginWithOAuth();
   const { wallets } = useWallets();
   const { createWallet } = useCreateWallet();
-  const { signMessage } = useSignMessage();
   const { signTransaction } = useSignTransaction();
+  const { exportWallet } = useExportWallet();
 
-  // The user's Privy embedded wallet (not an external wallet they linked).
+  // The user's Privy embedded wallet (the only wallet The Pit uses).
   const embedded = wallets.find((w) => /privy/i.test(w.standardWallet.name)) ?? null;
 
   useEffect(() => {
@@ -40,23 +40,35 @@ function Bridge() {
       loginWithX: () => initOAuth({ provider: "twitter" }),
       ensureEmbeddedWallet: async () => {
         if (embedded) return embedded.address;
-        const { wallet } = await createWallet();
-        return wallet.address;
-      },
-      signMessage: async (message) => {
-        if (!embedded) throw { code: 4100, message: "No X wallet yet." };
-        const { signature } = await signMessage({ message, wallet: embedded });
-        return signature;
+        try {
+          const { wallet } = await createWallet();
+          return wallet.address;
+        } catch (err) {
+          // Created on login a moment ago but not in `wallets` yet: read it from the user.
+          const u = await refreshUser();
+          const addr = u.linkedAccounts.find((a) => a.type === "wallet" && a.chainType === "solana" && a.walletClientType === "privy");
+          if (addr && "address" in addr) return addr.address;
+          throw err;
+        }
       },
       signTransaction: async (transaction) => {
-        if (!embedded) throw { code: 4100, message: "No X wallet yet." };
+        if (!embedded) throw { code: 4100, message: "Your X wallet isn't ready yet." };
         const { signedTransaction } = await signTransaction({ transaction, wallet: embedded, chain: CHAIN });
         return signedTransaction;
       },
-      tokens: async () => ({ idToken: identityToken ?? undefined, accessToken: (await getAccessToken()) ?? undefined }),
+      tokens: async () => {
+        // Refresh first so the identity token lists a wallet created this session.
+        await refreshUser().catch(() => undefined);
+        const [idToken, accessToken] = await Promise.all([
+          getIdentityToken().catch(() => null),
+          getAccessToken().catch(() => null)
+        ]);
+        return { idToken: idToken ?? undefined, accessToken: accessToken ?? undefined };
+      },
+      exportWallet: () => exportWallet(embedded ? { address: embedded.address } : undefined),
       logout
     });
-  }, [ready, authenticated, user, embedded, identityToken, initOAuth, createWallet, signMessage, signTransaction, getAccessToken, logout]);
+  }, [ready, authenticated, user, embedded, initOAuth, createWallet, refreshUser, signTransaction, exportWallet, getAccessToken, logout]);
 
   useEffect(() => () => setPrivyBridge(null), []);
   return null;
@@ -66,8 +78,8 @@ export default function PrivyRoot() {
   const config = useMemo(() => ({
     loginMethods: ["twitter" as const],
     appearance: { theme: "dark" as const, walletChainType: "solana-only" as const },
-    // Embedded wallets are created only for players who choose "play with X".
-    embeddedWallets: { solana: { createOnLogin: "off" as const } },
+    // Every X account gets its Solana wallet as it signs in.
+    embeddedWallets: { solana: { createOnLogin: "users-without-wallets" as const } },
     solana: {
       rpcs: {
         [CHAIN]: {

@@ -5,7 +5,7 @@ import { useEffect, useState } from "react";
 type Event = {
   id: string;
   actor: string;
-  verb: "UP" | "DOWN" | "SEAT" | "WON" | "OPENED" | "SETTLED";
+  verb: "UP" | "DOWN" | "YES" | "NO" | "SEAT" | "WON" | "OPENED" | "SETTLED";
   asset: string;
   arenaCode: string;
   amount?: number;
@@ -62,9 +62,11 @@ export default function ActivityFeed() {
             <span className="rf-verb">
               {e.verb === "UP" && <>called <b className="up">▲ UP</b> on {e.asset}</>}
               {e.verb === "DOWN" && <>called <b className="down">▼ DOWN</b> on {e.asset}</>}
-              {e.verb === "SEAT" && <>took a seat · {e.asset} room</>}
+              {e.verb === "YES" && <>called <b className="up">YES</b> in a {e.asset.toLowerCase()} pit</>}
+              {e.verb === "NO" && <>called <b className="down">NO</b> in a {e.asset.toLowerCase()} pit</>}
+              {e.verb === "SEAT" && <>took a seat · {e.asset} pit</>}
               {e.verb === "WON" && <>won <b className="win">+${e.amount}</b> on {e.asset}</>}
-              {e.verb === "OPENED" && <>opened a new {e.asset} arena</>}
+              {e.verb === "OPENED" && <>opened a new {e.asset} pit</>}
               {e.verb === "SETTLED" && <>settled a {e.asset} round on-chain</>}
             </span>
             <span className="rf-ago">{agoOf(e.ts)}</span>

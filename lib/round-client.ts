@@ -197,30 +197,36 @@ async function finishSeat(wallet: string, nickname: string, arena: string | unde
  * Make sure the wallet is reachable on the right account and signed in,
  * before anything costs money (e.g. before an arena is created for a host).
  */
-export async function prepareWallet(wallet: string, onStep?: (step: SeatStep, walletName?: string) => void): Promise<{ ok: true } | { ok: false; error: string }> {
-  try { await ensureWalletFor(wallet); }
-  catch (err) { return { ok: false, error: describeWalletError(err, "The connection request") }; }
+export async function prepareWallet(
+  wallet: string, onStep?: (step: SeatStep, walletName?: string) => void, willSign = true
+): Promise<{ ok: true } | { ok: false; error: string }> {
+  // Only get the X wallet ready when something will actually be signed.
+  if (willSign) {
+    try { await ensureWalletFor(wallet); }
+    catch (err) { return { ok: false, error: describeWalletError(err, "Getting your X wallet ready") }; }
+  }
   const auth = await ensureSession(wallet, () => onStep?.("signin"), (name) => onStep?.("waiting", name));
   return auth.ok ? { ok: true } : { ok: false, error: auth.error };
 }
 
-/** Where a seat request is — drives the "approve in your wallet" hints. */
+/** Where a seat request is — drives the "approve in your X wallet" hints. */
 export type SeatStep = "signin" | "deposit" | "again" | "waiting" | "confirming" | "seating";
 
 /** Toast line and short button label for each seat step. */
-export function seatStepText(step: SeatStep, seatUsd: number, call?: OpeningCall, walletName = "your wallet", yesNo = false): { toast: string; button: string } {
+export function seatStepText(step: SeatStep, seatUsd: number, call?: OpeningCall, _walletName = "your X wallet", yesNo = false): { toast: string; button: string } {
+  void _walletName;
   const amount = `$${seatUsd.toFixed(2)}`;
   const callText = call === "YES" ? ` · opening call ${yesNo ? "YES" : "UP"}` : call === "NO" ? ` · opening call ${yesNo ? "NO" : "DOWN"}` : "";
   switch (step) {
-    case "signin": return { toast: "Sign in with your wallet — a free message, not a transaction.", button: "Sign the message in your wallet…" };
-    case "deposit": return { toast: `Approve the ${amount} seat deposit in your wallet${callText}.`, button: "Approve the deposit in your wallet…" };
+    case "signin": return { toast: "Renewing your sign-in…", button: "Signing in…" };
+    case "deposit": return { toast: `Approve the ${amount} seat deposit in your X wallet${callText}.`, button: "Approve the deposit…" };
     case "again": return {
-      toast: `That took over a minute, so Solana needs a fresh signature — approve the ${amount} deposit once more in your wallet.`,
-      button: "Approve again in your wallet…"
+      toast: `That took over a minute, so Solana needs a fresh signature — approve the ${amount} deposit once more.`,
+      button: "Approve again…"
     };
     case "waiting": return {
-      toast: `Still waiting for ${walletName}. If its window isn't showing, click the ${walletName === "your wallet" ? "wallet" : walletName} icon in your browser toolbar — or check behind this window.`,
-      button: `Waiting for ${walletName}…`
+      toast: "Still waiting for your approval in the X wallet window. If you can't see it, check behind this window or allow pop-ups for this site.",
+      button: "Waiting for your approval…"
     };
     case "confirming": return { toast: "Deposit sent — confirming on Solana…", button: "Confirming on Solana…" };
     case "seating": return { toast: "Taking your seat…", button: "Taking your seat…" };
@@ -265,7 +271,7 @@ export async function enrollWithEscrow(
   let sig: string;
   onStep?.("deposit");
   try { sig = await signAndBroadcastLegacy(wallet, txRes.base64, "The deposit", () => onStep?.("confirming"), (name) => onStep?.("waiting", name), () => onStep?.("again")); }
-  catch (err) { return { error: err instanceof Error ? err.message : "The deposit failed in your wallet." }; }
+  catch (err) { return { error: err instanceof Error ? err.message : "The deposit failed — try again." }; }
 
   onStep?.("seating");
   const done = await finishSeat(wallet, nickname, arena, sig, openingCall, openingCallPct, picks, locks);
@@ -365,28 +371,28 @@ export async function tradeRound(args: { wallet: string; action: "buy" | "sell";
  * Host a rumble. Every call MINTS A NEW ARENA CODE and returns the shareable
  * `inviteSlug` (e.g. `/a/A7XB2M`) which the client shares with friends.
  */
-export async function newRound(config?: HostConfig): Promise<RoundView & { error?: string; inviteSlug?: string; arena?: string }> {
-  const res = await fetch("/api/round", {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({ action: "new", config })
-  });
-  return res.json();
+export async function newRound(config: HostConfig, wallet: string): Promise<RoundView & { error?: string; inviteSlug?: string; arena?: string }> {
+  try {
+    const { data } = await postAsWallet("/api/round", wallet, { action: "new", config });
+    return data as RoundView & { error?: string; inviteSlug?: string; arena?: string };
+  } catch {
+    return { error: "Couldn't reach the server — check your connection and try again." } as RoundView & { error: string };
+  }
 }
 
 /**
  * Check a wallet can afford a seat before any on-chain work happens.
  * Returns null when affordable (or escrow is off), otherwise a user-facing reason.
  */
-export async function checkSeatFunds(wallet: string, seatUsdc: number): Promise<string | null> {
+export async function checkSeatFunds(wallet: string, seatUsdc: number, what = "This seat"): Promise<string | null> {
   try {
     const r = await fetch(`/api/escrow/balance?wallet=${encodeURIComponent(wallet)}`, { cache: "no-store" }).then((x) => x.json());
     if (r.escrow !== "active" || r.usdc == null) return null;
     if (r.usdc + 1e-9 < seatUsdc) {
-      return `This seat costs ${seatUsdc.toFixed(2)} USDC but your wallet holds ${Number(r.usdc).toFixed(2)} devnet USDC. Get test USDC at faucet.circle.com (Solana Devnet).`;
+      return `${what.replace(/^./, (c) => c.toUpperCase())} costs ${seatUsdc.toFixed(2)} USDC but your X wallet holds ${Number(r.usdc).toFixed(2)} devnet USDC. Open your account (top right) for its address, then get test USDC at faucet.circle.com (Solana Devnet).`;
     }
     if (r.sol < 0.005) {
-      return `You need about 0.005 devnet SOL for fees (you hold ${Number(r.sol).toFixed(4)}). Get some at faucet.solana.com.`;
+      return `You need about 0.005 devnet SOL for network fees (your X wallet holds ${Number(r.sol).toFixed(4)}). Open your account (top right) for its address, then get SOL at faucet.solana.com.`;
     }
     return null;
   } catch {

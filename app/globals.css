@@ -4504,3 +4504,44 @@ body.overlay-mode.overlay-solid { background: var(--bg) !important; }
 .jc-host .mkt-fee { padding: 10px 12px; border-radius: 10px; font-size: 12.5px; line-height: 1.5; color: var(--text-2); background: rgba(251, 191, 36, 0.06); border: 1px solid rgba(251, 191, 36, 0.3); }
 .jc-host .mkt-fee b { color: var(--text); }
 .jc-host .mkt-fee.free { background: var(--up-bg); border-color: var(--up-border); }
+
+/* ── Account: sign in with X, the account menu and the player's wallet ── */
+.acct { position: relative; overflow: visible; }
+.acct-main { border-radius: 11px; }
+.acct-caret { color: var(--text-3); margin-left: 2px; }
+.acct-connect { display: inline-flex; align-items: center; gap: 8px; }
+.acct-connect:disabled { opacity: 0.6; cursor: progress; }
+.acct-panel {
+  position: absolute; top: calc(100% + 8px); right: 0; z-index: 60;
+  width: min(360px, calc(100vw - 32px)); padding: 14px;
+  background: var(--bg-elev); border: 1px solid var(--border-strong); border-radius: 14px;
+  box-shadow: var(--shadow-lg);
+  font-family: 'Space Grotesk', sans-serif; color: var(--text-2); font-size: 13px;
+}
+.ap-who { display: flex; align-items: center; gap: 10px; padding-bottom: 12px; border-bottom: 1px solid var(--border); }
+.ap-who img { border-radius: 10px; border: 1px solid var(--border); }
+.ap-handle { display: block; color: var(--text); font-weight: 700; font-size: 15px; text-decoration: none; }
+.ap-handle:hover { text-decoration: underline; }
+.ap-sub { font-size: 11.5px; color: var(--text-3); }
+.ap-sec { padding: 12px 0; border-bottom: 1px solid var(--border); }
+.ap-k { display: flex; align-items: center; gap: 8px; font-size: 11px; font-weight: 700; letter-spacing: 1px; text-transform: uppercase; color: var(--text-3); margin-bottom: 8px; }
+.ap-net { padding: 1px 6px; border-radius: 5px; background: var(--amber-bg); border: 1px solid var(--amber-border); color: var(--amber); letter-spacing: 0.5px; }
+.ap-addr {
+  display: block; font-family: 'JetBrains Mono', monospace; font-size: 12px; line-height: 1.5;
+  color: var(--text); word-break: break-all; user-select: all;
+  padding: 8px 10px; border-radius: 8px; background: var(--surface); border: 1px solid var(--border);
+}
+.ap-actions { display: flex; gap: 8px; margin-top: 8px; flex-wrap: wrap; }
+.ap-bal-row { display: flex; align-items: center; gap: 18px; }
+.ap-bal { display: flex; flex-direction: column; gap: 2px; }
+.ap-bal span { font-size: 11px; color: var(--text-3); letter-spacing: 0.6px; }
+.ap-bal b { font-family: 'JetBrains Mono', monospace; font-size: 16px; color: var(--text); font-variant-numeric: tabular-nums; }
+.ap-qr { margin-left: auto; width: 76px; height: 76px; border-radius: 8px; overflow: hidden; background: #edf0f6; }
+.ap-qr svg { width: 100%; height: 100%; display: block; }
+.ap-note { margin: 0; line-height: 1.5; }
+.ap-note a { color: var(--plasma, #22d3ee); }
+.ap-warn { margin: 8px 0 0; color: var(--amber); line-height: 1.45; }
+.ap-foot { display: flex; align-items: center; justify-content: space-between; padding-top: 12px; }
+@media (max-width: 520px) {
+  .acct-panel { position: fixed; top: 64px; right: 16px; left: 16px; width: auto; }
+}

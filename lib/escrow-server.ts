@@ -230,7 +230,7 @@ function explainSimulation(err: unknown, logs: string[] | null): string {
   if (custom) {
     const code = Number(custom[1]);
     if (code >= 100 && code < 100 + ESCROW_ERRORS.length) return ESCROW_ERRORS[code - 100];
-    if (code === 1) return "not enough USDC in your wallet";
+    if (code === 1) return "not enough USDC in your X wallet";
   }
   if (/InsufficientFundsForFee|insufficient lamports/i.test(text + (logs ?? []).join(" "))) return "not enough SOL for the network fee";
   const line = (logs ?? []).reverse().find((l) => /error|failed/i.test(l));
@@ -254,7 +254,7 @@ async function buildTx(ixs: Awaited<ReturnType<typeof ixDeposit>>[], feePayer: P
     if (sim.value.err) {
       const why = explainSimulation(sim.value.err, sim.value.logs);
       console.warn(`[escrow] simulation failed payer=${feePayer.toBase58()}: ${why} ${JSON.stringify(sim.value.err)}`);
-      return { error: `This transaction would fail on Solana (${why}), so it wasn't sent to your wallet.` };
+      return { error: `This transaction would fail on Solana (${why}), so it wasn't sent to your X wallet.` };
     }
   } catch (err) {
     // The dry run is a courtesy — an RPC hiccup must not block the player.

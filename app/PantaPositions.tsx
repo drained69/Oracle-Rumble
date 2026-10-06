@@ -107,7 +107,7 @@ export default function PantaPositions({ wallet }: { wallet: string | null }) {
 
       <div className="positions-list">
         {loading && <div className="positions-empty">Loading Panta holdings…</div>}
-        {!loading && !wallet && <div className="positions-empty">Connect a wallet to see your positions.</div>}
+        {!loading && !wallet && <div className="positions-empty">Sign in with X to see your positions.</div>}
         {!loading && wallet && positions.length === 0 && (
           <div className="positions-empty">{source === "panta" ? "No Panta market holdings for this wallet." : "Panta isn't connected on this server, so there are no Panta holdings to show."}</div>
         )}

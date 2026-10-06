@@ -4,7 +4,7 @@ import { isPracticeArena } from "@/lib/royale";
 
 export const dynamic = "force-dynamic";
 
-type Verb = "UP" | "DOWN" | "SEAT" | "WON" | "OPENED" | "SETTLED";
+type Verb = "UP" | "DOWN" | "YES" | "NO" | "SEAT" | "WON" | "OPENED" | "SETTLED";
 type Event = {
   id: string;
   actor: string;        // nickname of a real human player
@@ -76,7 +76,7 @@ export async function GET(req: Request) {
           events.push({
             id: `${arenaCode}:call:${e.id}`,
             actor: e.nickname,
-            verb: e.openingCall === "YES" ? "UP" : "DOWN",
+            verb: latest.config.marketSource === "panta" ? e.openingCall : e.openingCall === "YES" ? "UP" : "DOWN",
             asset,
             arenaCode,
             // Ordered just after the seat so UI shows seat → call.

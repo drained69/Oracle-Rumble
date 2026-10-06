@@ -102,7 +102,7 @@ export async function POST(request: Request) {
       const bal = await playerBalances(wallet);
       if (bal.usdc + 1e-9 < seat) {
         return NextResponse.json({
-          error: `Not enough devnet USDC: this seat costs ${seat.toFixed(2)} USDC and your wallet holds ${bal.usdc.toFixed(2)}. Get test USDC at faucet.circle.com (Solana Devnet).`,
+          error: `Not enough devnet USDC: this seat costs ${seat.toFixed(2)} USDC and your X wallet holds ${bal.usdc.toFixed(2)}. Get test USDC at faucet.circle.com (Solana Devnet).`,
           insufficient: "usdc", needUsdc: seat, haveUsdc: bal.usdc
         }, { status: 402 });
       }

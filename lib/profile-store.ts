@@ -59,8 +59,58 @@ export async function getProfiles(wallets: string[]): Promise<Map<string, Profil
 }
 
 export type BindResult =
-  | { ok: true; profile: Profile; created: boolean }
-  | { ok: false; reason: "x-taken" | "username-taken"; message: string };
+  | { ok: true; profile: Profile; created: boolean; movedFrom?: string }
+  | { ok: false; reason: "x-taken" | "username-taken" | "wallet-taken"; message: string };
+
+async function getProfileByX(xId: string): Promise<Profile | null> {
+  if (!STORE_ENABLED) {
+    for (const p of mem.values()) if (p.xId === xId) return p;
+    return null;
+  }
+  await ready();
+  const { rows } = await dbPool().query<Row>("SELECT * FROM profiles WHERE x_id = $1", [xId]);
+  return rows[0] ? fromRow(rows[0]) : null;
+}
+
+/**
+ * Sign-in with X: give `wallet` (already verified to be this X account's own
+ * embedded wallet) the X account's profile. An X account first linked to a
+ * different wallet — an extension wallet, before sign-in became X-only —
+ * moves to this one and keeps its username.
+ */
+export async function claimXProfile(wallet: string, xId: string, xUsername: string): Promise<BindResult> {
+  const mine = await getProfile(wallet);
+  if (mine) {
+    return mine.xId === xId
+      ? { ok: true, profile: mine, created: false }
+      : { ok: false, reason: "wallet-taken", message: "This wallet already belongs to another X account." };
+  }
+  const prior = await getProfileByX(xId);
+  if (!prior) return bindXProfile(wallet, xId, xUsername);
+
+  const moved: Profile = { ...prior, wallet };
+  if (!STORE_ENABLED) {
+    mem.delete(prior.wallet);
+    mem.set(wallet, moved);
+    return { ok: true, profile: moved, created: false, movedFrom: prior.wallet };
+  }
+  const client = await dbPool().connect();
+  try {
+    await client.query("BEGIN");
+    await client.query("DELETE FROM profiles WHERE x_id = $1", [xId]);
+    await client.query(
+      "INSERT INTO profiles (wallet, username, x_id, set_at) VALUES ($1, $2, $3, $4)",
+      [wallet, moved.username, xId, moved.setAt]
+    );
+    await client.query("COMMIT");
+    return { ok: true, profile: moved, created: false, movedFrom: prior.wallet };
+  } catch (err) {
+    await client.query("ROLLBACK").catch(() => {});
+    throw err;
+  } finally {
+    client.release();
+  }
+}
 
 /**
  * Bind `wallet` to an X account. The first bind sets the username for good;

@@ -6,10 +6,9 @@
  * API. Every statement here should match the code.
  */
 
-import { useCallback, useEffect, useState } from "react";
-import { useEscrowStatus, useWalletIdentity, useXNotices } from "@/lib/use-wallet";
+import { useEffect, useState } from "react";
+import { useEscrowStatus, useXNotices } from "@/lib/use-wallet";
 import SiteHeader from "@/app/SiteHeader";
-import UsernameModal from "@/app/UsernameModal";
 import GitHubLink from "@/app/GitHubLink";
 
 const CLUSTER = (process.env.NEXT_PUBLIC_SOLANA_CLUSTER ?? "devnet").toLowerCase();
@@ -31,17 +30,15 @@ const SECTIONS: { id: string; title: string }[] = [
   { id: "calls", title: "Crypto pits & the price oracle" },
   { id: "trading", title: "Trading in a pit" },
   { id: "panta", title: "Panta integration" },
-  { id: "usernames", title: "Usernames & X" },
-  { id: "wallet", title: "Wallets & signing" },
+  { id: "usernames", title: "Signing in with X" },
+  { id: "wallet", title: "Your wallet & signing" },
   { id: "api", title: "API reference" },
   { id: "trust", title: "Trust model" },
   { id: "faq", title: "FAQ" }
 ];
 
 export default function DocsPage() {
-  const { wallet, username, toggleConnect, saveUsername } = useWalletIdentity();
   const escrow = useEscrowStatus();
-  const [showUsername, setShowUsername] = useState(false);
   const [toast, setToast] = useState("");
   useXNotices(setToast);
 
@@ -55,12 +52,6 @@ export default function DocsPage() {
     return () => window.clearTimeout(id);
   }, [toast]);
 
-  const connect = useCallback(async () => {
-    const r = await toggleConnect();
-    setToast(r.message);
-    if (r.needsUsername) setShowUsername(true);
-  }, [toggleConnect]);
-
   return (
     <main className="game-main">
       <div className="game-grid-bg" aria-hidden="true" />
@@ -68,11 +59,8 @@ export default function DocsPage() {
 
       <SiteHeader
         active="docs"
-        wallet={wallet}
-        username={username}
         escrow={escrow}
-        onConnect={connect}
-        onEditUsername={() => setShowUsername(true)}
+        onToast={setToast}
       />
 
       <section className="page-hero">
@@ -207,8 +195,12 @@ opening    = every seat call fills at Panta's line,
 
           <Section id="hosting" title="Hosting & streaming">
             <p>
-              The host sets the market, format, seat, capacity and timing, and pays seat #1 like everyone
-              else. While the pit is open the host&apos;s page shows a creator kit:
+              Host from the <b>Host</b> tab, signed in with X. The host sets the market, format, seat, capacity,
+              timing and an optional host fee, then pays seat #1 like everyone else — every pit gets a fresh
+              code. Creating a new market is two presses: the first checks it with Panta and shows the
+              creation fee; the second creates it and opens the pit. Once created, the market is locked in
+              the form, so if opening the pit fails you can retry without paying again. While the pit is open
+              the host&apos;s page shows a creator kit:
             </p>
             <ul>
               <li><b>Join code and QR</b> — large enough to put on stream; scanning it opens the pit.</li>
@@ -323,8 +315,8 @@ withdraw  = payout − 0.1% platform fee`}</pre>
             </p>
             <div className="callout warn">
               <b>Practice mode.</b> When on-chain escrow isn&apos;t configured the header shows
-              <b> Practice</b>: pits, ranking and trading work, but no USDC moves and no wallet
-              signature is requested.
+              <b> Practice</b>: pits, ranking and trading work (you still sign in with X), but no USDC
+              moves and nothing is signed.
             </div>
           </Section>
 
@@ -406,41 +398,33 @@ withdraw  = payout − 0.1% platform fee`}</pre>
             </table>
           </Section>
 
-          <Section id="usernames" title="Usernames & X">
+          <Section id="usernames" title="Signing in with X">
             <p>
-              Your username is how other players see you on the pit stage, standings, activity
-              feed and results. It is your <b>X (Twitter) handle</b>: connect X once and that handle
-              becomes your wallet&apos;s username for good — it can&apos;t be changed, and an X account can
-              be linked to only one wallet, so nobody can play under someone else&apos;s name.
+              The Pit is played with an <b>X (Twitter) account</b> — there is no other way to sign in. Press
+              <b> Sign in with X</b>, approve on X, and you come straight back signed in. Your X handle is your
+              username on the pit stage, standings, activity feed and results; it is set the first time you sign
+              in, and an X account is one player, so nobody can play under someone else&apos;s name.
             </p>
             <ul>
-              <li><b>Paid pits and hosting</b> need a linked X account.</li>
-              <li><b>Practice pits</b> work without X — you play under your wallet&apos;s short address.</li>
-              <li><b>No wallet?</b> Choose <em>X account</em> when connecting: sign in with X and you get a Solana
-                wallet inside the app (a Privy embedded wallet) that deposits, signs and withdraws like any other.</li>
+              <li><b>Your Solana wallet</b> — signing in creates a Solana wallet for your X account (a Privy embedded wallet). It is yours: it holds your USDC, pays your seats and receives your payouts.</li>
+              <li><b>See it any time</b> — open your account (your handle, top right) for the full address with copy, QR and explorer links, its USDC and SOL balances, and where to get {CLUSTER} test tokens.</li>
+              <li><b>Export the key</b> — <em>Export private key</em> in the account menu opens Privy&apos;s own window to copy the wallet&apos;s key into another wallet app. The key is shown on Privy&apos;s domain; The Pit never sees it.</li>
+              <li><b>Sessions</b> — signing in keeps you signed in on this browser for up to a week; <em>Sign out</em> ends it.</li>
             </ul>
-            <p>
-              On a deployment without X sign-in set up, players choose a username instead (3–16 letters,
-              numbers or underscores, unique within a pit).
-            </p>
           </Section>
 
-          <Section id="wallet" title="Wallets & signing">
-            <p>
-              Phantom, Backpack, Solflare and Brave Wallet are supported. Set the wallet to Solana {CLUSTER}. If more
-              than one is installed, Connect asks which one to use and remembers it.
-            </p>
+          <Section id="wallet" title="Your wallet & signing">
             <ul>
-              <li><b>Sign-in</b> — right after you connect, the wallet asks you to sign a free sign-in message (not a transaction). It proves the requests for your seat come from you; the session lasts a week on this browser and ends when you disconnect. If you skip it, you&apos;re asked again before your first seat or trade.</li>
-              <li><b>After a reload</b> the page reconnects to your wallet without a prompt (for a site the wallet already trusts), so signing works straight away.</li>
-              <li><b>Switching accounts</b> in the wallet switches the page to that account. If the wallet is on a different account from the one you&apos;re playing as, nothing is signed and the page tells you which account to switch to.</li>
-              <li><b>Escrow deposit, claim and recover</b> are legacy transactions built by the server, checked with a dry run on Solana {CLUSTER} before your wallet sees them, and signed by you. The wallet only signs; the app sends the transaction to {CLUSTER} itself, so it lands on the right network whatever network your wallet is set to. Approve within about a minute; an older transaction expires and nothing is taken. The deposit carries a memo with the pit, the seat amount and the game type, visible in your wallet and on the explorer. It never includes your opening call or picks, since those stay hidden until the round starts.</li>
+              <li><b>Fund it</b> — send {CLUSTER} USDC (from faucet.circle.com, choose Solana Devnet) and a little SOL for network fees (faucet.solana.com) to the address in your account menu.</li>
+              <li><b>Approving</b> — a seat deposit, a withdrawal or a market creation opens a confirmation from your X wallet; nothing moves until you approve it.</li>
+              <li><b>Escrow deposit, claim and recover</b> are transactions built by the server, checked with a dry run on Solana {CLUSTER} before you see them, and signed by your X wallet. The app sends each one to {CLUSTER} itself. Approve within about a minute; an older transaction expires and nothing is taken. The deposit carries a memo with the pit, the seat amount and the game type, visible on the explorer. It never includes your opening call or picks, since those stay hidden until the round starts.</li>
               <li><b>Panta orders and claims</b> are v0 transactions compiled in your browser from Panta&apos;s instructions.</li>
-              <li>You pay the network fee for every transaction you sign. Private keys never leave your wallet.</li>
+              <li>Your X wallet pays the network fee for every transaction it signs.</li>
             </ul>
             <p>
-              Before any deposit the server checks you hold enough devnet USDC for the seat and about
-              0.005 SOL for fees, so the wallet never asks you to sign a transaction that would fail.
+              Before any deposit the server checks your X wallet holds enough USDC for the seat (plus Panta&apos;s
+              fee when you create a market) and about 0.005 SOL for fees, so you&apos;re never asked to approve a
+              transaction that would fail.
             </p>
           </Section>
 
@@ -454,7 +438,8 @@ withdraw  = payout − 0.1% platform fee`}</pre>
                 <tr><td><code>GET /api/round/read?arena=</code></td><td>The Oracle read for a trading pit</td></tr>
                 <tr><td><code>GET /api/markets/catalog</code></td><td>Open Panta markets a pit can be hosted on</td></tr>
                 <tr><td><code>POST /api/markets/{`{quote,build,register}`}</code></td><td>Create a Panta market (signed in; the quote returns the fee and a draft id)</td></tr>
-                <tr><td><code>POST /api/auth/challenge</code> · <code>/verify</code></td><td>Wallet sign-in (message signature → session cookie)</td></tr>
+                <tr><td><code>POST /api/auth/x</code></td><td>Sign in: Privy&apos;s proof of the X account and its wallet → session cookie</td></tr>
+                <tr><td><code>GET /api/auth/session</code></td><td>Who this browser is signed in as (wallet and X handle)</td></tr>
                 <tr><td><code>POST /api/round/enroll</code></td><td>Take a seat (signed in); returns <code>needsDeposit</code> until your on-chain deposit exists, <code>pending</code> while it confirms</td></tr>
                 <tr><td><code>POST /api/round/call</code></td><td>Change your opening UP/DOWN call while enrolling</td></tr>
                 <tr><td><code>POST /api/round/picks</code></td><td>Predictions: change picks or your lock while enrolling. Streak: pick the open leg (signed in)</td></tr>
@@ -480,7 +465,8 @@ withdraw  = payout − 0.1% platform fee`}</pre>
                 <tr><td>Price oracle (Coinbase, Kraken)</td><td>Crypto pits: opening and closing prices</td><td>The round waits up to a minute, then settles at 50¢ both ways</td></tr>
                 <tr><td>Panta</td><td>Markets, the opening line, resolution, mirrored orders</td><td>A pit already trading keeps its room book and settles on its own average</td></tr>
                 <tr><td>Claude (optional)</td><td>Phrasing the Oracle read</td><td>The read falls back to the plain data read</td></tr>
-                <tr><td>Your wallet</td><td>Every signature</td><td>Nothing moves without it</td></tr>
+                <tr><td>Your X wallet (Privy)</td><td>Every signature</td><td>Nothing moves without your approval; export the key to use the wallet elsewhere</td></tr>
+                <tr><td>X and Privy</td><td>Signing in</td><td>You can&apos;t sign in until they&apos;re back; deposits stay in escrow and recovery still works with the exported key</td></tr>
               </tbody>
             </table>
           </Section>
@@ -538,13 +524,6 @@ withdraw  = payout − 0.1% platform fee`}</pre>
           <span>{toast}</span>
           <button onClick={() => setToast("")} aria-label="Dismiss">×</button>
         </div>
-      )}
-      {showUsername && (
-        <UsernameModal
-          initial={username}
-          onSave={(v) => { const r = saveUsername(v); if (r.ok) setToast(r.message); return r; }}
-          onClose={() => setShowUsername(false)}
-        />
       )}
     </main>
   );

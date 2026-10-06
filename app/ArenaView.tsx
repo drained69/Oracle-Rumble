@@ -2,28 +2,21 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { bookAvailableFor, closingWindowMs, proceedsForSell, sharesForSpend } from "@/lib/room-book";
-import { availableFor, buyPriceOf, DEFAULT_OPENING_CALL_PCT, hostAmountError, paidPlaces, payoutShares, scorePlace, seatCostUsdc, sellPriceOf, tradingOpen, TRADE_CUTOFF_MS, TRADE_SPREAD } from "@/lib/royale";
+import { availableFor, buyPriceOf, DEFAULT_OPENING_CALL_PCT, paidPlaces, payoutShares, scorePlace, seatCostUsdc, sellPriceOf, tradingOpen, TRADE_CUTOFF_MS, TRADE_SPREAD } from "@/lib/royale";
 import { changeOf, LOCK_MAX, pickCount, ptsText, scoreCard, type Picks } from "@/lib/predictions";
-import { claimFeeOf, HOST_FEE_OPTIONS, netOfClaimFee, PLATFORM_CLAIM_FEE_BPS } from "@/lib/fees";
+import { claimFeeOf, netOfClaimFee, PLATFORM_CLAIM_FEE_BPS } from "@/lib/fees";
 import { PicksBoard, PicksEditor, PicksRoster, judgedPrices, pctText, picksMade } from "@/app/Predictions";
 import { StreakHistory, StreakLegCard, StreakRoster, phaseText } from "@/app/Streak";
-import { canPick, currentLeg, DEFAULT_LEG_SEC, LEG_LENGTHS, MAX_LEGS, PICK_MS } from "@/lib/streak";
+import { canPick, currentLeg, MAX_LEGS, PICK_MS } from "@/lib/streak";
 import { useEscapeKey } from "@/lib/use-escape";
 import CallSizePicker, { callSizeText } from "@/app/CallSizePicker";
-import { getRound, enrollWithEscrow, tradeRound, newRound, claimFromEscrow, serverSettleArena, cancelArena, checkSeatFunds, setOpeningCall, setPicks, setStreakPick, prepareWallet, seatStepText, type OpeningCall, type RoundView, type SeatStep } from "@/lib/round-client";
+import { getRound, enrollWithEscrow, tradeRound, claimFromEscrow, serverSettleArena, setOpeningCall, setPicks, setStreakPick, prepareWallet, seatStepText, type OpeningCall, type RoundView, type SeatStep } from "@/lib/round-client";
 import { useEscrowStatus, useWalletIdentity, useXNotices } from "@/lib/use-wallet";
 import SiteHeader from "@/app/SiteHeader";
-import UsernameModal from "@/app/UsernameModal";
 import type { Entrant, Round } from "@/lib/royale";
-import { PICKS_CHAIN_VAULT_USDC, PUBLIC_ARENA, isPracticeArena } from "@/lib/royale";
+import { PUBLIC_ARENA, isPracticeArena } from "@/lib/royale";
 import { avatarDataUrl } from "@/lib/avatars";
-import {
-  displayName,
-  isUsernameFreeInArena,
-  shortPk,
-  validateUsername,
-  USERNAME_MAX
-} from "@/lib/username";
+import { displayName } from "@/lib/username";
 import ArenaStage from "@/app/ArenaStage";
 import PitTerminal from "@/app/PitTerminal";
 import CreatorKit from "@/app/CreatorKit";
@@ -63,10 +56,8 @@ const STATUS_LABEL: Record<string, string> = {
 
 export default function ArenaView({ arenaCode }: { arenaCode: string }) {
   const isPublic = isPracticeArena(arenaCode);
-  const { wallet, username, toggleConnect, saveUsername, connectX, xRequired } = useWalletIdentity();
+  const { wallet, username, signIn, xEnabled } = useWalletIdentity();
   const escrow = useEscrowStatus();
-  const [showUsername, setShowUsername] = useState(false);
-  const [nickname, setNickname] = useState("");
   const [view, setView] = useState<RoundView | null>(null);
   const [now, setNow] = useState(() => Date.now());
   const [amount, setAmount] = useState("");
@@ -80,21 +71,6 @@ export default function ArenaView({ arenaCode }: { arenaCode: string }) {
   // UP / DOWN / decide-later pick in the seat modal ("" = not chosen yet).
   const [callPick, setCallPick] = useState<"YES" | "NO" | "LATER" | "">("");
   const [callPct, setCallPct] = useState<number>(DEFAULT_OPENING_CALL_PCT);
-  const [hCallPct, setHCallPct] = useState<number>(DEFAULT_OPENING_CALL_PCT);
-  const [showHost, setShowHost] = useState(false);
-  const [hAsset, setHAsset] = useState<"BTC" | "ETH" | "SOL">("SOL");
-  const [hHorizon, setHHorizon] = useState<"MIN5" | "MIN15" | "HOUR" | "DAY">("MIN5");
-  const [hFormat, setHFormat] = useState<"single" | "royale" | "predictions" | "streak">("royale");
-  const [hLegSec, setHLegSec] = useState<number>(DEFAULT_LEG_SEC);
-  const [hHostFee, setHHostFee] = useState<number>(0);
-  const [hRounds, setHRounds] = useState(3);
-  const [hCapacity, setHCapacity] = useState(8);
-  const [hEntry, setHEntry] = useState("2");
-  const [hVault, setHVault] = useState("10");
-  const [hCall, setHCall] = useState<"YES" | "NO" | "LATER" | "">("");
-  // When a host call succeeds we mint a fresh arena code; this state drives
-  // the "share your invite link" screen inside the host modal.
-  const [inviteInfo, setInviteInfo] = useState<{ code: string; url: string } | null>(null);
   // Real Panta order lifecycle — opt-in, disabled when market is a
   // synthetic direction-board id or no wallet is connected. When on,
   // `doBuy` also drives quote → build → sign → submit → verify → report
@@ -117,9 +93,6 @@ export default function ArenaView({ arenaCode }: { arenaCode: string }) {
     if (typeof window === "undefined" || isPublic) return "";
     return `${window.location.origin}/a/${arenaCode}`;
   }, [arenaCode, isPublic]);
-
-  // Prefill the seat form with the wallet's saved username.
-  useEffect(() => { if (username) setNickname(username); }, [username]);
 
   // Enable arcade palette / background across the arena view.
   useEffect(() => {
@@ -201,23 +174,15 @@ export default function ArenaView({ arenaCode }: { arenaCode: string }) {
 
   // ── wallet ────────────────────────────────────────────────────────
   const connect = useCallback(async () => {
-    const r = await toggleConnect();
-    setToast(r.message);
-    if (r.needsUsername) setShowUsername(true);
-  }, [toggleConnect]);
+    const r = await signIn();
+    if (r.message) setToast(r.message);
+  }, [signIn]);
 
   // ── actions (all arena-scoped) ────────────────────────────────────
   const doEnroll = useCallback(async () => {
-    if (!wallet) { setShowEnroll(false); setToast("Connect a wallet first."); return; }
-    // With X usernames the server names the seat (X handle, or the wallet in practice).
-    const v = xRequired ? { ok: true as const, value: username } : validateUsername(nickname);
-    if (!v.ok) { setToast(v.reason); return; }
-    if (xRequired && !username && round?.escrow) { setToast("Connect your X account to play — your X handle becomes your username."); return; }
-    const nick = v.value;
-    if (!xRequired && round && !isUsernameFreeInArena(nick, round.entrants, wallet)) {
-      setToast(`Username "${nick}" is taken in this pit — pick another.`);
-      return;
-    }
+    if (!wallet) { setShowEnroll(false); await connect(); return; }
+    // The server names the seat after the X handle.
+    const nick = username;
     const predictions = round?.config.format === "predictions";
     if (predictions && pickCount(round?.predictions?.questions, seatPicks) < (round?.predictions?.questions.length ?? 0)) {
       setToast("Answer all five questions to take your seat.");
@@ -229,9 +194,6 @@ export default function ArenaView({ arenaCode }: { arenaCode: string }) {
 
     setBusy(true);
     try {
-      // Persist the username first so it survives a cancelled wallet prompt.
-      saveUsername(nick);
-
       // enrollWithEscrow: if arena is on-chain, wallet signs a Deposit tx
       // (real USDC on devnet) before the ledger enrolls. Ledger-only arenas
       // fall through immediately. Signing UI is provided by the wallet.
@@ -243,7 +205,7 @@ export default function ArenaView({ arenaCode }: { arenaCode: string }) {
       const seated = !!(r.entrantId || r.already);
       if (seated) {
         const callText = predictions ? " · your picks stay hidden until the start" : round?.config.format === "streak" ? " · pick leg 1 below" : call ? ` · opening call ${sideName(call)}` : "";
-        setToast(`You're in pit ${arenaCode} as ${nick}${callText}.`);
+        setToast(`You're in pit ${arenaCode}${nick ? ` as @${nick}` : ""}${callText}.`);
         setShowEnroll(false);
       } else if (r.deposited) {
         // Paid on chain but not confirmed as seated yet — the keeper seats
@@ -255,7 +217,7 @@ export default function ArenaView({ arenaCode }: { arenaCode: string }) {
       }
       await refresh();
     } finally { setBusy(false); setSeatStep(null); }
-  }, [wallet, nickname, arenaCode, refresh, round, saveUsername, callPick, callPct, seatPicks, seatLocks, xRequired, username, sideName, pantaPit]);
+  }, [wallet, connect, arenaCode, refresh, round, callPick, callPct, seatPicks, seatLocks, username, sideName, pantaPit]);
 
   /** Add or remove a question from a lock (2–3 picks). */
   const nextLocks = useCallback((current: string[], questionId: string): string[] | null => {
@@ -400,11 +362,11 @@ export default function ArenaView({ arenaCode }: { arenaCode: string }) {
   }, [roundStatus, loadMyEscrow, escrowNudge, vaultSettled]);
 
   const doClaim = useCallback(async (recover = false) => {
-    if (!wallet) return setToast("Connect a wallet first.");
+    if (!wallet) return setToast("Sign in with X first.");
     setBusy(true);
     try {
       const r = await claimFromEscrow(wallet, arenaCode, recover, (name) => setToast(seatStepText("waiting", 0, null, name).toast), undefined,
-        () => setToast("That took over a minute, so Solana needs a fresh signature — approve the withdrawal once more in your wallet."));
+        () => setToast("That took over a minute, so Solana needs a fresh signature — approve the withdrawal once more in your X wallet."));
       if (r.error) setToast(`Claim: ${r.error}`);
       else if (r.signature) setToast(`${recover ? "Recovered" : "Claimed"} · ${r.signature.slice(0, 8)}…`);
       else setToast("Withdrawal submitted.");
@@ -416,7 +378,7 @@ export default function ArenaView({ arenaCode }: { arenaCode: string }) {
   const pantaFillAvailable = !!wallet && !!marketId && looksLikePantaMarketId(marketId);
 
   const doBuy = useCallback(async () => {
-    if (!wallet) return setToast("Connect a wallet first.");
+    if (!wallet) return setToast("Sign in with X first.");
     if (!enrolled) return setToast("Enroll in the round first.");
     const v = Number(amount);
     if (!v || v <= 0) return setToast("Enter an amount.");
@@ -466,95 +428,17 @@ export default function ArenaView({ arenaCode }: { arenaCode: string }) {
     } finally { setBusy(false); }
   }, [wallet, enrolled, arenaCode, refresh, yesPrice]);
 
-  // Entry-only games: the host takes seat 1 with no call (picks come later).
-  const hostPicks = hFormat === "predictions" || hFormat === "streak";
-  const hostStreak = hFormat === "streak";
-  const hostSeat = (Number(hEntry) || 0) + (hostPicks ? PICKS_CHAIN_VAULT_USDC : Number(hVault) || 0);
-  const hostError = hostAmountError(Number(hEntry) || 0, Number(hVault) || 0, hFormat);
-
-  const doHost = useCallback(async () => {
-    // Real-mode guard: on-chain hosting requires the host to sign a seat
-    // deposit before the room is real.
-    if (escrow?.active && !wallet) {
-      setToast("Connect a wallet first — hosting on-chain needs your seat deposit signature.");
-      return;
+  /** Hosting lives on the lobby's Host panel; preselect what makes sense from here. */
+  const hostHref = useCallback((format?: "single" | "royale" | "predictions" | "streak") => {
+    const q = new URLSearchParams({ tab: "host" });
+    if (format) q.set("format", format);
+    // From a Panta pit, offer the same market.
+    if (round && round.config.marketSource === "panta" && round.config.marketId) {
+      q.set("source", "panta");
+      q.set("market", round.config.marketId);
     }
-    if (wallet && !username) {
-      setShowUsername(true);
-      setToast("Set a username before hosting.");
-      return;
-    }
-    if (hostError) { setToast(hostError); return; }
-    if (wallet && !hCall && !hostPicks) { setToast(`Pick UP or DOWN on ${hAsset} (or decide later) before taking seat 1.`); return; }
-
-    setBusy(true);
-    try {
-      // Check funds before the operator pays for an on-chain InitRound.
-      if (wallet && escrow?.active) {
-        const short = await checkSeatFunds(wallet, hostSeat);
-        if (short) { setToast(short); return; }
-      }
-      // Wallet reachable and signed in before an arena is created for us.
-      const call: OpeningCall = !hostPicks && (hCall === "YES" || hCall === "NO") ? hCall : null;
-      const onStep = (step: SeatStep, name?: string) => { setSeatStep(step); setToast(seatStepText(step, hostSeat, call, name).toast); };
-      if (wallet) {
-        const ready = await prepareWallet(wallet, onStep);
-        if (!ready.ok) { setToast(ready.error); return; }
-        setSeatStep(null);
-      }
-      const v = await newRound({
-        asset: hAsset,
-        horizon: hHorizon,
-        format: hFormat,
-        entryUsdc: Number(hEntry),
-        startingBankroll: Number(hVault),
-        capacity: hCapacity,
-        roundLimit: hFormat === "royale" ? hRounds : 1,
-        enrollmentSec: 120, // counted from the host's confirmed seat
-        hostFeePct: hHostFee,
-        ...(hFormat === "streak" ? { liveSec: hLegSec } : {}),
-        host: wallet ?? ""
-      });
-      if (v.error || !v.arena) { setToast(v.error ?? "Host failed."); return; }
-      const url = `${window.location.origin}/a/${v.arena}`;
-
-      // No wallet → practice-mode arena, no seat deposit required.
-      if (!wallet) {
-        setInviteInfo({ code: v.arena, url });
-        setToast(`Pit ${v.arena} is open. Share the link.`);
-        return;
-      }
-
-      // With wallet: the host must sign seat #1 deposit before the arena
-      // is announced. If signing is dismissed or fails, roll back so the
-      // room doesn't linger as an unfunded orphan.
-      const nick = username || shortPk(wallet).replace("…", "");
-      let enrollError = "";
-      let refundable = false;
-      try {
-        const r = await enrollWithEscrow(wallet, nick, v.arena, call, onStep, hCallPct);
-        // A signed deposit means the room is funded — never tear it down.
-        if (r.error && !(r.entrantId || r.already)) { enrollError = r.error; refundable = !!r.refundable || !!r.deposited; }
-      } catch (err) {
-        enrollError = err instanceof Error ? err.message : "wallet signing failed";
-      }
-
-      if (enrollError) {
-        if (refundable) {
-          // Deposit landed after the arena closed — its page offers the refund.
-          setToast(enrollError);
-          window.setTimeout(() => { window.location.href = `/a/${v.arena}`; }, 1500);
-          return;
-        }
-        await cancelArena(v.arena, wallet).catch(() => { /* best effort */ });
-        setToast(`Pit not opened — ${enrollError}`);
-        return;
-      }
-
-      setInviteInfo({ code: v.arena, url });
-      setToast(`Pit ${v.arena} is open. Share the link.`);
-    } finally { setBusy(false); setSeatStep(null); }
-  }, [hAsset, hHorizon, hFormat, hEntry, hVault, hCapacity, hRounds, wallet, escrow, username, hCall, hCallPct, hostSeat, hostError, hostPicks, hLegSec, hHostFee]);
+    return `/?${q.toString()}`;
+  }, [round]);
 
   const doCopyInvite = useCallback(async (url?: string) => {
     const link = url ?? currentInviteUrl;
@@ -567,13 +451,8 @@ export default function ArenaView({ arenaCode }: { arenaCode: string }) {
     window.location.href = `/a/${code}`;
   }, []);
 
-  const closeHostModal = useCallback(() => {
-    // Preserve inviteInfo when closing — the arena is live and shareable via HUD.
-    setShowHost(false);
-  }, []);
   const closeEnroll = useCallback(() => setShowEnroll(false), []);
   // Escape closes a dialog — but never while a wallet request is in flight.
-  useEscapeKey(showHost && !busy, closeHostModal);
   useEscapeKey(showEnroll && !busy, closeEnroll);
 
 
@@ -586,11 +465,8 @@ export default function ArenaView({ arenaCode }: { arenaCode: string }) {
 
       <SiteHeader
         active="arenas"
-        wallet={wallet}
-        username={username}
         escrow={escrow}
-        onConnect={connect}
-        onEditUsername={() => setShowUsername(true)}
+        onToast={setToast}
         extra={!isPublic ? (
           <button className="arena-chip private" onClick={() => doCopyInvite()} title="Copy invite link">
             {arenaCode}
@@ -840,7 +716,7 @@ export default function ArenaView({ arenaCode }: { arenaCode: string }) {
                           automatic; the Withdraw button appears here in a few seconds.
                         </p>
                       ) : myEscrow?.claimed ? (
-                        <p className="claimed"><b>Withdrawn ✓</b> {usd2.format(myEscrow.entitlementUsdc ?? myEntitlement)} is back in your wallet.</p>
+                        <p className="claimed"><b>Withdrawn ✓</b> {usd2.format(myEscrow.entitlementUsdc ?? myEntitlement)} is back in your X wallet.</p>
                       ) : (myEscrow?.entitlementUsdc ?? myEntitlement) > 0.0001 ? (
                         <>
                           <p>
@@ -852,9 +728,9 @@ export default function ArenaView({ arenaCode }: { arenaCode: string }) {
                             className="btn primary full"
                             onClick={() => doClaim(false)}
                             disabled={busy || !canClaim}
-                            title={!wallet ? "Connect the wallet you played with" : ""}
+                            title={!wallet ? "Sign in with the X account you played with" : ""}
                           >
-                            {busy ? "Confirm in your wallet…" : `Withdraw ${usd2.format(netOfClaimFee(gross, claimBps))} to my wallet`}
+                            {busy ? "Approve in your X wallet…" : `Withdraw ${usd2.format(netOfClaimFee(gross, claimBps))} to my X wallet`}
                           </button>
                           <div className="claim-links">
                             {(round.escrow.settleSignatures ?? []).filter((s) => s.length > 60).slice(-2).map((s) => (
@@ -886,7 +762,7 @@ export default function ArenaView({ arenaCode }: { arenaCode: string }) {
                   )}
 
                   {!round.escrow && <p className="disclaimer">Practice round — no USDC moved.</p>}
-                  <button className="btn primary" onClick={() => { setInviteInfo(null); setHCall(""); if (entryOnly) setHFormat(streakMode ? "streak" : "predictions"); setShowHost(true); }} disabled={busy}>Host the next pit →</button>
+                  <a className="btn primary" href={hostHref(entryOnly ? (streakMode ? "streak" : "predictions") : undefined)}>Host the next pit →</a>
                   <div className="final-board">
                     <div className="fb-row fb-head" aria-hidden="true">
                       <span className="fb-rank">#</span>
@@ -938,9 +814,9 @@ export default function ArenaView({ arenaCode }: { arenaCode: string }) {
               <p>Opening the walk-in pit…</p>
             ) : (
               <>
-                <p>This pit has no live game right now. Host the next one on the same code, or head back to the public pit.</p>
+                <p>This pit has no live game right now. Host a new pit (you get a fresh code to share), or head back to the public pit.</p>
                 <div className="cta-row">
-                  <button className="btn primary" onClick={() => { setInviteInfo(null); setHCall(""); setShowHost(true); }}>Host a pit</button>
+                  <a className="btn primary" href={hostHref()}>Host a pit</a>
                   <button className="btn secondary" onClick={() => goToArena(PUBLIC_ARENA)}>Public pit →</button>
                 </div>
               </>
@@ -980,9 +856,9 @@ export default function ArenaView({ arenaCode }: { arenaCode: string }) {
                   </ul>
                   <div className="cta-row">
                     <button className="btn primary" onClick={() => { if (!wallet) { connect(); return; } setShowEnroll(true); }} disabled={busy}>
-                      {wallet ? "Take a seat" : "Connect to play"}
+                      {wallet ? "Take a seat" : "Sign in with X to play"}
                     </button>
-                    <button className="btn secondary" onClick={() => { setInviteInfo(null); setHCall(""); setHFormat("streak"); setShowHost(true); }} disabled={busy}>Host your own</button>
+                    <a className="btn secondary" href={hostHref("streak")}>Host your own</a>
                     {!isPublic && <button className="btn secondary" onClick={() => doCopyInvite()}>Copy invite link</button>}
                   </div>
                 </div>
@@ -1052,9 +928,9 @@ export default function ArenaView({ arenaCode }: { arenaCode: string }) {
                   </ol>
                   <div className="cta-row">
                     <button className="btn primary" onClick={() => { if (!wallet) { connect(); return; } setSeatPicks({}); setSeatLocks([]); setShowEnroll(true); }} disabled={busy}>
-                      {wallet ? "Make your picks" : "Connect to play"}
+                      {wallet ? "Make your picks" : "Sign in with X to play"}
                     </button>
-                    <button className="btn secondary" onClick={() => { setInviteInfo(null); setHCall(""); setHFormat("predictions"); setShowHost(true); }} disabled={busy}>Host your own</button>
+                    <a className="btn secondary" href={hostHref("predictions")}>Host your own</a>
                     {!isPublic && <button className="btn secondary" onClick={() => doCopyInvite()}>Copy invite link</button>}
                   </div>
                 </div>
@@ -1133,9 +1009,9 @@ export default function ArenaView({ arenaCode }: { arenaCode: string }) {
                       </p>
                       <div className="cta-row">
                         <button className="btn primary" onClick={() => { if (!wallet) { connect(); return; } setCallPick(""); setShowEnroll(true); }} disabled={busy}>
-                          {wallet ? "Enter the pit" : "Connect to enter"}
+                          {wallet ? "Enter the pit" : "Sign in with X to enter"}
                         </button>
-                        <button className="btn secondary" onClick={() => { setInviteInfo(null); setHCall(""); setShowHost(true); }} disabled={busy}>Host your own</button>
+                        <a className="btn secondary" href={hostHref()}>Host your own</a>
                         {!isPublic && <button className="btn secondary" onClick={() => doCopyInvite()}>Copy invite link</button>}
                       </div>
                     </>
@@ -1274,7 +1150,7 @@ export default function ArenaView({ arenaCode }: { arenaCode: string }) {
                           />
                           <span className="lab">Also fill on Panta</span>
                           <span className="hint">
-                            {!wallet ? "connect a wallet"
+                            {!wallet ? "sign in with X"
                               : !marketId ? "no market"
                               : !looksLikePantaMarketId(marketId) ? "synthetic market — Panta orders need a real book"
                               : "real /orders/quote → build → sign → submit → verify → report"}
@@ -1413,24 +1289,10 @@ export default function ArenaView({ arenaCode }: { arenaCode: string }) {
 
       {toast && <div className="toast" role="status"><span>{toast}</span><button onClick={() => setToast("")} aria-label="Dismiss">×</button></div>}
 
-      {showUsername && (
-        <UsernameModal
-          initial={username}
-          onSave={(v) => { const r = saveUsername(v); if (r.ok) setToast(r.message); return r; }}
-          onClose={() => setShowUsername(false)}
-        />
-      )}
 
       {showEnroll && round && (() => {
-        const v = validateUsername(nickname);
-        const clash = v.ok && !isUsernameFreeInArena(v.value, round.entrants, wallet ?? undefined);
-        // X usernames: a linked handle, or (practice only) the wallet's short name.
-        const ok = xRequired ? (!!username || !round.escrow) : v.ok && !clash;
-        const hint = nickname.length === 0
-          ? "3–16 characters: letters, numbers and underscores."
-          : !v.ok ? v.reason
-          : clash ? `"${v.value}" is already taken in this pit.`
-          : "Available — shown on the pit stage, standings and results.";
+        // X-only: the seat is named after the X handle (local dev without X: the wallet).
+        const ok = !!wallet && (!!username || !xEnabled);
         const seat = seatCostUsdc(round.config);
         const vault = round.config.startingBankroll;
         const liveMin = Math.round(round.config.liveSec / 60);
@@ -1518,43 +1380,10 @@ export default function ArenaView({ arenaCode }: { arenaCode: string }) {
                   </div>
                 </dl>
 
-                {xRequired ? (
-                  username ? (
-                    <p className="x-playing-as">Playing as <b>@{username}</b> <em>· your X handle</em></p>
-                  ) : (
-                    <div className="x-needed">
-                      <p>
-                        {round.escrow
-                          ? <>Your username is your X handle — connect X once to play for real. You&apos;ll come straight back here.</>
-                          : <>You&apos;ll play as <b>{wallet ? shortPk(wallet) : "your wallet"}</b>. Connect X to use your handle instead.</>}
-                      </p>
-                      <button type="button" className="btn secondary full x-connect" disabled={busy} onClick={async () => { const r = await connectX(); if (!r.ok) setToast(r.message); }}>
-                        Connect X
-                      </button>
-                    </div>
-                  )
-                ) : (
-                  <>
-                    <label>
-                      Username
-                      <input
-                        value={nickname}
-                        onChange={(e) => setNickname(e.target.value)}
-                        placeholder="e.g. nova_9"
-                        maxLength={USERNAME_MAX}
-                        autoComplete="off"
-                        spellCheck={false}
-                        aria-invalid={nickname.length > 0 && !ok}
-                        aria-describedby="seat-hint"
-                      />
-                    </label>
-                    <p id="seat-hint" className={`username-hint ${nickname.length === 0 ? "" : ok ? "ok" : "bad"}`} role="status">{hint}</p>
-                  </>
-                )}
+                {username && <p className="x-playing-as">Playing as <b>@{username}</b> <em>· your X handle</em></p>}
                 <button type="submit" className="btn primary full" disabled={busy || !ok || !wallet || !ready} style={{ marginTop: 10 }}>
-                  {busy ? (seatStep ? seatStepText(seatStep, seat, callPick === "YES" || callPick === "NO" ? callPick : null, undefined, pantaPit).button : "Checking your wallet…")
-                    : !wallet ? "Connect a wallet first"
-                    : xRequired && !username && round.escrow ? "Connect X above to play"
+                  {busy ? (seatStep ? seatStepText(seatStep, seat, callPick === "YES" || callPick === "NO" ? callPick : null, undefined, pantaPit).button : "Checking your X wallet…")
+                    : !ok ? "Sign in with X first"
                     : streakMode ? (round.escrow ? `Deposit ${usd2.format(seat)} & take a seat` : "Take a practice seat")
                     : picksMode && !ready ? `Answer all ${questions.length} questions · ${seatPicked}/${questions.length}`
                     : picksMode ? (round.escrow ? `Deposit ${usd2.format(seat)} & lock in my picks` : "Take a practice seat")
@@ -1574,193 +1403,6 @@ export default function ArenaView({ arenaCode }: { arenaCode: string }) {
         );
       })()}
 
-      {showHost && (
-        <div className="modal-backdrop" onClick={() => { if (!busy) closeHostModal(); }}>
-          <div className="modal host-modal" onClick={(e) => e.stopPropagation()}>
-            <button className="close" onClick={closeHostModal} aria-label="Close">×</button>
-
-            {inviteInfo ? (
-              // ── SHARE INVITE SCREEN (after successful host) ──────────
-              <>
-                <h2>Your pit is live</h2>
-                <p className="sub">Send this link to your friends. Anyone with it takes a seat in your pit.</p>
-
-                <div className="invite-box">
-                  <div className="invite-code">{inviteInfo.code}</div>
-                  <div className="invite-url">
-                    <input readOnly value={inviteInfo.url} onFocus={(e) => e.currentTarget.select()} />
-                    <button className="btn secondary sm" onClick={() => doCopyInvite(inviteInfo.url)}>Copy</button>
-                  </div>
-                  <div className="invite-share">
-                    <a className="btn secondary sm" target="_blank" rel="noopener noreferrer"
-                       href={`https://twitter.com/intent/tweet?text=${encodeURIComponent(`Take a seat in my pit on The Pit · ${inviteInfo.url}`)}`}>
-                      Share on X
-                    </a>
-                    <a className="btn secondary sm" target="_blank" rel="noopener noreferrer"
-                       href={`https://t.me/share/url?url=${encodeURIComponent(inviteInfo.url)}&text=${encodeURIComponent("Take a seat in my pit on The Pit")}`}>
-                      Telegram
-                    </a>
-                    <a className="btn secondary sm" target="_blank" rel="noopener noreferrer"
-                       href={`https://wa.me/?text=${encodeURIComponent(`Take a seat in my pit on The Pit · ${inviteInfo.url}`)}`}>
-                      WhatsApp
-                    </a>
-                  </div>
-                </div>
-
-                <button className="btn primary full" onClick={() => goToArena(inviteInfo.code)} style={{ marginTop: 12 }}>
-                  {hostStreak ? `Go to ${inviteInfo.code} and pick leg 1 →` : hostPicks ? `Make my picks in ${inviteInfo.code} →` : `Go to pit ${inviteInfo.code} →`}
-                </button>
-                <p className="disclaimer" style={{ marginTop: 10 }}>
-                  {hostStreak
-                    ? "Next: open the pit and pick leg 1. The game starts when enrollment closes — stay on the page, legs come quickly."
-                    : hostPicks
-                    ? "Next: open the pit and make your five picks — they lock when enrollment closes."
-                    : "Enrollment is open now. Your game starts the moment the timer locks, with whoever joined."}
-                </p>
-              </>
-            ) : (
-              // ── CONFIGURE ROOM SCREEN ────────────────────────────────
-              <>
-                <h2>Host a pit</h2>
-                <p className="sub">You set the terms and get a shareable link. Every player funds the same seat — you can&apos;t hand anyone a bigger vault.</p>
-                <p className="sub"><a className="link" href="/?tab=host">Host on a Panta market or a market you create →</a></p>
-
-                <div className="host-field">
-                  <span className="host-label">Game</span>
-                  <div className="seg">
-                    <button className={hFormat === "single" ? "seg-opt on" : "seg-opt"} onClick={() => setHFormat("single")}>Single round</button>
-                    <button className={hFormat === "royale" ? "seg-opt on" : "seg-opt"} onClick={() => setHFormat("royale")}>Royale</button>
-                    <button className={hFormat === "predictions" ? "seg-opt on" : "seg-opt"} onClick={() => setHFormat("predictions")}>Predictions</button>
-                    <button className={hFormat === "streak" ? "seg-opt on" : "seg-opt"} onClick={() => setHFormat("streak")}>Streak</button>
-                  </div>
-                </div>
-                {hostPicks && (
-                  <p className="host-call-help" role="status">
-                    {hostStreak
-                      ? `No trading: a chain of quick calls on BTC, ETH and SOL. ${PICK_MS / 1000}s to pick each leg; a wrong pick and you're out. Last caller standing takes the pool.`
-                      : "No trading: everyone answers five questions on BTC, ETH and SOL (up or down, which does best, a head-to-head). Most points take the pool. You make your picks in the pit after it opens."}
-                  </p>
-                )}
-
-                {!hostPicks && (<>
-                <div className="host-field">
-                  <span className="host-label">Your call</span>
-                  <div className="seg call-seg" role="radiogroup" aria-label="Your opening call">
-                    <button role="radio" aria-checked={hCall === "YES"} className={hCall === "YES" ? "seg-opt on up" : "seg-opt"} onClick={() => setHCall("YES")}>▲ UP</button>
-                    <button role="radio" aria-checked={hCall === "NO"} className={hCall === "NO" ? "seg-opt on down" : "seg-opt"} onClick={() => setHCall("NO")}>▼ DOWN</button>
-                    <button role="radio" aria-checked={hCall === "LATER"} className={hCall === "LATER" ? "seg-opt on" : "seg-opt"} onClick={() => setHCall("LATER")}>Decide later</button>
-                  </div>
-                </div>
-                {(hCall === "YES" || hCall === "NO") && (
-                  <CallSizePicker value={hCallPct} onChange={setHCallPct} vault={Number(hVault) || 0} disabled={busy} />
-                )}
-                <p className={`host-call-help ${hCall ? "" : "need"}`} role="status">
-                  {!hCall
-                    ? `You take seat 1. UP = ${hAsset} finishes the round above its opening price, DOWN = below.`
-                    : hCall === "LATER"
-                      ? "Your vault stays in cash until you trade once the round is live."
-                      : `${callSizeText(hCallPct, Number(hVault) || 0).stake.replace(/^./, (c) => c.toUpperCase())} goes on ${hCall === "YES" ? "UP" : "DOWN"} at the opening price when trading starts. ${callSizeText(hCallPct, Number(hVault) || 0).rest ?? ""}`}
-                </p>
-
-                <div className="host-field">
-                  <span className="host-label">Asset</span>
-                  <div className="seg">
-                    {(["BTC", "ETH", "SOL"] as const).map((a) => (
-                      <button key={a} className={hAsset === a ? "seg-opt on" : "seg-opt"} onClick={() => setHAsset(a)}>{a}</button>
-                    ))}
-                  </div>
-                </div>
-                </>)}
-
-                {hostStreak ? (
-                  <div className="host-field">
-                    <span className="host-label">Leg length</span>
-                    <div className="seg">
-                      {LEG_LENGTHS.map((sec) => (
-                        <button key={sec} className={hLegSec === sec ? "seg-opt on" : "seg-opt"} onClick={() => setHLegSec(sec)}>{sec / 60} min</button>
-                      ))}
-                    </div>
-                  </div>
-                ) : (
-                <div className="host-field">
-                  <span className="host-label">Timeframe</span>
-                  <div className="seg">
-                    {(["MIN5", "MIN15", "HOUR"] as const).map((h) => (
-                      <button key={h} className={hHorizon === h ? "seg-opt on" : "seg-opt"} onClick={() => setHHorizon(h)}>
-                        {h === "MIN5" ? "5m" : h === "MIN15" ? "15m" : h === "HOUR" ? "1h" : "1d"}
-                      </button>
-                    ))}
-                  </div>
-                </div>
-                )}
-
-                {hFormat === "royale" && (
-                  <div className="host-field">
-                    <span className="host-label">Rounds</span>
-                    <div className="seg">
-                      {[2, 3, 4].map((n) => (
-                        <button key={n} className={hRounds === n ? "seg-opt on" : "seg-opt"} onClick={() => setHRounds(n)}>{n}</button>
-                      ))}
-                    </div>
-                  </div>
-                )}
-
-                <div className="host-field">
-                  <span className="host-label">Player limit</span>
-                  <div className="seg">
-                    {[2, 4, 8, 12, 16].map((n) => (
-                      <button key={n} className={hCapacity === n ? "seg-opt on" : "seg-opt"} onClick={() => setHCapacity(n)}>{n}</button>
-                    ))}
-                  </div>
-                </div>
-
-                <div className="host-field">
-                  <span className="host-label">Host fee</span>
-                  <div className="seg">
-                    {HOST_FEE_OPTIONS.map((p) => (
-                      <button key={p} className={hHostFee === p ? "seg-opt on" : "seg-opt"} onClick={() => setHHostFee(p)}>{p}%</button>
-                    ))}
-                  </div>
-                </div>
-
-                <div className="host-2col">
-                  <label className="host-num">
-                    Entry (USDC)
-                    <input value={hEntry} onChange={(e) => setHEntry(e.target.value.replace(/[^0-9]/g, "").slice(0, 3))} inputMode="numeric" />
-                    <em>→ shared pool · $1–100</em>
-                  </label>
-                  {!hostPicks && (
-                    <label className="host-num">
-                      Starting vault (USDC)
-                      <input value={hVault} onChange={(e) => setHVault(e.target.value.replace(/[^0-9]/g, "").slice(0, 3))} inputMode="numeric" />
-                      <em>→ each player trades · $5–500</em>
-                    </label>
-                  )}
-                </div>
-
-                <div className="host-summary">
-                  <div><span>Seat per player</span><b>{usd2.format(hostSeat)}</b></div>
-                  <div><span>Pool if full</span><b className="accent">{usd2.format((Number(hEntry) || 0) * hCapacity)}</b></div>
-                  {hHostFee > 0 && <div><span>Your fee if full</span><b>{usd2.format(((Number(hEntry) || 0) * hCapacity * hHostFee) / 100)}</b></div>}
-                  <div><span>Format</span><b>{hostStreak ? `Up to ${MAX_LEGS} legs` : hostPicks ? "5 picks · 1 round" : hFormat === "single" ? "1 round" : `${hRounds} rounds · cut`}</b></div>
-                </div>
-
-                {hostError && <p className="jc-error" role="alert">{hostError}</p>}
-                <button className="btn primary full" onClick={doHost} disabled={busy || !!hostError || (!!wallet && !hCall && !hostPicks)} style={{ marginTop: 12 }}>
-                  {busy ? (seatStep ? seatStepText(seatStep, hostSeat).button : "Opening…")
-                    : !wallet ? (hostStreak ? "Open practice streak" : hostPicks ? "Open practice predictions" : `Open ${hAsset} practice pit`)
-                    : hostPicks ? `Deposit ${usd2.format(hostSeat)} & take seat 1 · get invite link`
-                    : !hCall ? `Pick UP or DOWN on ${hAsset}`
-                    : `Deposit ${usd2.format(hostSeat)} & ${hCall === "YES" ? "call UP" : hCall === "NO" ? "call DOWN" : "open"} · get invite link`}
-                </button>
-                <p className="disclaimer" style={{ marginTop: 10 }}>
-                  A new arena code is minted for your room. You&apos;ll get a shareable link on the next screen.
-                </p>
-              </>
-            )}
-          </div>
-        </div>
-      )}
     </main>
   );
 }
@@ -1827,8 +1469,8 @@ function RefundCard({
   if (!wallet) {
     return (
       <div className="refund-card">
-        <p><b>Deposited into this pit?</b> Connect that wallet to get your refund.</p>
-        <button className="btn primary full" onClick={onConnect}>Connect wallet</button>
+        <p><b>Deposited into this pit?</b> Sign in with the X account you played with to get your refund.</p>
+        <button className="btn primary full" onClick={onConnect}>Sign in with X</button>
       </div>
     );
   }
@@ -1839,16 +1481,16 @@ function RefundCard({
   if (state.claimed) {
     return (
       <div className="refund-card done">
-        <p><b>Refund complete.</b> {money(state.entitlementUsdc || state.seatUsdc)} was returned to your wallet.</p>
+        <p><b>Refund complete.</b> {money(state.entitlementUsdc || state.seatUsdc)} was returned to your X wallet.</p>
       </div>
     );
   }
   if (state.settled && state.claimsOpen) {
     return (
       <div className="refund-card ready">
-        <p><b>Your {money(state.seatUsdc)} deposit is ready to refund.</b> Nothing was lost — claim it back to your wallet.</p>
+        <p><b>Your {money(state.seatUsdc)} deposit is ready to refund.</b> Nothing was lost — claim it back to your X wallet.</p>
         <button className="btn primary full" onClick={onClaim} disabled={busy}>
-          {busy ? "Confirm in your wallet…" : `Claim ${money(state.entitlementUsdc || state.seatUsdc)} refund`}
+          {busy ? "Confirm in your X wallet…" : `Claim ${money(state.entitlementUsdc || state.seatUsdc)} refund`}
         </button>
       </div>
     );

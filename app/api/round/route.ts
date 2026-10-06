@@ -154,16 +154,12 @@ export async function GET(request: Request) {
 }
 
 /**
- * POST /api/round  { action:"new", config?, arena? }
+ * POST /api/round  { action:"new", config? }
  *
- * Host a rumble. Every host call MINTS A NEW ARENA (short shareable code)
- * unless one is provided and the caller is trusted (ROUND_HOST_SECRET). Because
- * arenas are independent, hosting always succeeds — no more single-active
- * conflict. The response includes the new arena code and its invite URL slug
- * (`/a/{code}`) which the client can share with friends.
- *
- * Special case: passing `arena: "PUBLIC"` and no force header replaces the
- * walk-in public lobby only when it's still empty (no humans joined).
+ * Host a pit. Every call MINTS A NEW PIT (short shareable code) for the
+ * signed-in host, who then takes seat 1. The response includes the code and
+ * its invite slug (`/a/{code}`). Only the operator (ROUND_HOST_SECRET) can
+ * open a specific code.
  */
 export async function POST(request: Request) {
   const body = (await request.json().catch(() => ({}))) as {
@@ -180,23 +176,28 @@ export async function POST(request: Request) {
     && request.headers.get("x-host-secret") === process.env.ROUND_HOST_SECRET;
 
   const wantArena = body.arena ? normalizeArenaCode(body.arena) : "";
-  // Default: mint a brand-new arena for every host call. The client can force
-  // a specific code (including PUBLIC) with the host secret.
-  const arena = wantArena && forceOk ? wantArena : (isPracticeArena(wantArena) ? wantArena : newArenaCode());
+  // Every host call mints a brand-new pit. Only the operator (host secret)
+  // can open a specific code, such as a walk-in practice lobby — those run
+  // themselves and must not be reconfigured by a player.
+  if (wantArena && !forceOk) {
+    return NextResponse.json({ error: "Pit codes are assigned automatically — host without a code." }, { status: 400 });
+  }
+  const arena = wantArena && forceOk ? wantArena : newArenaCode();
 
   const onChain = escrowReady() && !isPracticeArena(arena);
-  // Every on-chain arena costs the operator an InitRound (fee + rent), so
-  // hosting one needs a signed-in, funded wallet and is rate-limited.
   const limited = limitByIp(request, "host", 12, 10 * 60_000);
   if (limited) return limited;
+  // Every hosted pit has a signed-in host (an X account where X sign-in is
+  // set up) who takes seat 1 — practice mode included. On chain each pit
+  // also costs the operator an InitRound (fee + rent).
   const host = sessionWallet(request);
-  if (onChain && !host) {
-    return NextResponse.json({ error: "Sign in with your wallet to host a pit.", needsAuth: true }, { status: 401 });
+  if (!host && !forceOk) {
+    return NextResponse.json({ error: "Sign in with X to host a pit.", needsAuth: true }, { status: 401 });
   }
-  if (onChain && (await playerName(host!, undefined, false)).needsX) {
-    return NextResponse.json({ error: `${NEEDS_X_MESSAGE.replace(" to play", " to host")}`, needsX: true }, { status: 403 });
+  if (host && (await playerName(host, undefined, false)).needsX) {
+    return NextResponse.json({ error: NEEDS_X_MESSAGE.replace(" to play", " to host"), needsX: true }, { status: 403 });
   }
-  if (onChain && overLimit("host-wallet", host!, 6, 10 * 60_000)) {
+  if (host && overLimit("host-wallet", host, 6, 10 * 60_000)) {
     return NextResponse.json({ error: "You've opened several pits in the last few minutes — wait a little before hosting another." }, { status: 429 });
   }
 
@@ -209,7 +210,7 @@ export async function POST(request: Request) {
     if (!PANTA_LIVE) return NextResponse.json({ error: "Panta markets aren't available on this server (no Panta API key)." }, { status: 503 });
     if (isPracticeArena(arena)) return NextResponse.json({ error: "Practice pits run on crypto markets." }, { status: 400 });
     if (typeof cfg.draftId === "string" && cfg.draftId) {
-      const draft = getDraft(cfg.draftId);
+      const draft = await getDraft(cfg.draftId);
       if (!draft || !draft.marketId) return NextResponse.json({ error: "That market draft expired or was never registered — create it again." }, { status: 410 });
       if (!host || draft.wallet !== host) return NextResponse.json({ error: "Only the wallet that created this market can host a pit on it." }, { status: 403 });
       panta = { marketId: draft.marketId, question: draft.question, category: draft.category };
@@ -217,6 +218,7 @@ export async function POST(request: Request) {
       const snap = await getPantaMarket(cfg.pantaMarketId);
       if (!snap) return NextResponse.json({ error: "Panta doesn't know that market — pick another." }, { status: 404 });
       if (snap.resolved) return NextResponse.json({ error: "That market has already resolved — pick an open one." }, { status: 409 });
+      if (snap.endMs !== null && snap.endMs <= Date.now()) return NextResponse.json({ error: "Trading on that market has ended — pick an open one." }, { status: 409 });
       panta = { marketId: snap.id, question: snap.question || "Panta market", category: snap.category };
     } else {
       return NextResponse.json({ error: "Pick a Panta market or create one." }, { status: 400 });
@@ -232,7 +234,7 @@ export async function POST(request: Request) {
     const seat = seatCostUsdc(fresh.config);
     const bal = await playerBalances(new PublicKey(host!));
     if (bal.usdc + 1e-9 < seat) {
-      return NextResponse.json({ error: `This seat costs ${seat.toFixed(2)} USDC but your wallet holds ${bal.usdc.toFixed(2)} devnet USDC. Get test USDC at faucet.circle.com (Solana Devnet).` }, { status: 402 });
+      return NextResponse.json({ error: `This seat costs ${seat.toFixed(2)} USDC but your X wallet holds ${bal.usdc.toFixed(2)} devnet USDC. Get test USDC at faucet.circle.com (Solana Devnet).` }, { status: 402 });
     }
     if (bal.sol < 0.005) {
       return NextResponse.json({ error: `You need about 0.005 devnet SOL for fees (you hold ${bal.sol.toFixed(4)}). Get some at faucet.solana.com.` }, { status: 402 });

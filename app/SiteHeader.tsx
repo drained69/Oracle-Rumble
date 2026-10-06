@@ -2,10 +2,8 @@
 
 import type { ReactNode } from "react";
 import { BrandMark, Wordmark } from "@/app/BrandMark";
-import WalletPicker from "@/app/WalletPicker";
-import { avatarDataUrl } from "@/lib/avatars";
-import { shortPk } from "@/lib/username";
-import type { EscrowStatus } from "@/lib/use-wallet";
+import AccountMenu from "@/app/AccountMenu";
+import { useWalletIdentity, type EscrowStatus } from "@/lib/use-wallet";
 
 export type NavKey = "arenas" | "host" | "positions" | "docs";
 
@@ -18,27 +16,32 @@ const NAV: { key: NavKey; label: string; href: string }[] = [
   { key: "docs", label: "Docs", href: "/docs" }
 ];
 
-/** One header for every page: brand, nav, network mode, account. */
+/** The X logo, for "Sign in with X". */
+export function XLogo({ size = 14 }: { size?: number }) {
+  return (
+    <svg viewBox="0 0 24 24" width={size} height={size} aria-hidden="true" focusable="false">
+      <path fill="currentColor" d="M13.6 10.7 18.9 4.5h-1.3l-4.6 5.4-3.7-5.4H5l5.6 8.1L5 19.5h1.3l4.9-5.7 3.9 5.7h4.3l-5.8-8.8Zm-1.7 2-.6-.8-4.5-6.4h1.9l3.6 5.2.6.8 4.7 6.7h-1.9l-3.8-5.5Z" />
+    </svg>
+  );
+}
+
+/** One header for every page: brand, nav, network mode, and the X account. */
 export default function SiteHeader({
   active,
-  wallet,
-  username,
   escrow,
-  onConnect,
-  onEditUsername,
+  onToast,
   onNav,
   extra
 }: {
   active: NavKey | null;
-  wallet: string | null;
-  username: string;
   escrow: EscrowStatus | null;
-  onConnect: () => void;
-  onEditUsername: () => void;
-  /** Home page switches its Arenas/Host tabs in place instead of navigating. */
+  /** Where sign-in/out messages go. */
+  onToast: (msg: string) => void;
+  /** Home page switches its Pits/Host tabs in place instead of navigating. */
   onNav?: (key: "arenas" | "host") => void;
   extra?: ReactNode;
 }) {
+  const { wallet, username, status, signIn, signOut } = useWalletIdentity();
   const mode = escrow == null ? "…" : escrow.active ? "On-chain" : "Practice";
   const modeTitle = escrow == null
     ? "Checking escrow status"
@@ -81,28 +84,25 @@ export default function SiteHeader({
           </span>
           {extra}
           {wallet ? (
-            <div className="acct">
-              <button className={`acct-main ${username ? "" : "needs-name"}`} onClick={onEditUsername} title={username ? "Edit username" : "Set username"}>
-                {/* eslint-disable-next-line @next/next/no-img-element */}
-                <img className="acct-avatar" src={avatarDataUrl(wallet, 26)} width={26} height={26} alt="" />
-                <span className="acct-text">
-                  <span className={`acct-name ${username ? "" : "unset"}`}>{username || "Set username"}</span>
-                  <span className="acct-pk">{shortPk(wallet)}</span>
-                </span>
-                {!username && <span className="acct-alert" aria-hidden="true" />}
-              </button>
-              <button className="acct-exit" onClick={onConnect} aria-label="Disconnect wallet" title="Disconnect">
-                <svg viewBox="0 0 24 24" width="15" height="15" aria-hidden="true">
-                  <path d="M12 3v8M6.3 6.8a8 8 0 1 0 11.4 0" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" />
-                </svg>
-              </button>
-            </div>
+            <AccountMenu
+              wallet={wallet}
+              username={username}
+              busy={status === "busy"}
+              onSignOut={async () => onToast((await signOut()).message)}
+              onToast={onToast}
+            />
           ) : (
-            <button className="acct-connect" onClick={onConnect}>Connect wallet</button>
+            <button
+              className="acct-connect"
+              onClick={async () => { const r = await signIn(); if (r.message) onToast(r.message); }}
+              disabled={status === "busy" || status === "loading"}
+              aria-busy={status === "busy"}
+            >
+              <XLogo /> {status === "busy" ? "Signing in…" : "Sign in with X"}
+            </button>
           )}
         </div>
       </div>
-      <WalletPicker />
     </nav>
   );
 }

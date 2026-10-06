@@ -2,7 +2,7 @@
 
 import { Component, type ReactNode } from "react";
 import dynamic from "next/dynamic";
-import { setPrivyFailed, X_REQUIRED } from "@/lib/privy-client";
+import { setPrivyFailed, X_ENABLED } from "@/lib/privy-client";
 
 // The Privy SDK is large: load it only on deployments that use X sign-in.
 const PrivyRoot = dynamic(() => import("@/app/PrivyRoot"), { ssr: false });
@@ -24,5 +24,5 @@ class PrivyGuard extends Component<{ children: ReactNode }, { failed: boolean }>
 }
 
 export default function PrivyMount() {
-  return X_REQUIRED ? <PrivyGuard><PrivyRoot /></PrivyGuard> : null;
+  return X_ENABLED ? <PrivyGuard><PrivyRoot /></PrivyGuard> : null;
 }

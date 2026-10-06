@@ -1,10 +1,10 @@
 /**
  * The name a wallet plays under (server-only).
  *
- * With Privy configured, usernames are X handles: a wallet's name is the X
- * account it linked (set once, never changed), and a paid arena needs one.
- * Practice arenas let a wallet without X play under its short address.
- * Without Privy, players pick their own username as before.
+ * With Privy configured the app is X-only: a wallet's name is its X
+ * account's handle (set once at first sign-in) and every pit — practice
+ * included — needs one. Without Privy (local development), players pick
+ * their own username.
  */
 
 import { getProfile } from "@/lib/profile-store";
@@ -18,10 +18,10 @@ export async function playerName(wallet: string, requested: string | undefined, 
     const v = validateUsername(requested ?? "");
     return { name: v.ok ? v.value : "", needsX: false };
   }
+  // X-only: every player is an X account, practice included.
+  void practice;
   const profile = await getProfile(wallet);
-  if (profile) return { name: profile.username, needsX: false };
-  // "" → the seat is named after the wallet (e.g. 4czi_54dn).
-  return practice ? { name: "", needsX: false } : { name: "", needsX: true };
+  return profile ? { name: profile.username, needsX: false } : { name: "", needsX: true };
 }
 
-export const NEEDS_X_MESSAGE = "Connect your X account to play — your X handle becomes your username.";
+export const NEEDS_X_MESSAGE = "Sign in with X to play — your X handle is your username.";

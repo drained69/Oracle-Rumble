@@ -17,6 +17,7 @@
 import { randomBytes } from "node:crypto";
 import { PANTA_KEY, PANTA_LIVE, pantaFetch } from "@/lib/panta";
 import { mapPhase, toCents, type PantaLiveMarket } from "@/lib/panta-shape";
+import { dbPool, STORE_ENABLED } from "@/lib/round-store";
 
 /** Panta's category enum for market creation. */
 export const PANTA_CATEGORIES = ["sports", "crypto", "politics", "entertainment", "finance", "science", "world", "other"] as const;
@@ -150,30 +151,72 @@ export type MarketDraft = {
   signature?: string;
 };
 
+/** An unregistered draft (quoted, not yet paid) lasts this long. */
 const DRAFT_TTL_MS = 2 * 3_600_000;
+/** A registered draft is the creator's market: kept so they can host on it again. */
+const REGISTERED_TTL_MS = 30 * 24 * 3_600_000;
+
+const expired = (d: MarketDraft, now = Date.now()) =>
+  now - d.createdAt > (d.marketId ? REGISTERED_TTL_MS : DRAFT_TTL_MS);
 
 function sweepDrafts(): void {
   const now = Date.now();
-  for (const [k, d] of cache.drafts) if (now - d.createdAt > DRAFT_TTL_MS) cache.drafts.delete(k);
+  for (const [k, d] of cache.drafts) if (expired(d, now)) cache.drafts.delete(k);
 }
 
-export function saveDraft(d: Omit<MarketDraft, "draftId" | "createdAt">): MarketDraft {
+// Drafts outlive a restart in Postgres: a creator who paid Panta's fee must
+// still be able to open their pit after a deploy. Memory-only without a DB.
+const _gd = globalThis as unknown as { __pit_draftsReady?: Promise<void> };
+function draftsReady(): Promise<void> {
+  if (!STORE_ENABLED) return Promise.resolve();
+  _gd.__pit_draftsReady ??= dbPool().query(`
+    CREATE TABLE IF NOT EXISTS market_drafts (
+      draft_id    TEXT PRIMARY KEY,
+      wallet      TEXT NOT NULL,
+      data        JSONB NOT NULL,
+      created_at  BIGINT NOT NULL
+    );
+  `).then(() => undefined);
+  return _gd.__pit_draftsReady;
+}
+
+async function persistDraft(d: MarketDraft): Promise<void> {
+  if (!STORE_ENABLED) return;
+  await draftsReady();
+  await dbPool().query(
+    `INSERT INTO market_drafts (draft_id, wallet, data, created_at) VALUES ($1, $2, $3, $4)
+     ON CONFLICT (draft_id) DO UPDATE SET data = EXCLUDED.data`,
+    [d.draftId, d.wallet, JSON.stringify(d), d.createdAt]
+  );
+}
+
+export async function saveDraft(d: Omit<MarketDraft, "draftId" | "createdAt">): Promise<MarketDraft> {
   sweepDrafts();
   const draft: MarketDraft = { ...d, draftId: `md_${randomBytes(9).toString("base64url")}`, createdAt: Date.now() };
   cache.drafts.set(draft.draftId, draft);
+  await persistDraft(draft);
   return draft;
 }
 
-export function getDraft(draftId: string): MarketDraft | null {
+export async function getDraft(draftId: string): Promise<MarketDraft | null> {
   sweepDrafts();
-  return cache.drafts.get(draftId) ?? null;
+  const hit = cache.drafts.get(draftId);
+  if (hit) return hit;
+  if (!STORE_ENABLED || !/^md_[A-Za-z0-9_-]{6,32}$/.test(draftId)) return null;
+  await draftsReady();
+  const { rows } = await dbPool().query<{ data: MarketDraft }>("SELECT data FROM market_drafts WHERE draft_id = $1", [draftId]);
+  const d = rows[0]?.data ?? null;
+  if (!d || expired(d)) return null;
+  cache.drafts.set(d.draftId, d);
+  return d;
 }
 
-export function markDraftRegistered(draftId: string, marketId: string, signature: string): MarketDraft | null {
-  const d = cache.drafts.get(draftId);
+export async function markDraftRegistered(draftId: string, marketId: string, signature: string): Promise<MarketDraft | null> {
+  const d = await getDraft(draftId);
   if (!d) return null;
   d.marketId = marketId;
   d.signature = signature;
+  await persistDraft(d);
   return d;
 }
 

@@ -34,7 +34,7 @@ export async function POST(request: Request) {
   if (!arenaCode) return NextResponse.json({ error: "pit required" }, { status: 400 });
   // Only the signed-in host may cancel their own arena.
   const caller = sessionWallet(request);
-  if (!caller) return NextResponse.json({ error: "Sign in with your wallet to continue.", needsAuth: true }, { status: 401 });
+  if (!caller) return NextResponse.json({ error: "Sign in with X to continue.", needsAuth: true }, { status: 401 });
 
   const peek = await getActiveRound(arenaCode);
   if (peek?.escrow) {

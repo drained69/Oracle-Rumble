@@ -120,6 +120,7 @@ export async function GET(request: Request) {
       status: round.status,
       question: round.config.marketQuestion,
       asset: round.config.asset,
+      pantaPit: round.config.marketSource === "panta",
       format: round.config.format,
       roundNumber: round.roundNumber,
       roundLimit: round.config.roundLimit,

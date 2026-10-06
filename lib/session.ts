@@ -1,6 +1,10 @@
 /**
  * Wallet sessions — proves a request comes from the wallet it names.
  *
+ * Where X sign-in is set up (Privy), sessions are issued only by
+ * /api/auth/x, for an X account's own embedded wallet. The wallet-signature
+ * sign-in below remains for deployments without X (local development).
+ *
  * Game actions (take a seat, set a call or picks, trade) change a
  * player's vault, and their USDC payout follows the vault. They must not
  * be accepted on the strength of a wallet address in the request body.
@@ -30,7 +34,7 @@ function key(): Buffer {
   if (_g.__or_sessionKey) return _g.__or_sessionKey;
   const raw = process.env.SESSION_SECRET || process.env.ESCROW_HOST_SECRET_KEY || process.env.ROUND_HOST_SECRET || "";
   _g.__or_sessionKey = raw
-    ? crypto.createHash("sha256").update(`oracle-rumble/session/v1:${raw}`).digest()
+    ? crypto.createHash("sha256").update(`the-pit/session/v2:${raw}`).digest()
     : crypto.randomBytes(32); // dev without secrets: sessions last until restart
   return _g.__or_sessionKey;
 }
@@ -146,7 +150,7 @@ export function sessionWallet(request: Request): string | null {
 export function requireWallet(request: Request, wallet: string | undefined | null): NextResponse | null {
   if (wallet && sessionWallet(request) === wallet) return null;
   return NextResponse.json(
-    { error: "Sign in with your wallet to continue.", needsAuth: true },
+    { error: "Sign in with X to continue.", needsAuth: true },
     { status: 401 }
   );
 }

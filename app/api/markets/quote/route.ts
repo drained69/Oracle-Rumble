@@ -37,7 +37,7 @@ export async function POST(request: Request) {
   if (!PANTA_LIVE) return NextResponse.json({ error: "Market creation needs a Panta API key on this server." }, { status: 503 });
 
   const wallet = sessionWallet(request);
-  if (!wallet) return NextResponse.json({ error: "Sign in with your wallet to create a market.", needsAuth: true }, { status: 401 });
+  if (!wallet) return NextResponse.json({ error: "Sign in with X to create a market.", needsAuth: true }, { status: 401 });
   if (overLimit("market-create", wallet, 8, 10 * 60_000)) {
     return NextResponse.json({ error: "You've started several markets in the last few minutes — wait a little." }, { status: 429 });
   }
@@ -91,7 +91,7 @@ export async function POST(request: Request) {
     );
     if (!q.createId) return NextResponse.json({ error: "Panta didn't return a quote — try again." }, { status: 502 });
     const feeUsdc = Number(q.paymentUsdc ?? "0") / 1e6;
-    const draft = saveDraft({
+    const draft = await saveDraft({
       wallet, question, category: category as PantaCategory, resolutionRule: rule, sourcesOfTruth: sources,
       endMs: endsAt * 1000, breaking, createId: q.createId, feeUsdc
     });

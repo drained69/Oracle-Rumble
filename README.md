@@ -54,8 +54,8 @@ prices with no trading.
 
 ```
 Browser (Next.js 15 / React 19)
-  ├─ wallet (Phantom/Backpack/Solflare, or a Privy embedded wallet via X)
-  └─ signs: sign-in message, escrow deposit/claim/recover, Panta create tx
+  ├─ sign in with X only → Privy embedded Solana wallet for that X account
+  └─ X wallet signs: escrow deposit/claim/recover, Panta create tx
         │
 Next.js server  app/api/*
   ├─ pit engine     lib/royale.ts · lib/round-keeper.ts  (Postgres or in-memory,
@@ -89,7 +89,10 @@ cp .env.example .env.local   # fill what you need; everything is optional
 npm run dev                  # http://localhost:3000
 ```
 
-Without escrow keys the app runs in **practice mode** (no USDC moves). Without
+Players sign in **only with X**: `/api/auth/x` checks the Privy token, confirms the
+wallet is that X account's own Privy embedded wallet, and issues the session.
+Wallet-signature sign-in exists only for local development without Privy and is
+refused in production. Without escrow keys the app runs in **practice mode** (no USDC moves). Without
 `PANTA_API_KEY`, Panta pits are disabled and crypto pits still work.
 
 | Variable | Purpose |
@@ -101,7 +104,7 @@ Without escrow keys the app runs in **practice mode** (no USDC moves). Without
 | `NEXT_PUBLIC_ESCROW_PROGRAM_ID` / `NEXT_PUBLIC_USDC_MINT` | Escrow program and USDC mint |
 | `ESCROW_HOST_SECRET_KEY` | Operator key that opens vaults and records settlements (server only) |
 | `PLATFORM_FEE_WALLET` | Receives the 0.1% claim fee (defaults to the operator) |
-| `NEXT_PUBLIC_PRIVY_APP_ID` / `PRIVY_APP_SECRET` | X sign-in, X-handle usernames, embedded wallets |
+| `NEXT_PUBLIC_PRIVY_APP_ID` / `PRIVY_APP_SECRET` | **Required in production.** X sign-in (the only sign-in), X-handle usernames, each player's embedded wallet. Set the app secret too: it lets the server confirm a just-created wallet |
 | `ANTHROPIC_API_KEY` | Claude phrasing for the Oracle read (optional) |
 | `DATABASE_URL` | Postgres (in-memory when unset) |
 | `SESSION_SECRET` | Signs the sign-in session cookie |

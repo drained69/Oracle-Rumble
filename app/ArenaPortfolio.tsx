@@ -23,7 +23,7 @@ const clock = (ms: number) => {
   const h = Math.floor(t / 3600), m = Math.floor((t % 3600) / 60), s = t % 60;
   return h ? `${h}:${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}` : `${m}:${String(s).padStart(2, "0")}`;
 };
-const sideWord = (s: "YES" | "NO") => (s === "YES" ? "UP" : "DOWN");
+const sideWord = (s: "YES" | "NO", panta?: boolean) => (panta ? s : s === "YES" ? "UP" : "DOWN");
 const ACTIVE = new Set(["enrolling", "live", "settling", "advancing"]);
 
 function explorer(vault: string) {
@@ -105,12 +105,12 @@ export default function ArenaPortfolio({ wallet, onToast }: { wallet: string; on
   const withdraw = useCallback(async (i: PortfolioItem) => {
     const key = i.arena || i.chain?.roundVault || "";
     setBusy(key);
-    onToast("Approve the withdrawal in your wallet…");
+    onToast("Approve the withdrawal in your X wallet…");
     try {
       const r = await claimFromEscrow(wallet, i.arena, i.action === "recover", (name) => onToast(seatStepText("waiting", 0, null, name).toast), i.chain?.roundVault,
-        () => onToast("That took over a minute, so Solana needs a fresh signature — approve the withdrawal once more in your wallet."));
+        () => onToast("That took over a minute, so Solana needs a fresh signature — approve the withdrawal once more in your X wallet."));
       if (r.error) onToast(r.error);
-      else onToast(`${usd.format(i.actionUsdc)} is on its way to your wallet.`);
+      else onToast(`${usd.format(i.actionUsdc)} is on its way to your X wallet.`);
       await load();
     } finally { setBusy(null); }
   }, [wallet, onToast, load]);
@@ -168,7 +168,7 @@ export default function ArenaPortfolio({ wallet, onToast }: { wallet: string; on
                     <div className="pf-foot">
                       <b className="pf-amount">{usd.format(net)}{bps > 0 && <em className="fee-note"> after {(bps / 100).toFixed(1)}% fee</em>}</b>
                       <button className="btn primary" onClick={() => withdraw(i)} disabled={busy !== null}>
-                        {busy === key ? "Confirm in your wallet…" : i.action === "recover" ? `Recover ${usd.format(net)}` : `Withdraw ${usd.format(net)}`}
+                        {busy === key ? "Confirm in your X wallet…" : i.action === "recover" ? `Recover ${usd.format(net)}` : `Withdraw ${usd.format(net)}`}
                       </button>
                     </div>
                   );
@@ -261,14 +261,14 @@ function ActiveCard({ i, now }: { i: PortfolioItem; now: number }) {
       ) : i.status === "enrolling" ? (
         <p className="pf-line">
           {me.openingCall
-            ? <>Opening call <b className={me.openingCall === "YES" ? "up" : "down"}>{sideWord(me.openingCall)}</b> — {(me.openingCallPct ?? 100) >= 100 ? `your whole ${usd.format(me.cash)} vault goes` : `${usd.format((me.cash * (me.openingCallPct ?? 100)) / 100)} of your ${usd.format(me.cash)} vault goes`} on it when trading opens.</>
-            : <>No opening call — you&apos;ll pick UP or DOWN once trading opens. Vault {usd.format(me.cash)}.</>}
+            ? <>Opening call <b className={me.openingCall === "YES" ? "up" : "down"}>{sideWord(me.openingCall, i.pantaPit)}</b> — {(me.openingCallPct ?? 100) >= 100 ? `your whole ${usd.format(me.cash)} vault goes` : `${usd.format((me.cash * (me.openingCallPct ?? 100)) / 100)} of your ${usd.format(me.cash)} vault goes`} on it when trading opens.</>
+            : <>No opening call — you&apos;ll pick {i.pantaPit ? "YES or NO" : "UP or DOWN"} once trading opens. Vault {usd.format(me.cash)}.</>}
         </p>
       ) : (
         <div className="pf-grid">
           <div>
             <span>Position</span>
-            <b>{me.side ? <><em className={me.side === "YES" ? "up" : "down"}>{sideWord(me.side)}</em> {me.shares.toFixed(2)} sh</> : "Cash"}</b>
+            <b>{me.side ? <><em className={me.side === "YES" ? "up" : "down"}>{sideWord(me.side, i.pantaPit)}</em> {me.shares.toFixed(2)} sh</> : "Cash"}</b>
           </div>
           <div><span>Entry → now</span><b>{me.side ? `${me.avgPrice}¢ → ${me.markPrice ?? "—"}¢` : "—"}</b></div>
           <div>

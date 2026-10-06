@@ -21,7 +21,7 @@ import type {
   PantaMarket,
   PantaPosition
 } from "@/lib/panta";
-import { connectWallet, describeWalletError, signAndSendAs } from "@/lib/wallet";
+import { describeWalletError, signAndSendAs } from "@/lib/wallet";
 
 const SOLANA_RPC = process.env.NEXT_PUBLIC_SOLANA_RPC ?? "https://api.mainnet-beta.solana.com";
 
@@ -151,14 +151,6 @@ export async function finishMarket(
     trackMarket({ marketId: reg.data.marketId, question, role: "creator" });
   } catch { /* client-only helper */ }
   return { ok: true, marketId: reg.data.marketId };
-}
-
-// ---- Wallet detection -------------------------------------------------
-
-/** Connect the player's wallet (see lib/wallet.ts). Returns the address or null. */
-export async function connectSolanaWallet(): Promise<string | null> {
-  if (typeof window === "undefined") return null;
-  try { return await connectWallet(); } catch { return null; }
 }
 
 // ---- Real Solana signing ---------------------------------------------
