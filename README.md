@@ -4,7 +4,7 @@
 
 **Trading pits on any prediction market — built on Panta, on Solana.**
 
-Live at **[trythepit.xyz](https://trythepit.xyz)**
+Live at **[www.trythepit.xyz](https://www.trythepit.xyz)**
 
 [![Solana](https://img.shields.io/badge/solana-devnet-9945FF?style=flat-square&labelColor=0a0b0f)](https://solana.com/docs)
 [![Panta](https://img.shields.io/badge/panta-public--api-eab308?style=flat-square&labelColor=0a0b0f)](https://docs.panta.market/)
