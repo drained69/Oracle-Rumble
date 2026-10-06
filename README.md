@@ -34,11 +34,12 @@ prices with no trading.
 ## How a Panta pit works
 
 1. **Market** — the host picks an open Panta market (`/api/markets/catalog`) or
-   creates one. Creation runs Panta's `markets/create/quote` → `build` → wallet
-   signature → `markets/register`. The quote's fee is shown before anything is
-   signed. Drafts are held server-side and bound to the creating wallet, so only
-   the creator can host on a market they made.
+   creates one. Creation runs Panta's `markets/create/quote` → `build` → **X
+   wallet signature** → `markets/register`. The quote's fee is shown before
+   anything is signed. Drafts are persisted (Postgres) and bound to the creating
+   wallet, so a paid market survives a restart and only its creator can host on it.
 2. **Seats** — players pay the seat into escrow and make a hidden YES/NO call.
+   The host takes seat #1.
 3. **Lock** — Panta's YES price becomes the opening line; every call fills there.
 4. **Live** — the room trades against an LMSR book seeded at the line
    (`lib/room-book.ts`). Depth `b` = total vaults, clamped to 20–5,000. Every trade
@@ -49,6 +50,84 @@ prices with no trading.
    outcome.
 6. **Payout** — vaults are ranked, the prize split is recorded on-chain, and each
    player withdraws with their own signature.
+
+## Game formats
+
+| Format | Rounds | Trades? | How it ends |
+|---|---|---|---|
+| **Single** | 1 | yes | One trading window; ranked by final vault; pool paid to the top finishers. |
+| **Royale** | 2–4 | yes | Bottom half (`ceil(alive/2)` survive) cut each round; survivors carry their vault forward until one remains or the round limit is hit. A Panta royale re-opens the book at the prior round's settlement price and trades the **same** market every round. |
+| **Predictions** | 1 | no | Crypto only. Five hidden picks on BTC/ETH/SOL (three up/down, "which does best", one head-to-head); one point per right answer, optional 2–3 pick lock doubles those picks. Top scores paid. |
+| **Streak** | up to 6 legs | no | Crypto only. One quick call per leg (20 s hidden pick window, 1/2/5-min legs); a wrong or missed pick knocks you out. Last caller standing wins. |
+
+Settlement of a trading pit: **Panta market** → YES settles at the room's
+time-weighted average over the closing window (last 20% of the round, clamped
+30 s–10 min), or $1/$0 if Panta resolved the market first. **Crypto pit** →
+UP/DOWN pays $1 if the asset closed higher/lower than its open (50¢ each way on
+a dead-flat close), priced live from Coinbase spot with Kraken as backup.
+
+## Money & fees
+
+```
+seat      = entry + vault                     (both deposited into escrow)
+pool      = entry × players who paid
+vault pot = vault × players who paid
+prizes    = split of (pool − host fee)
+withdraw  = prize share + vault pot × (your final vault ÷ Σ final vaults) − 0.1% claim fee
+```
+
+- **Prize split** — a duel (2 players) is winner-take-all; 3+ players split
+  62.5% / 23.4375% / 14.0625%, 1st absorbing any rounding remainder. Ties share
+  the places they cover.
+- **Vault redistribution** — the players' vaults are shared out in proportion to
+  how each finished, so one trader's losses fund another's gains. Escrow is always
+  paid out in full; if every vault ends at $0 the vault money returns equally.
+- **Host fee** — 0–5% of the pool, set by the host, paid into the host's seat at
+  settlement, shown to players before they join. Cancelled pits pay none.
+- **Platform fee** — 0.1% (10 bps), taken by the escrow program on each claim of a
+  settled payout and capped in-program at 1% (100 bps). Refunds and recoveries are
+  fee-free. Predictions/Streak carry a 1-unit (0.000001 USDC) vault, returned at
+  settlement.
+- **Market creation fee** — charged by Panta (not The Pit) from the quote, shown
+  before signing; $0 on a sandbox key (empty build tx).
+
+## Host settings (server-enforced ranges)
+
+| Setting | Options / range |
+|---|---|
+| Market | Crypto · existing Panta market · new Panta market |
+| Enrollment | Quick (2 min) · Scheduled (5 min – 3 hours, i.e. 20 s–10,800 s) |
+| Game | Single · Royale (2–4 rounds) · Predictions · Streak (≤6 legs) |
+| Trading window | Panta 5/15/60 min · Crypto 5/15 min or 1 h · Streak legs 1/2/5 min (`liveSec` 60–3,600 s) |
+| Players | 2–16 |
+| Entry | $1–$100 (whole USDC) |
+| Vault | $5–$500 (whole USDC; none for Predictions/Streak) |
+| Host fee | 0–5% |
+| Opening call size | 25% / 50% (default) / 100% of the vault |
+
+## Sign-in (X-only)
+
+The only way in is **Sign in with X**. The flow (`lib/use-wallet.ts` →
+`lib/session-client.ts` → `POST /api/auth/x`):
+
+1. Privy runs the X OAuth redirect and creates (or reopens) a Solana **embedded
+   wallet** for that X account.
+2. The browser posts the Privy identity/access token plus the wallet address.
+3. `lib/privy-server.ts` verifies the token against Privy's JWKS and confirms the
+   wallet is that X account's own embedded wallet (`wallet_client_type: "privy"` /
+   `connector_type: "embedded"`), using the app secret to re-fetch the user when a
+   fresh token predates a just-created wallet.
+4. `lib/profile-store.ts` sets the username to the X handle on first sign-in (one
+   X account ↔ one wallet). A handle previously linked to an extension wallet
+   **moves** to the X wallet, keeping its username.
+5. An HMAC-signed session cookie (`or_session`, 7-day TTL) is issued for the wallet.
+
+Wallet-signature sign-in (`/api/auth/challenge` + `/verify`, SIWS) is kept only
+for **local dev without Privy** and is refused when `PRIVY_ENABLED` or in
+production. On-chain deposits from a wallet with no X account are never
+auto-seated — they are refunded in full at settlement. The account menu
+(`app/AccountMenu.tsx`) shows the wallet address (copy/QR/explorer), USDC+SOL
+balances, funding links, Privy key export, and sign-out.
 
 ## Architecture
 
@@ -80,6 +159,44 @@ two-sentence headline. The host-written question is passed strictly as data and
 the output is validated (length, no links or markup) before display. One read
 per pit state is cached ~20 s and shared by every viewer. Seat calls are never
 used while enrollment is open.
+
+### Escrow program (`program/`)
+
+A native `solana-program` (no Anchor) that holds each pit's seats in a
+per-pit vault PDA. Funds move only through player-signed instructions:
+
+| Instruction | Who signs | Effect |
+|---|---|---|
+| `InitRound` / `InitRoundV2` | operator | Open a pit vault; V2 carries the platform-fee config (`claim_fee_bps`, cap `MAX_CLAIM_FEE_BPS = 100`). |
+| `Deposit` | player | Transfer the seat (entry + vault) into the vault. |
+| `SettlePlayer` / `CloseSettlement` | operator | Record each player's final entitlement (≤ what was deposited). |
+| `Claim` | player | Withdraw the recorded payout; the fee (if any) goes to the recipient, the rest to the player. |
+| `CloseRefund` | operator | Cancelled pit → mark every deposit refundable, fee-free. |
+| `Recover` | player | After `settle_deadline` with no settlement, reclaim the full seat, fee-free. |
+
+The operator key opens vaults and records entitlements but **cannot move**
+anyone's USDC; total entitlements can never exceed deposits. `settle_deadline`
+is set at init to `now + (3 min + enrollment + roundLimit·(liveSec + 120) + 1 h)`.
+
+## API surface
+
+All server routes live under `app/api/*`; Panta's REST API is proxied
+server-side so `PANTA_API_KEY` never reaches the browser. Key routes:
+
+| Route | Purpose |
+|---|---|
+| `POST /api/auth/x` | Sign in: Privy proof of the X account + its wallet → session cookie |
+| `GET /api/auth/session` | Who this browser is signed in as (wallet + X handle) |
+| `GET /api/arenas` | Open pits (enrolling/live/settling/advancing) |
+| `GET /api/round?arena=` | Round state, standings, cut line, YES price, Panta line, tape, spot |
+| `POST /api/round` | Host a pit (signed in); `marketSource:"panta"` + `pantaMarketId`/`draftId` |
+| `POST /api/round/{enroll,call,picks,trade,cancel}` | Seat, opening call, picks/leg, trade, cancel |
+| `GET /api/round/read?arena=` | The Oracle read for a trading pit |
+| `GET /api/markets/catalog` | Open Panta markets a pit can run on |
+| `POST /api/markets/{quote,build,register}` | Create a Panta market (signed in) |
+| `GET /api/escrow/{status,balance}` · `POST /api/escrow/{tx,settle}` | Mode, balances, unsigned txs, settlement |
+| `GET /api/portfolio?wallet=` · `GET /api/positions?wallet=` | A wallet's pits / Panta positions |
+| `POST /api/orders/{quote,build,submit,verify}` | Panta mirrored-order proxies |
 
 ## Development
 

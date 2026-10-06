@@ -148,8 +148,8 @@ export default function DocsPage() {
             </p>
             <ul>
               <li><b>Existing markets</b> — the host list shows Panta&apos;s open, unresolved markets, busiest first, with Panta&apos;s current YES price and when each closes.</li>
-              <li><b>Creating a market</b> — write a yes/no question (10–200 characters, ending in &ldquo;?&rdquo;), pick a category, a resolution rule (20–2,048 characters) and one to five sources of truth, and when it ends. Mark it <em>happening now</em> for an event already under way (a game in progress) so it opens immediately; otherwise Panta opens it about an hour after creation.</li>
-              <li><b>The fee is shown first</b> — the first press asks Panta for a quote and shows the creation fee and starting liquidity; nothing is signed until you press again. Your wallet then signs Panta&apos;s create transaction and the market is registered on Panta. Only the wallet that created a market can host a pit on it through this flow.</li>
+              <li><b>Creating a market</b> — write a yes/no question (10–200 characters, ending in &ldquo;?&rdquo;), pick a category (sports, crypto, politics, entertainment, finance, science, world or other), a resolution rule (20–2,048 characters) and one to five http(s) sources of truth, and when trading ends. Trading must run at least 10 minutes and at most a year; a question that duplicates an existing Panta market is refused (host a pit on that market instead). Mark it <em>happening now</em> for an event already under way (a game in progress) so it opens immediately; otherwise Panta opens it about an hour after creation.</li>
+              <li><b>The fee is shown first</b> — the first press asks Panta for a quote and shows the creation fee and starting liquidity; nothing is signed until you press again. Your X wallet then signs Panta&apos;s create transaction and the market is registered on Panta. Once a market is created the form locks it in, so if opening the pit fails you can retry without paying Panta again. Only the wallet that created a market can host a pit on it through this flow.</li>
               <li><b>Opening line</b> — when enrollment locks, Panta&apos;s YES price becomes the pit&apos;s opening line. Every seat call (YES or NO) fills at that line.</li>
               <li><b>Resolution</b> — if Panta resolves the market while the pit is running, the pit settles on the real outcome ($1 for the winning side) and a royale ends there.</li>
             </ul>
@@ -207,6 +207,20 @@ opening    = every seat call fills at Panta's line,
               <li><b>Invite link</b> — <code>/a/CODE</code>, ready to post.</li>
               <li><b>Stream overlay</b> — <code>/a/CODE/overlay</code> as a Browser Source in OBS or Streamlabs (1280×720). It shows the market, the live odds and tape, Panta&apos;s line, the top of the pit, the pool and the clock, and the QR while seats are open. The background is transparent; add <code>?bg=solid</code> for a solid one. It reads only public pit state.</li>
             </ul>
+            <p>Every host setting, with the range the server enforces:</p>
+            <table className="docs-table">
+              <thead><tr><th>Setting</th><th>Options / range</th><th>Notes</th></tr></thead>
+              <tbody>
+                <tr><td>Market</td><td>Crypto · Panta market · New market</td><td>Panta markets run Single or Royale only; Predictions and Streak are crypto-only.</td></tr>
+                <tr><td>Enrollment</td><td>Quick (2 min) · Scheduled (5 min – 3 hours)</td><td>Counted from your confirmed seat; locks early when every seat fills.</td></tr>
+                <tr><td>Game</td><td>Single · Royale · Predictions · Streak</td><td>Royale runs 2–4 rounds; Streak up to 6 legs.</td></tr>
+                <tr><td>Trading window</td><td>Panta: 5 / 15 / 60 min · Crypto: 5 / 15 min or 1 hour</td><td>Streak legs are 1, 2 or 5 minutes each.</td></tr>
+                <tr><td>Players</td><td>2 – 16</td><td>2 players is a duel (winner takes all).</td></tr>
+                <tr><td>Entry (USDC)</td><td>$1 – $100 (whole dollars)</td><td>Into the shared prize pool.</td></tr>
+                <tr><td>Vault (USDC)</td><td>$5 – $500 (whole dollars)</td><td>Your trading bankroll. Predictions and Streak have none.</td></tr>
+                <tr><td>Host fee</td><td>0 – 5%</td><td>Your cut of the pool, shown to players before they join.</td></tr>
+              </tbody>
+            </table>
           </Section>
 
           <Section id="predictions" title="Predictions pits">
@@ -474,8 +488,20 @@ withdraw  = payout − 0.1% platform fee`}</pre>
           <Section id="faq" title="FAQ">
             <div className="faq">
               <details open>
+                <summary>How do I sign in? Do I need a wallet?</summary>
+                <p>Sign in with X — that is the only way in, and no wallet extension is needed. Signing in creates a Solana wallet for your X account (a Privy embedded wallet) that holds your USDC and signs your deposits and payouts. Open your account (your handle, top right) to see its address, balances and where to get test funds.</p>
+              </details>
+              <details>
+                <summary>I already used a Phantom/Backpack wallet here — what happens?</summary>
+                <p>Sign-in is now X-only, so you play with your X account&apos;s own wallet. Your username carries over. Any unclaimed payout still sitting in that old extension wallet can only be withdrawn by signing with that wallet directly on the escrow program — the app no longer drives extension wallets.</p>
+              </details>
+              <details>
                 <summary>Where do I get test funds?</summary>
-                <p>Devnet USDC from faucet.circle.com (choose Solana Devnet) and devnet SOL for fees from faucet.solana.com.</p>
+                <p>Devnet USDC from faucet.circle.com (choose Solana Devnet) and devnet SOL for fees from faucet.solana.com. Send them to the wallet address in your account menu.</p>
+              </details>
+              <details>
+                <summary>Can I move my wallet to Phantom or Backpack?</summary>
+                <p>Yes — <em>Export private key</em> in the account menu opens Privy&apos;s own window (on Privy&apos;s domain, never shown to The Pit) to copy the key into another wallet app.</p>
               </details>
               <details>
                 <summary>Why doesn&apos;t the pit&apos;s price match Panta&apos;s?</summary>
