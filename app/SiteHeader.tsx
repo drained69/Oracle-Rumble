@@ -12,7 +12,7 @@ export type NavKey = "arenas" | "host" | "positions" | "docs";
 const CLUSTER = (process.env.NEXT_PUBLIC_SOLANA_CLUSTER ?? "devnet").toLowerCase();
 
 const NAV: { key: NavKey; label: string; href: string }[] = [
-  { key: "arenas", label: "Arenas", href: "/" },
+  { key: "arenas", label: "Pits", href: "/" },
   { key: "host", label: "Host", href: "/?tab=host" },
   { key: "positions", label: "Positions", href: "/positions" },
   { key: "docs", label: "Docs", href: "/docs" }
@@ -49,7 +49,7 @@ export default function SiteHeader({
   return (
     <nav className="hud-bar game-hud" aria-label="Main">
       <div className="tabbar-inner">
-        <a href="/" className="brand" aria-label="Oracle Rumble home">
+        <a href="/" className="brand" aria-label="The Pit home">
           <BrandMark />
           <Wordmark />
         </a>

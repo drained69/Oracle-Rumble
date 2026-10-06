@@ -8,7 +8,7 @@ import { PANTA_LIVE, pantaFetch, type VerifyRequest, type VerifyResponse } from 
  * Proxies Panta's POST /primaryorderverify/. Accepts orderId (from
  * /orders/build) with an optional signature to associate. Returns the
  * current lifecycle status. Panta's status enum is a superset of what
- * Oracle Rumble's UI needs — we surface all values so the request
+ * The Pit's UI needs — we surface all values so the request
  * console shows the exact wire value.
  */
 export async function POST(request: Request) {

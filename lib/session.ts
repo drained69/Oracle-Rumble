@@ -81,7 +81,7 @@ export function issueChallenge(wallet: string, site: { host: string; uri: string
     `${site.host}${HEADER}`,
     wallet,
     "",
-    "Sign in to Oracle Rumble to take seats and trade. This is not a transaction and costs nothing.",
+    "Sign in to The Pit to take seats and trade. This is not a transaction and costs nothing.",
     "",
     `URI: ${site.uri}`,
     "Version: 1",

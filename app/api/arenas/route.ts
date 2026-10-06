@@ -28,6 +28,7 @@ export async function GET() {
         roundNumber: latest.roundNumber,
         roundLimit: latest.config.roundLimit,
         format: latest.config.format,
+        marketSource: latest.config.marketSource ?? "crypto",
         asset: latest.config.asset,
         marketQuestion: latest.config.marketQuestion,
         capacity: latest.config.capacity,
@@ -55,6 +56,6 @@ export async function GET() {
     return NextResponse.json({ items, persisted: STORE_ENABLED });
   } catch (err) {
     console.error("GET /api/arenas failed:", err);
-    return NextResponse.json({ items: [], error: err instanceof Error ? err.message : "arenas error" }, { status: 500 });
+    return NextResponse.json({ items: [], error: err instanceof Error ? err.message : "pits error" }, { status: 500 });
   }
 }

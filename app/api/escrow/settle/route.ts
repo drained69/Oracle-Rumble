@@ -107,8 +107,8 @@ async function settle(arena: string) {
   // We settle against the LATEST round in the arena — either the active
   // "complete" one or the most recent finished one.
   const round = await getLatestRound(arena);
-  if (!round) return NextResponse.json({ error: "arena not found", arena }, { status: 404 });
-  if (!round.escrow) return NextResponse.json({ error: "arena is ledger-only" }, { status: 409 });
+  if (!round) return NextResponse.json({ error: "pit not found", arena }, { status: 404 });
+  if (!round.escrow) return NextResponse.json({ error: "pit is ledger-only" }, { status: 409 });
   if (round.status === "cancelled") return refundCancelled(round);
   if (round.status !== "complete") return NextResponse.json({ error: `round is ${round.status}, not complete` }, { status: 409 });
   if (round.escrow.settleSignatures && round.escrow.settleSignatures.length > 0) {

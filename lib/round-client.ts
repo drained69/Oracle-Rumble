@@ -105,6 +105,10 @@ export type HostConfig = Partial<Pick<RoundConfig,
 >> & {
   /** Which timeframe of the asset to trade — 5m / 15m / 1h / 1d. */
   horizon?: "MIN5" | "MIN15" | "HOUR" | "DAY";
+  /** "panta": a pit on a Panta market, given by `pantaMarketId` or a created market's `draftId`. */
+  marketSource?: "crypto" | "panta";
+  pantaMarketId?: string;
+  draftId?: string;
 };
 
 export type RoundView = {
@@ -115,6 +119,8 @@ export type RoundView = {
   standings: Entrant[];
   /** Latest USD spot price of the round's asset. */
   spot?: number | null;
+  /** Panta pits: Panta's own YES price (cents), shown against the room's odds. */
+  line?: number | null;
   persisted?: boolean;
   error?: string;
 };
@@ -202,9 +208,9 @@ export async function prepareWallet(wallet: string, onStep?: (step: SeatStep, wa
 export type SeatStep = "signin" | "deposit" | "again" | "waiting" | "confirming" | "seating";
 
 /** Toast line and short button label for each seat step. */
-export function seatStepText(step: SeatStep, seatUsd: number, call?: OpeningCall, walletName = "your wallet"): { toast: string; button: string } {
+export function seatStepText(step: SeatStep, seatUsd: number, call?: OpeningCall, walletName = "your wallet", yesNo = false): { toast: string; button: string } {
   const amount = `$${seatUsd.toFixed(2)}`;
-  const callText = call === "YES" ? " · opening call UP" : call === "NO" ? " · opening call DOWN" : "";
+  const callText = call === "YES" ? ` · opening call ${yesNo ? "YES" : "UP"}` : call === "NO" ? ` · opening call ${yesNo ? "NO" : "DOWN"}` : "";
   switch (step) {
     case "signin": return { toast: "Sign in with your wallet — a free message, not a transaction.", button: "Sign the message in your wallet…" };
     case "deposit": return { toast: `Approve the ${amount} seat deposit in your wallet${callText}.`, button: "Approve the deposit in your wallet…" };

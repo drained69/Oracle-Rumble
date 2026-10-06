@@ -26,6 +26,8 @@ type Props = {
   yesPrice: number;
   /** Latest USD spot price of the round's asset (oracle), if known. */
   spot?: number | null;
+  /** Panta pits: Panta's own YES price (cents), shown against the room's odds. */
+  line?: number | null;
   wallet: string | null;
 };
 
@@ -64,7 +66,13 @@ const STATE_LABEL: Record<PodState, string> = {
   bot: "Bot"
 };
 
-export default function ArenaStage({ round, standings, survivors, yesPrice, spot, wallet }: Props) {
+export default function ArenaStage({ round, standings, survivors, yesPrice, spot, line, wallet }: Props) {
+  // A pit on a Panta market trades YES/NO on the room's own odds; a crypto
+  // direction pit trades UP/DOWN on the spot price.
+  const pantaPit = round.config.marketSource === "panta";
+  const Y = pantaPit ? "YES" : "UP";
+  const N = pantaPit ? "NO" : "DOWN";
+  const yesShown = Math.round(yesPrice);
   const isLive = round.status === "live";
   const isComplete = round.status === "complete";
   const isCancelled = round.status === "cancelled";
@@ -246,7 +254,7 @@ export default function ArenaStage({ round, standings, survivors, yesPrice, spot
   const move = open && shown ? ((shown - open) / open) * 100 : null;
 
   return (
-    <section className="mr-stage" aria-label="Arena stage">
+    <section className="mr-stage" aria-label="Pit stage">
       <div className="mr-stage-body">
         <div className="mr-arena">
           <div className="mr-legend" aria-hidden={!cutActive && !isComplete}>
@@ -311,6 +319,8 @@ export default function ArenaStage({ round, standings, survivors, yesPrice, spot
                 <span className="mr-orb-move">{round.status === "enrolling" ? "prices lock at the start" : isLive ? "most points wins" : ""}</span>
               </div>
             </div>
+          ) : pantaPit ? (
+            <PantaOrb round={round} yes={yesShown} line={line ?? null} live={isLive} />
           ) : (
           <div
             className={`mr-orb ${yesPrice >= 50 ? "up" : "down"} ${isLive ? "live" : ""}`}
@@ -368,7 +378,7 @@ export default function ArenaStage({ round, standings, survivors, yesPrice, spot
                     ? `${displayName(e)}${isMe ? " (you)" : ""}, ${STATE_LABEL[state]}, ${e.score ?? 0} legs survived${legRunning && leg?.picks[e.id] ? `, picked ${optionLabel(leg.question, leg.picks[e.id])}` : ""}`
                     : picks
                     ? `Rank ${rank}, ${displayName(e)}${isMe ? " (you)" : ""}, ${STATE_LABEL[state]}, ${round.status === "enrolling" ? `${made} of ${totalQs} picks made` : `${e.score ?? 0} of ${totalQs} right`}`
-                    : `Rank ${rank}, ${displayName(e)}${isMe ? " (you)" : ""}, ${STATE_LABEL[state]}, vault $${e.bankroll.toFixed(2)}, P&L ${pnl >= 0 ? "+" : "-"}$${Math.abs(pnl).toFixed(2)}${e.side ? `, holding ${e.side === "YES" ? "UP" : "DOWN"}` : ""}`}
+                    : `Rank ${rank}, ${displayName(e)}${isMe ? " (you)" : ""}, ${STATE_LABEL[state]}, vault $${e.bankroll.toFixed(2)}, P&L ${pnl >= 0 ? "+" : "-"}$${Math.abs(pnl).toFixed(2)}${e.side ? `, holding ${e.side === "YES" ? Y : N}` : ""}`}
                 >
                   <span className="mr-pod-rank">{state === "eliminated" ? "OUT" : `#${rank}`}</span>
                   {/* eslint-disable-next-line @next/next/no-img-element */}
@@ -399,7 +409,7 @@ export default function ArenaStage({ round, standings, survivors, yesPrice, spot
                     </>
                   )}
                   {!picks && e.side && state !== "eliminated" && (
-                    <span className={`mr-pod-side ${e.side === "YES" ? "yes" : "no"}`}>{e.side === "YES" ? "▲ UP" : "▼ DOWN"}</span>
+                    <span className={`mr-pod-side ${e.side === "YES" ? "yes" : "no"}`}>{e.side === "YES" ? `▲ ${Y}` : `▼ ${N}`}</span>
                   )}
                   <span className={`mr-pod-state s-${state}`}>{STATE_LABEL[state]}</span>
                 </li>
@@ -424,11 +434,11 @@ export default function ArenaStage({ round, standings, survivors, yesPrice, spot
             </div>
           )}
           {isCancelled && (
-            <div className="mr-cancelled" role="status">Arena closed — every deposit is refunded in full</div>
+            <div className="mr-cancelled" role="status">Pit closed — every deposit is refunded in full</div>
           )}
         </div>
 
-        <aside className="mr-feed" aria-label="Arena activity">
+        <aside className="mr-feed" aria-label="Pit activity">
           <div className="mr-feed-head">Activity</div>
           <ul className="mr-feed-list" aria-live="polite">
             {feed.length === 0 && <li className="empty">{picks || streak ? "Activity appears here as players take their seats." : "Activity appears here as players trade."}</li>}
@@ -445,6 +455,44 @@ export default function ArenaStage({ round, standings, survivors, yesPrice, spot
         </aside>
       </div>
     </section>
+  );
+}
+
+/**
+ * Centre of a Panta pit's stage: the room's own YES odds, and how far the
+ * room has moved from Panta's line. Settled pits show what set the price.
+ */
+function PantaOrb({ round, yes, line, live }: { round: Round; yes: number; line: number | null; live: boolean }) {
+  const book = round.book;
+  const settled = book?.close !== undefined;
+  const shownYes = settled ? Math.round(book!.close!) : yes;
+  const ref = line !== null ? Math.round(line) : book ? Math.round(book.lastLine ?? book.line) : null;
+  const gap = ref !== null ? shownYes - ref : null;
+  return (
+    <div
+      className={`mr-orb ${shownYes >= 50 ? "up" : "down"} ${live ? "live" : ""}`}
+      role="img"
+      aria-label={`${round.config.asset} market. Room odds YES ${shownYes} cents${ref !== null ? `, Panta ${ref} cents` : ""}.`}
+    >
+      <div className="mr-orb-ring" aria-hidden="true" />
+      <div className="mr-orb-core">
+        <span className="mr-orb-q">{round.config.asset} · {settled ? (book!.settledBy === "outcome" ? "resolved" : "settled") : round.status === "enrolling" ? "opening line" : "room odds"}</span>
+        <span className="mr-orb-price">{shownYes}<em>¢</em></span>
+        {settled ? (
+          <span className="mr-orb-move">{book!.settledBy === "outcome" ? `Panta ruled ${shownYes >= 50 ? "YES" : "NO"}` : "closing-period average"}</span>
+        ) : ref !== null && round.status !== "enrolling" ? (
+          <span className={`mr-orb-move ${gap! > 0 ? "up" : gap! < 0 ? "down" : ""}`}>
+            Panta {ref}¢ · room {gap! > 0 ? "+" : gap! < 0 ? "−" : "±"}{Math.abs(gap!)}¢
+          </span>
+        ) : (
+          <span className="mr-orb-move">{round.status === "enrolling" ? "Panta's line — the room trades from here" : "live room price"}</span>
+        )}
+        <span className="mr-orb-sides">
+          <span className="y">YES {shownYes}¢</span>
+          <span className="n">NO {100 - shownYes}¢</span>
+        </span>
+      </div>
+    </div>
   );
 }
 

@@ -1,45 +1,36 @@
-import { limitByIp } from "@/lib/rate-limit";
 import { NextResponse } from "next/server";
-import { PANTA_LIVE, pantaFetch, mockUnsignedTx } from "@/lib/panta";
+import { limitByIp } from "@/lib/rate-limit";
+import { PANTA_LIVE, pantaFetch } from "@/lib/panta";
+import { getDraft } from "@/lib/panta-market";
+import { sessionWallet } from "@/lib/session";
+
+export const dynamic = "force-dynamic";
 
 /**
- * POST /api/markets/build
- * Proxies Panta's POST /markets/create/build/.
+ * POST /api/markets/build { draftId } — step 2 of creating a market.
  *
- * Step 2 of the creation lifecycle. Client sends { createId, wallet? } and
- * receives an unsigned VersionedTransaction (base64) that the wallet
- * signs. In sandbox mode Panta returns an empty `transaction` string;
- * callers should treat that as a signal to skip signing and register
- * with a sandbox signature.
+ * Returns Panta's unsigned VersionedTransaction (base64) for the creator's
+ * wallet to sign — it pays the creation fee. Panta's sandbox returns an empty
+ * transaction: there is nothing to sign and nothing is charged.
  */
 export async function POST(request: Request) {
   const limited = limitByIp(request, "panta-write", 30, 60_000);
   if (limited) return limited;
-  const body = (await request.json()) as { createId: string; wallet?: string };
-  if (!body?.createId) return NextResponse.json({ error: "createId required" }, { status: 400 });
+  if (!PANTA_LIVE) return NextResponse.json({ error: "Market creation needs a Panta API key on this server." }, { status: 503 });
+  const wallet = sessionWallet(request);
+  if (!wallet) return NextResponse.json({ error: "Sign in with your wallet first.", needsAuth: true }, { status: 401 });
+  const body = (await request.json().catch(() => ({}))) as { draftId?: string };
+  const draft = body.draftId ? getDraft(body.draftId) : null;
+  if (!draft) return NextResponse.json({ error: "That market draft expired — start again." }, { status: 410 });
+  if (draft.wallet !== wallet) return NextResponse.json({ error: "This draft belongs to another wallet." }, { status: 403 });
 
-  if (PANTA_LIVE) {
-    try {
-      const data = await pantaFetch<{
-        transaction: string;
-        buildFingerprint?: string;
-        expectedEventPda?: string;
-        recentBlockhash?: string;
-        lastValidBlockHeight?: number;
-        expiresAt?: string;
-      }>("/markets/create/build", { method: "POST", body: JSON.stringify(body) });
-      return NextResponse.json({ source: "panta", ...data });
-    } catch (err) {
-      console.error("panta /markets/create/build failed:", err);
-      return NextResponse.json({ error: err instanceof Error ? err.message : "panta failed" }, { status: 502 });
-    }
+  try {
+    const b = await pantaFetch<{ transaction?: string; expiresAt?: string }>(
+      "/markets/create/build", { method: "POST", body: JSON.stringify({ createId: draft.createId, wallet }) }
+    );
+    return NextResponse.json({ transaction: b.transaction ?? "", sandbox: !b.transaction, expiresAt: b.expiresAt ?? null });
+  } catch (err) {
+    console.error("panta /markets/create/build failed:", err);
+    return NextResponse.json({ error: `Panta couldn't build the market transaction: ${(err instanceof Error ? err.message : "failed").slice(0, 160)}` }, { status: 502 });
   }
-
-  return NextResponse.json({
-    source: "mock",
-    transaction: mockUnsignedTx(),
-    buildFingerprint: "mock",
-    lastValidBlockHeight: 300_000_000 + Math.floor(Math.random() * 1_000_000),
-    expiresAt: new Date(Date.now() + 60_000).toISOString()
-  });
 }

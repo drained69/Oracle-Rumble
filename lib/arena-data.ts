@@ -125,8 +125,8 @@ const directionMarkets: Market[] = ASSETS.flatMap((a) =>
 
 export const arenas: Arena[] = [
   {
-    id: "oracle-rumble",
-    name: "Oracle Rumble",
+    id: "the-pit",
+    name: "The Pit",
     tagline: "Call BTC, ETH and SOL. Outlast the cut.",
     endsInMs: 24 * HOUR,
     markets: directionMarkets

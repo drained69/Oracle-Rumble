@@ -1,80 +1,111 @@
-import { limitByIp } from "@/lib/rate-limit";
 import { NextResponse } from "next/server";
+import { limitByIp, overLimit } from "@/lib/rate-limit";
 import { PANTA_LIVE, pantaFetch } from "@/lib/panta";
+import { PANTA_CATEGORIES, PANTA_SANDBOX, saveDraft, type PantaCategory } from "@/lib/panta-market";
+import { sessionWallet } from "@/lib/session";
+
+export const dynamic = "force-dynamic";
 
 /**
- * POST /api/markets/quote
- * Proxies Panta's POST /markets/create/quote/.
+ * POST /api/markets/quote — step 1 of creating a Panta market for a pit.
  *
- * Step 1 of the market creation lifecycle. The wire body follows Panta's
- * schema exactly — the client is responsible for supplying:
+ * Body: { question, category, resolutionRule, sourcesOfTruth[], endsAt (unix s), breaking }
  *
- *   wallet             fee payer + on-chain signer (base58 pubkey)
- *   question           ≤512 chars
- *   resolutionRule     ≤2048 chars — how the market resolves
- *   sourcesOfTruth     string[]  1..20 URLs
- *   category           one of sports, crypto, politics, entertainment,
- *                      finance, science, world, other
- *   startTime          unix seconds
- *   endTime            unix seconds
- *   resolutionTime     unix seconds
- *   imageUrl           http/https, ≤2048 chars
- *
- * Response includes the `createId`, `paymentUsdc` (base units) and the
- * `expectedEventPda`.
+ * The creator is the signed-in wallet (never a body field). The server sets
+ * Panta's timing rules: a "breaking" market (an event already under way, e.g.
+ * tonight's game) starts trading now; a standard market must start at least
+ * Panta's on-chain minimum delay (~1h) ahead. Returns a `draftId` the rest of
+ * the flow (build → sign → register → host) carries, plus the creation fee
+ * exactly as Panta quoted it.
  */
-type Body = {
-  wallet: string;
-  question: string;
-  resolutionRule: string;
-  sourcesOfTruth: string[];
-  category: string;
-  startTime: number;
-  endTime: number;
-  resolutionTime: number;
-  imageUrl: string;
-};
+const MIN_START_DELAY_SEC = 3_600 + 120; // Panta's minimumStartDelay + margin
+const RESOLVE_AFTER_SEC = 3_600;          // resolver runs an hour after trading ends
+const MAX_DAYS = 365;
 
-const REQUIRED: (keyof Body)[] = ["wallet", "question", "resolutionRule", "sourcesOfTruth", "category", "startTime", "endTime", "resolutionTime", "imageUrl"];
+function bad(message: string, field?: string) {
+  return NextResponse.json({ error: message, field }, { status: 400 });
+}
+
+function isHttpUrl(s: unknown): s is string {
+  if (typeof s !== "string" || s.length > 500) return false;
+  try { const u = new URL(s); return u.protocol === "https:" || u.protocol === "http:"; } catch { return false; }
+}
 
 export async function POST(request: Request) {
   const limited = limitByIp(request, "panta-write", 30, 60_000);
   if (limited) return limited;
-  const body = (await request.json()) as Body;
-  for (const k of REQUIRED) {
-    if (body[k] === undefined || body[k] === null || (typeof body[k] === "string" && body[k] === "")) {
-      return NextResponse.json({ error: `${k} required` }, { status: 400 });
-    }
-  }
-  if (!Array.isArray(body.sourcesOfTruth) || body.sourcesOfTruth.length === 0) {
-    return NextResponse.json({ error: "sourcesOfTruth must be a non-empty string array" }, { status: 400 });
+  if (!PANTA_LIVE) return NextResponse.json({ error: "Market creation needs a Panta API key on this server." }, { status: 503 });
+
+  const wallet = sessionWallet(request);
+  if (!wallet) return NextResponse.json({ error: "Sign in with your wallet to create a market.", needsAuth: true }, { status: 401 });
+  if (overLimit("market-create", wallet, 8, 10 * 60_000)) {
+    return NextResponse.json({ error: "You've started several markets in the last few minutes — wait a little." }, { status: 429 });
   }
 
-  if (PANTA_LIVE) {
-    try {
-      const data = await pantaFetch<{
-        createId: string;
-        paymentUsdc: string;
-        liquidityInjectionUsdc?: string;
-        platformRevenueUsdc?: string;
-        expectedEventPda: string;
-        expiresAt?: string;
-      }>("/markets/create/quote", { method: "POST", body: JSON.stringify(body) });
-      return NextResponse.json({ source: "panta", ...data });
-    } catch (err) {
-      console.error("panta /markets/create/quote failed:", err);
-      return NextResponse.json({ error: err instanceof Error ? err.message : "panta failed" }, { status: 502 });
-    }
-  }
+  const body = (await request.json().catch(() => ({}))) as {
+    question?: unknown; category?: unknown; resolutionRule?: unknown; sourcesOfTruth?: unknown; endsAt?: unknown; breaking?: unknown;
+  };
+  const question = typeof body.question === "string" ? body.question.trim().replace(/\s+/g, " ") : "";
+  const rule = typeof body.resolutionRule === "string" ? body.resolutionRule.trim() : "";
+  const category = typeof body.category === "string" ? body.category.toLowerCase() : "";
+  const sources = Array.isArray(body.sourcesOfTruth) ? body.sourcesOfTruth.filter((x) => typeof x === "string" && x.trim()).map((x) => (x as string).trim()) : [];
+  const breaking = body.breaking === true;
+  const endsAt = typeof body.endsAt === "number" && Number.isFinite(body.endsAt) ? Math.floor(body.endsAt) : NaN;
 
-  // Mock: match the shape so the UI keeps working without a Panta key.
-  return NextResponse.json({
-    source: "mock",
-    createId: `cr_mock_${Date.now().toString(36)}`,
-    paymentUsdc: "50000000",
-    liquidityInjectionUsdc: "10000000",
-    platformRevenueUsdc: "40000000",
-    expectedEventPda: "MockMarket11111111111111111111111111111111",
-    expiresAt: new Date(Date.now() + 60_000).toISOString()
-  });
+  if (question.length < 10) return bad("Write the question in at least 10 characters.", "question");
+  if (question.length > 200) return bad("Keep the question to 200 characters.", "question");
+  if (!question.endsWith("?")) return bad("Phrase it as a yes/no question ending with “?”.", "question");
+  if (!(PANTA_CATEGORIES as readonly string[]).includes(category)) return bad("Pick a category.", "category");
+  if (rule.length < 20) return bad("Say exactly how it resolves YES — at least 20 characters.", "resolutionRule");
+  if (rule.length > 2048) return bad("Resolution rule is too long (2048 max).", "resolutionRule");
+  if (sources.length === 0) return bad("Add at least one source of truth (a link).", "sourcesOfTruth");
+  if (sources.length > 5 || !sources.every(isHttpUrl)) return bad("Sources must be http(s) links — up to 5.", "sourcesOfTruth");
+
+  const now = Math.floor(Date.now() / 1000);
+  const startTime = breaking ? now : now + MIN_START_DELAY_SEC;
+  if (!Number.isFinite(endsAt)) return bad("Pick when trading on the market ends.", "endsAt");
+  if (endsAt < startTime + 600) {
+    return bad(breaking
+      ? "Trading must run at least 10 minutes from now."
+      : "A scheduled market opens in about an hour — end it at least 10 minutes after that, or mark it as a live event.", "endsAt");
+  }
+  if (endsAt > now + MAX_DAYS * 86_400) return bad("End within a year.", "endsAt");
+
+  const pantaBody = {
+    wallet,
+    question,
+    title: question,
+    resolutionRule: rule,
+    sourcesOfTruth: sources,
+    category,
+    startTime,
+    endTime: endsAt,
+    resolutionTime: endsAt + RESOLVE_AFTER_SEC,
+    imageUrl: `https://placehold.co/1024x1024/0a0d13/edf0f6/png?text=${encodeURIComponent(category.toUpperCase())}`,
+    ...(breaking ? { marketType: "breaking", eventInProgress: true } : { marketType: "standard" })
+  };
+
+  try {
+    const q = await pantaFetch<{ createId: string; paymentUsdc?: string; liquidityInjectionUsdc?: string; expiresAt?: string }>(
+      "/markets/create/quote", { method: "POST", body: JSON.stringify(pantaBody) }
+    );
+    if (!q.createId) return NextResponse.json({ error: "Panta didn't return a quote — try again." }, { status: 502 });
+    const feeUsdc = Number(q.paymentUsdc ?? "0") / 1e6;
+    const draft = saveDraft({
+      wallet, question, category: category as PantaCategory, resolutionRule: rule, sourcesOfTruth: sources,
+      endMs: endsAt * 1000, breaking, createId: q.createId, feeUsdc
+    });
+    return NextResponse.json({
+      draftId: draft.draftId,
+      feeUsdc,
+      liquidityUsdc: Number(q.liquidityInjectionUsdc ?? "0") / 1e6,
+      // Sandbox keys quote a fee but build no transaction — nothing is charged.
+      sandbox: PANTA_SANDBOX,
+      expiresAt: q.expiresAt ?? null
+    });
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : "Panta failed";
+    console.error("panta /markets/create/quote failed:", msg);
+    return NextResponse.json({ error: msg.includes("DUPLICATE_MARKET") ? "A market with this question already exists — reword it or host a pit on the existing one." : `Panta rejected the market: ${msg.slice(0, 160)}` }, { status: 502 });
+  }
 }

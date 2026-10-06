@@ -218,8 +218,8 @@ export async function playerBalances(owner: PublicKey): Promise<{ usdc: number; 
 
 /** Escrow program errors are Custom(100 + index) — see program/src/lib.rs. */
 const ESCROW_ERRORS = [
-  "account already initialized", "account not initialized", "not the round host", "the arena is full",
-  "the arena is not open", "the arena is not settled", "already claimed", "your payout isn't recorded yet",
+  "account already initialized", "account not initialized", "not the round host", "the pit is full",
+  "the pit is not open", "the pit is not settled", "already claimed", "your payout isn't recorded yet",
   "entitlements exceed escrowed funds", "the recovery deadline hasn't passed", "account mismatch",
   "numeric overflow", "invalid amount"
 ];

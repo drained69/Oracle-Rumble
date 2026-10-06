@@ -1,5 +1,5 @@
 /**
- * Oracle Rumble escrow — TypeScript client for the on-chain program.
+ * The Pit escrow — TypeScript client for the on-chain program.
  *
  * Pure @solana/web3.js (no @solana/spl-token dependency): PDAs, associated
  * token addresses and instruction data are all derived/encoded by hand so this

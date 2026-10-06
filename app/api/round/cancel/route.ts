@@ -31,7 +31,7 @@ export async function POST(request: Request) {
     wallet?: string;
   };
   const arenaCode = normalizeArenaCode(body.arena ?? "");
-  if (!arenaCode) return NextResponse.json({ error: "arena required" }, { status: 400 });
+  if (!arenaCode) return NextResponse.json({ error: "pit required" }, { status: 400 });
   // Only the signed-in host may cancel their own arena.
   const caller = sessionWallet(request);
   if (!caller) return NextResponse.json({ error: "Sign in with your wallet to continue.", needsAuth: true }, { status: 401 });
@@ -39,22 +39,22 @@ export async function POST(request: Request) {
   const peek = await getActiveRound(arenaCode);
   if (peek?.escrow) {
     const vault = await readVault(peek.escrow.roundVault);
-    if (!vault) return NextResponse.json({ error: "could not read the arena vault — not cancelling" }, { status: 409 });
+    if (!vault) return NextResponse.json({ error: "could not read the pit vault — not cancelling" }, { status: 409 });
     if (vault.deposited > 0) {
-      return NextResponse.json({ error: "a seat deposit already landed in this arena", funded: true }, { status: 409 });
+      return NextResponse.json({ error: "a seat deposit already landed in this pit", funded: true }, { status: 409 });
     }
   }
 
   const result = await withKeeperLock(arenaCode, async (ctx) => {
     const round = await ctx.getActive();
-    if (!round) return { ok: false, error: "arena not found" } as const;
+    if (!round) return { ok: false, error: "pit not found" } as const;
     if (round.status !== "enrolling") {
-      return { ok: false, error: `arena is ${round.status} — cannot cancel` } as const;
+      return { ok: false, error: `pit is ${round.status} — cannot cancel` } as const;
     }
-    if (round.config.host !== caller) return { ok: false, error: "only the host can cancel this arena" } as const;
+    if (round.config.host !== caller) return { ok: false, error: "only the host can cancel this pit" } as const;
     const humans = round.entrants.filter((e) => !e.isBot);
     // Refuse once anyone other than the host is in the room.
-    if (humans.some((e) => e.wallet !== caller)) return { ok: false, error: "arena already has players" } as const;
+    if (humans.some((e) => e.wallet !== caller)) return { ok: false, error: "pit already has players" } as const;
     round.status = "cancelled";
     round.endedAt = Date.now();
     logEvent(round, "Round cancelled — host deposit was not signed.");

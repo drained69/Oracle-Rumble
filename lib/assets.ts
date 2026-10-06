@@ -1,5 +1,5 @@
 /**
- * The Oracle Rumble asset universe.
+ * The Pit's crypto asset universe.
  *
  * The game is deliberately focused on three liquid, high-conviction assets —
  * BTC, ETH, SOL. Every round market and every Predictions question is a

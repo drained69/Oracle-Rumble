@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { PANTA_LIVE, pantaFetch, type PantaMarket } from "@/lib/panta";
 import { arenas as mockArenas } from "@/lib/arena-data";
 import { pantaMarketToUi, type PantaLiveMarket } from "@/lib/panta-shape";
+import { toMs } from "@/lib/panta-market";
 
 /**
  * GET /api/markets
@@ -36,7 +37,7 @@ function slug(s: string) {
 function buildArenasFromPantaMarkets(markets: PantaLiveMarket[]) {
   // Preserve each market's endTime so the arena countdown reflects reality
   // (min endTime across the arena's markets = the next resolution boundary).
-  const byCategory = new Map<string, Array<{ ui: PantaMarket; endTime?: string }>>();
+  const byCategory = new Map<string, Array<{ ui: PantaMarket; endTime?: string | number }>>();
   for (const m of markets) {
     const ui = pantaMarketToUi(m);
     const key = slug(ui.category || "general");
@@ -49,7 +50,7 @@ function buildArenasFromPantaMarkets(markets: PantaLiveMarket[]) {
     // back to 24h if Panta didn't send endTimes.
     let earliest = Number.POSITIVE_INFINITY;
     for (const r of rows) {
-      const t = r.endTime ? Date.parse(r.endTime) : NaN;
+      const t = toMs(r.endTime) ?? NaN;
       if (Number.isFinite(t)) earliest = Math.min(earliest, t);
     }
     const endsInMs = Number.isFinite(earliest)

@@ -110,7 +110,7 @@ function hostNickname(round: { config: { host: string }; entrants: { wallet: str
   return h?.nickname ?? "a host";
 }
 function championNickname(round: { championId: string | null; entrants: { id: string; nickname: string; isBot: boolean }[] }): string {
-  if (!round.championId) return "the arena";
+  if (!round.championId) return "the pit";
   const c = round.entrants.find((e) => e.id === round.championId);
-  return c && !c.isBot ? c.nickname : "the arena";
+  return c && !c.isBot ? c.nickname : "the pit";
 }

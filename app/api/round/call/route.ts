@@ -26,13 +26,13 @@ export async function POST(request: Request) {
   let callError = "";
   const { round, error } = await mutateActiveRound(arena, (r) => {
     if (r.status !== "enrolling") { callError = "the round has started — trade from the live panel"; return; }
-    if (r.predictions || r.streak) { callError = "this arena has picks, not an opening call"; return; }
+    if (r.predictions || r.streak) { callError = "this pit has picks, not an opening call"; return; }
     const me = r.entrants.find((e) => e.wallet === body.wallet);
     if (!me) { callError = "take a seat first"; return; }
     me.openingCall = body.call ?? null;
     if (body.pct !== undefined) me.openingCallPct = normalizeCallPct(body.pct);
   });
-  if (!round) return NextResponse.json({ error: "no active round in this arena" }, { status: 404 });
+  if (!round) return NextResponse.json({ error: "no active round in this pit" }, { status: 404 });
   if (callError) return NextResponse.json({ error: callError }, { status: 409 });
   if (error) return NextResponse.json({ error }, { status: 500 });
   const me = round.entrants.find((e) => e.wallet === body.wallet);

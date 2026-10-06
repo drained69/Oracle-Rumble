@@ -14,6 +14,8 @@ import { ASSET_SYMBOLS, assetOfMarketId, directionMarketId, getAsset, HORIZONS, 
 import { answersFor, predictionQuestions, randomPicks, scorePicks } from "@/lib/predictions";
 import { createStreak, currentLeg, normalizeLegSec, resolveLeg, runLeg, startStreak } from "@/lib/streak";
 import { freshSpots, resolvedCents, spotPrices, spotPricesAt, upCents, type Spots } from "@/lib/oracle";
+import { categoryLabel, getPantaMarket } from "@/lib/panta-market";
+import { absorbOpening, bookBotTick, bookCents, closingWindowMs, liquidityFor, markAtBook, recordTape, seedBook, twap } from "@/lib/room-book";
 import {
   advance,
   botTick,
@@ -24,6 +26,7 @@ import {
   markToMarket,
   normalizeConfig,
   isPicksFormat,
+  isPantaPit,
   isPracticeArena,
   placeOpeningCalls,
   settle,
@@ -50,7 +53,14 @@ export type Pricing = {
   priceMap: PriceMap;    // every board market's UP price, cents (values legacy parlay tickets)
   spots: Spots;          // latest USD spot per asset
   closeSpots?: Spots;    // USD per asset at the live deadline (late settles)
+  line?: number;         // Panta pits: Panta's current YES price, cents
+  outcome?: "YES" | "NO" | null; // Panta pits: the market's resolved outcome, if any
 };
+
+/** Minimum gap between price-tape samples: ~300 points across the window, never under 3s. */
+function tapeGap(round: Round): number {
+  return Math.max(3_000, (round.config.liveSec * 1000) / 300);
+}
 
 /** Is this round on one of our BTC/ETH/SOL direction markets (oracle-resolved)? */
 export function isDirectionRound(round: Round): boolean {
@@ -108,6 +118,14 @@ const usdFmt = (n: number) => `$${n.toLocaleString("en-US", { minimumFractionDig
 export async function livePricing(round: Round | null): Promise<Pricing> {
   if (!round) return { yesPrice: 50, priceMap: {}, spots: {} };
   const now = Date.now();
+  if (isPantaPit(round.config)) {
+    // The room trades its own book; Panta gives the reference line and, once
+    // its resolver rules, the outcome.
+    const snap = await getPantaMarket(round.config.marketId);
+    const line = snap?.yesCents ?? round.book?.lastLine ?? round.book?.line ?? 50;
+    const yesPrice = round.book ? (round.book.close ?? bookCents(round.book)) : line;
+    return { yesPrice, priceMap: { [round.config.marketId]: yesPrice }, spots: {}, line, outcome: snap?.outcome ?? null };
+  }
   if (!isDirectionRound(round)) {
     const yesPrice = await marketYesPrice(round.config.marketId);
     return { yesPrice, priceMap: { ...buildPriceMap(), [round.config.marketId]: yesPrice }, spots: {} };
@@ -155,6 +173,7 @@ export async function tradePricing(round: Round, assets: AssetSymbol[]): Promise
 
 /** The round market's UP price after a tick, for the response. */
 export function yesAfterTick(round: Round, pricing: Pricing): number {
+  if (round.book) return round.book.close ?? bookCents(round.book);
   return isDirectionRound(round)
     ? oraclePriceMap(round, pricing.spots)[round.config.marketId] ?? 50
     : pricing.yesPrice;
@@ -254,7 +273,28 @@ export async function pickMarket(excludeId?: string): Promise<MarketPick | null>
  * to safe bounds by normalizeConfig. If the host picked an asset, we run on
  * that asset's market; otherwise the keeper picks one.
  */
-export async function bootstrapRound(overrides?: Partial<RoundConfig> & { horizon?: string }, arenaCode?: string): Promise<Round | null> {
+export async function bootstrapRound(
+  overrides?: Partial<RoundConfig> & { horizon?: string },
+  arenaCode?: string,
+  panta?: { marketId: string; question: string; category: string }
+): Promise<Round | null> {
+  if (panta) {
+    // A pit on a Panta market: the market fields come from Panta (or the
+    // host's verified draft), never the request body. Trading formats only —
+    // Predictions and Streak are built on the BTC/ETH/SOL spot oracle.
+    const base: RoundConfig = {
+      ...DEFAULT_CONFIG,
+      marketId: panta.marketId,
+      marketQuestion: panta.question.slice(0, 200),
+      category: panta.category,
+      asset: categoryLabel(panta.category),
+      marketSource: "panta"
+    };
+    const { marketId: _m, marketQuestion: _q, category: _c, asset: _a, horizon: _h, marketSource: _s, ...rules } = overrides ?? {};
+    void _m; void _q; void _c; void _a; void _h; void _s;
+    const config = normalizeConfig(base, { ...rules, format: rules.format === "royale" ? "royale" : "single" });
+    return createRound(config, 1, arenaCode);
+  }
   const predictions = isPicksFormat(overrides?.format);
   // Predictions and Streak cover all three coins; their clock runs on BTC's market.
   const wantAsset = predictions ? "BTC" : overrides?.asset ? String(overrides.asset).toUpperCase() : undefined;
@@ -401,7 +441,9 @@ export function tick(round: Round, pricing: Pricing): Round {
       ? `Enrollment locked — ${round.entrants.length} players, picks revealed.`
       : round.streak
         ? `Enrollment locked — ${round.entrants.length} players in. Wrong pick and you're out.`
-        : `Enrollment locked — ${round.entrants.length} entrants live on ${round.config.asset}.`);
+        : isPantaPit(round.config)
+          ? `Enrollment locked — ${round.entrants.length} players. The pit is trading.`
+          : `Enrollment locked — ${round.entrants.length} entrants live on ${round.config.asset}.`);
     if (round.streak) {
       // Keep sampling all three coins for the live view; each leg opens itself.
       if (pricing.spots.BTC || pricing.spots.ETH || pricing.spots.SOL) openOracle(round, pricing.spots, now);
@@ -411,6 +453,19 @@ export function tick(round: Round, pricing: Pricing): Round {
         openOracle(round, pricing.spots, now);
         logEvent(round, `Picks locked. Opening prices: ${need.map((a) => `${a} ${pricing.spots[a] ? usdFmt(pricing.spots[a]!) : "unavailable"}`).join(", ")}.`);
       }
+    } else if (isPantaPit(round.config)) {
+      // Opening auction: every seat call fills at Panta's line, then the room
+      // book absorbs the table's net lean and trades from there.
+      const line = pricing.line ?? 50;
+      placeOpeningCalls(round, line);
+      const totalVault = round.entrants.length * round.config.startingBankroll;
+      const book = seedBook(line, liquidityFor(totalVault));
+      book.lastLine = line;
+      absorbOpening(book, round.entrants);
+      round.book = book;
+      for (const e of round.entrants) markAtBook(e, book);
+      round.tape = recordTape([[now, line]], now, bookCents(book));
+      logEvent(round, `Panta's line opened at ${Math.round(line)}¢ YES — the room trades its own odds from here.`);
     } else {
       if (direction && pricing.spots[asset]) {
         openOracle(round, pricing.spots, now);
@@ -418,6 +473,7 @@ export function tick(round: Round, pricing: Pricing): Round {
       }
       // UP/DOWN calls picked at the seat go in at the opening price.
       placeOpeningCalls(round, direction ? 50 : pricing.yesPrice);
+      round.tape = [[now, direction ? 50 : pricing.yesPrice]];
     }
   }
 
@@ -455,6 +511,20 @@ export function tick(round: Round, pricing: Pricing): Round {
     return round;
   }
 
+  if (round.status === "live" && round.book) {
+    const book = round.book;
+    if (pricing.line !== undefined) book.lastLine = pricing.line;
+    const botsAct = (!round.botTickAt || now - round.botTickAt >= BOT_TICK_MS) && now < round.liveDeadline - TRADE_CUTOFF_MS;
+    if (botsAct) round.botTickAt = now;
+    for (const e of round.entrants) {
+      if (e.isBot && botsAct) bookBotTick(book, e);
+      markAtBook(e, book);
+    }
+    if (now <= round.liveDeadline) round.tape = recordTape(round.tape ?? [], now, bookCents(book), tapeGap(round));
+    if (now >= round.liveDeadline) settleBookRound(round, pricing);
+    return round;
+  }
+
   if (round.status === "live") {
     // Rounds that went live without an open (advanced royale rounds, or an
     // oracle outage at the lock) open on the first priced tick.
@@ -472,6 +542,7 @@ export function tick(round: Round, pricing: Pricing): Round {
       if (e.isBot && botsAct) botTick(e, yesPrice);
       markToMarket(e, yesPrice, priceMap);
     }
+    if (now <= round.liveDeadline) round.tape = recordTape(round.tape ?? [], now, yesPrice, tapeGap(round));
     if (now >= round.liveDeadline) {
       if (!direction) {
         settle(round, yesPrice, priceMap);
@@ -506,6 +577,32 @@ export function tick(round: Round, pricing: Pricing): Round {
 }
 
 /**
+ * Settle a pit on a Panta market at the bell. If Panta's resolver has ruled,
+ * shares pay the outcome (100¢ / 0¢) and the series ends — a resolved market
+ * has nothing left to trade. Otherwise the room's average price over the
+ * closing period is the settlement price, so a late pump can't mark it.
+ */
+function settleBookRound(round: Round, pricing: Pricing): void {
+  const book = round.book!;
+  const outcome = pricing.outcome;
+  let close: number;
+  if (outcome === "YES" || outcome === "NO") {
+    close = outcome === "YES" ? 100 : 0;
+    book.settledBy = "outcome";
+    round.config.roundLimit = round.roundNumber;
+    logEvent(round, `Panta resolved the market ${outcome} — YES shares pay ${close}¢, NO shares ${100 - close}¢.`);
+  } else {
+    const win = closingWindowMs(round.config.liveSec);
+    close = twap(round.tape ?? [], round.liveDeadline - win, round.liveDeadline, bookCents(book));
+    book.settledBy = "twap";
+    const span = win >= 60_000 ? `${Math.round(win / 60_000)} min` : `${Math.round(win / 1000)}s`;
+    logEvent(round, `Settlement price ${close}¢ YES — the room's average over the final ${span}.`);
+  }
+  book.close = close;
+  settle(round, close, { [round.config.marketId]: close });
+}
+
+/**
  * Closing prices of every coin a predictions round needs: the sample nearest
  * the deadline (this tick, the previous tick, or the 1-minute candle when the
  * arena went unwatched). Null when none of them has all the prices yet.
@@ -531,6 +628,15 @@ export function advanceToNext(round: Round, nextMarket: { marketId: string; mark
     category: round.config.category,
     asset: round.config.asset
   });
+  if (round.book && isPantaPit(next.config)) {
+    // Same market, next round: the book re-seeds at the settlement price with
+    // liquidity sized to the survivors' vaults.
+    const close = round.book.close ?? bookCents(round.book);
+    const vault = next.entrants.filter((e) => e.eliminatedRound === null).reduce((s, e) => s + e.cash, 0);
+    next.book = { ...seedBook(close, liquidityFor(vault)), line: round.book.line, lastLine: round.book.lastLine };
+    next.tape = [[Date.now(), bookCents(next.book)]];
+    return next;
+  }
   const a = next.config.asset as AssetSymbol;
   if (isDirectionRound(next) && spots[a]) {
     openOracle(next, spots, Date.now());

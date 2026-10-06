@@ -2,7 +2,9 @@ import { NextResponse } from "next/server";
 import { STORE_ENABLED, withKeeperLock } from "@/lib/round-store";
 import { advanceToNext, bootstrapRound, livePricing, pickMarket, tick, yesAfterTick, type Pricing } from "@/lib/round-keeper";
 import { streakSpanSec } from "@/lib/streak";
-import { PICKS_PRACTICE_ARENA, STREAK_PRACTICE_ARENA, chainVaultUsdc, cutLine, humanCount, isPracticeArena, newArenaCode, normalizeArenaCode, redactOpeningCalls, seatCostUsdc, seatPlayer, standings, type Round, logEvent } from "@/lib/royale";
+import { getDraft, getPantaMarket } from "@/lib/panta-market";
+import { PANTA_LIVE } from "@/lib/panta";
+import { PICKS_PRACTICE_ARENA, STREAK_PRACTICE_ARENA, chainVaultUsdc, cutLine, humanCount, isPantaPit, isPracticeArena, newArenaCode, normalizeArenaCode, redactOpeningCalls, seatCostUsdc, seatPlayer, standings, type Round, logEvent } from "@/lib/royale";
 import { escrowReady, initArenaOnChain, playerBalances } from "@/lib/escrow-server";
 import { sessionWallet } from "@/lib/session";
 import { NEEDS_X_MESSAGE, playerName } from "@/lib/identity";
@@ -34,7 +36,9 @@ async function currentWithTick(arena: string, allowBootstrap: boolean): Promise<
   const peek = await import("@/lib/round-store").then((m) => m.getActiveRound(arena));
   const pricing = await livePricing(peek);
   // Only a royale has a next round.
-  const mayAdvance = peek?.status === "live" && peek.config.format === "royale";
+  // A pit on a Panta market keeps its market for every round — the event is
+  // still running; only crypto royales rotate to another coin.
+  const mayAdvance = peek?.status === "live" && peek.config.format === "royale" && !isPantaPit(peek.config);
   const nextMarket = mayAdvance ? await pickMarket(peek?.config.marketId) : null;
   // Only the walk-in practice arenas auto-boot. Hosted arenas stay empty when
   // done. PUBLIC runs quick single rounds, PICKS predictions, and STREAK a
@@ -122,7 +126,7 @@ export async function GET(request: Request) {
       const status = isPracticeArena(arena) ? 503 : 404;
       const error = isPracticeArena(arena)
         ? "no market available to open a round"
-        : `arena ${arena} not found`;
+        : `pit ${arena} not found`;
       return NextResponse.json({ round: null, arena, error }, { status });
     }
     // Price the round that is actually returned (it can differ from the one
@@ -137,6 +141,8 @@ export async function GET(request: Request) {
       arena: round.arenaCode,
       yesPrice,
       spot: (pricing.spots as Record<string, number | undefined>)[asset] ?? round.oracle?.last?.[asset] ?? null,
+    // Panta pits: Panta's own line, shown next to the room's odds.
+    line: isPantaPit(round.config) ? (pricing.line ?? round.book?.lastLine ?? round.book?.line ?? null) : null,
       cutLine: cutLine(round),
       standings: standings(pub),
       persisted: STORE_ENABLED
@@ -185,16 +191,39 @@ export async function POST(request: Request) {
   if (limited) return limited;
   const host = sessionWallet(request);
   if (onChain && !host) {
-    return NextResponse.json({ error: "Sign in with your wallet to host an arena.", needsAuth: true }, { status: 401 });
+    return NextResponse.json({ error: "Sign in with your wallet to host a pit.", needsAuth: true }, { status: 401 });
   }
   if (onChain && (await playerName(host!, undefined, false)).needsX) {
     return NextResponse.json({ error: `${NEEDS_X_MESSAGE.replace(" to play", " to host")}`, needsX: true }, { status: 403 });
   }
   if (onChain && overLimit("host-wallet", host!, 6, 10 * 60_000)) {
-    return NextResponse.json({ error: "You've opened several arenas in the last few minutes — wait a little before hosting another." }, { status: 429 });
+    return NextResponse.json({ error: "You've opened several pits in the last few minutes — wait a little before hosting another." }, { status: 429 });
   }
 
-  const fresh = await bootstrapRound(body.config as never, arena);
+  // A pit on a Panta market — an existing one from the catalog, or one the
+  // host just created through The Pit (a verified draft). The question and
+  // category are taken from Panta / the draft, never from the request body.
+  let panta: { marketId: string; question: string; category: string } | undefined;
+  const cfg = (body.config ?? {}) as { marketSource?: unknown; pantaMarketId?: unknown; draftId?: unknown };
+  if (cfg.marketSource === "panta") {
+    if (!PANTA_LIVE) return NextResponse.json({ error: "Panta markets aren't available on this server (no Panta API key)." }, { status: 503 });
+    if (isPracticeArena(arena)) return NextResponse.json({ error: "Practice pits run on crypto markets." }, { status: 400 });
+    if (typeof cfg.draftId === "string" && cfg.draftId) {
+      const draft = getDraft(cfg.draftId);
+      if (!draft || !draft.marketId) return NextResponse.json({ error: "That market draft expired or was never registered — create it again." }, { status: 410 });
+      if (!host || draft.wallet !== host) return NextResponse.json({ error: "Only the wallet that created this market can host a pit on it." }, { status: 403 });
+      panta = { marketId: draft.marketId, question: draft.question, category: draft.category };
+    } else if (typeof cfg.pantaMarketId === "string" && cfg.pantaMarketId) {
+      const snap = await getPantaMarket(cfg.pantaMarketId);
+      if (!snap) return NextResponse.json({ error: "Panta doesn't know that market — pick another." }, { status: 404 });
+      if (snap.resolved) return NextResponse.json({ error: "That market has already resolved — pick an open one." }, { status: 409 });
+      panta = { marketId: snap.id, question: snap.question || "Panta market", category: snap.category };
+    } else {
+      return NextResponse.json({ error: "Pick a Panta market or create one." }, { status: 400 });
+    }
+  }
+
+  const fresh = await bootstrapRound(body.config as never, arena, panta);
   if (!fresh) return NextResponse.json({ error: "no market available" }, { status: 503 });
   // The host is whoever is signed in — never a value from the request body.
   fresh.config.host = host ?? "";
@@ -248,7 +277,7 @@ export async function POST(request: Request) {
   });
 
   if ("conflict" in result) {
-    return NextResponse.json({ error: "a rumble is already in progress in this arena", round: result.conflict ? redactOpeningCalls(result.conflict) : null }, { status: 409 });
+    return NextResponse.json({ error: "a game is already in progress in this pit", round: result.conflict ? redactOpeningCalls(result.conflict) : null }, { status: 409 });
   }
   const { yesPrice } = await livePricing(fresh);
   return NextResponse.json({

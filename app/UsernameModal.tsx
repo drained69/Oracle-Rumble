@@ -32,7 +32,7 @@ export default function UsernameModal({
             <p className="sub">You play as <b>@{initial}</b>, your X handle. Usernames come from X and are set once, so it can&apos;t be changed.</p>
           ) : (
             <>
-              <p className="sub">Your username is your X handle. Connect X once and it&apos;s set for good — every arena, standing and result shows it. You&apos;ll come straight back here.</p>
+              <p className="sub">Your username is your X handle. Connect X once and it&apos;s set for good — every pit, standing and result shows it. You&apos;ll come straight back here.</p>
               <button
                 type="button"
                 className="btn primary full x-connect"
@@ -69,7 +69,7 @@ export default function UsernameModal({
       <div className="modal" role="dialog" aria-modal="true" aria-labelledby="un-title" onClick={(e) => e.stopPropagation()}>
         <button className="close" onClick={onClose} aria-label="Close">×</button>
         <h2 id="un-title">{initial ? "Edit username" : "Set username"}</h2>
-        <p className="sub">Shown on the arena stage, standings and results. Saved on this device for your wallet — change it any time before you join an arena.</p>
+        <p className="sub">Shown on the pit stage, standings and results. Saved on this device for your wallet — change it any time before you join a pit.</p>
         <form onSubmit={(e) => { e.preventDefault(); submit(); }}>
           <label>
             Username

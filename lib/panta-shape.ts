@@ -21,16 +21,30 @@ export type PantaLiveMarket = {
   noPrice?: number | string;
   volumeUsdc?: string;
   volume?: string;
-  endTime?: string;
+  /** Unix seconds, ms, or ISO string — Panta varies by endpoint. */
+  endTime?: string | number;
   closes?: string;
   phase?: string;
   resolved?: boolean;
   outcome?: "YES" | "NO" | null;
   resolvedAt?: string;
-  resolutionTime?: string;
-  resolveAt?: string;
-  resolutionTimestamp?: string;
+  resolutionTime?: string | number;
+  resolveAt?: string | number;
+  resolutionTimestamp?: string | number;
 };
+
+/** A Panta time (unix seconds, ms, or ISO string) as ms epoch, else NaN. */
+function timeMs(v: string | number | undefined): number {
+  if (v === undefined || v === null || v === "") return NaN;
+  if (typeof v === "number") return v < 1e12 ? v * 1000 : v;
+  if (/^\d+$/.test(v.trim())) { const n = Number(v); return n < 1e12 ? n * 1000 : n; }
+  return Date.parse(v);
+}
+
+function isoOrNull(v: string | number | undefined): string | null {
+  const t = timeMs(v);
+  return Number.isFinite(t) ? new Date(t).toISOString() : null;
+}
 
 export function toCents(v: number | string | undefined): number {
   if (v === undefined || v === null) return 50;
@@ -48,9 +62,8 @@ export function formatVolume(v: string | undefined): string {
   return `$${n.toFixed(2)}`;
 }
 
-export function formatCloses(endTime: string | undefined): string {
-  if (!endTime) return "—";
-  const t = Date.parse(endTime);
+export function formatCloses(endTime: string | number | undefined): string {
+  const t = timeMs(endTime);
   if (Number.isNaN(t)) return "—";
   const ms = t - Date.now();
   if (ms <= 0) return "Closed";
@@ -84,6 +97,6 @@ export function pantaMarketToUi(m: PantaLiveMarket): PantaMarket {
     phase: mapPhase(m.phase, m.resolved),
     outcome: m.outcome ?? null,
     resolvedAt: m.resolvedAt ?? null,
-    resolutionTime: m.resolutionTime ?? m.resolveAt ?? m.resolutionTimestamp ?? null
+    resolutionTime: isoOrNull(m.resolutionTime ?? m.resolveAt ?? m.resolutionTimestamp)
   };
 }

@@ -70,7 +70,7 @@ export default function PositionsPage() {
         ) : (
           <div className="positions-shell">
             <div className="positions-empty">
-              <p>Connect a Solana wallet to see your arenas, positions and payouts.</p>
+              <p>Connect a Solana wallet to see your pits, positions and payouts.</p>
               <button className="btn-cta" onClick={connect} style={{ marginTop: 14 }}>Connect wallet</button>
             </div>
           </div>

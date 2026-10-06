@@ -73,11 +73,11 @@ export async function POST(request: Request) {
     const latest = await getLatestRound(arena);
     if (latest?.escrow && (await verifyPlayerDeposited(body.wallet, latest.escrow.roundVault)).ok) {
       return NextResponse.json({
-        error: `Arena ${arena} closed before your seat was registered. Your deposit is safe in escrow — open the arena to claim a full refund.`,
+        error: `Pit ${arena} closed before your seat was registered. Your deposit is safe in escrow — open the pit to claim a full refund.`,
         refundable: true, arena
       }, { status: 409 });
     }
-    return NextResponse.json({ error: "this arena is no longer taking players", arena }, { status: 404 });
+    return NextResponse.json({ error: "this pit is no longer taking players", arena }, { status: 404 });
   }
 
   // Already seated → success (page reloads never ask for a second deposit).
@@ -110,7 +110,7 @@ export async function POST(request: Request) {
         return NextResponse.json({ error: `enrollment closed (round is ${peek.status})` }, { status: 409 });
       }
       if (peek.entrants.filter((e) => !e.isBot).length >= peek.config.capacity) {
-        return NextResponse.json({ error: "arena is full" }, { status: 409 });
+        return NextResponse.json({ error: "pit is full" }, { status: 409 });
       }
       return NextResponse.json({ error: "deposit required", needsDeposit: true, escrow: { roundVault: peek.escrow!.roundVault, mint: peek.escrow!.mint } }, { status: 402 });
     }
@@ -138,12 +138,12 @@ export async function POST(request: Request) {
     if (r.escrow?.pendingSeats) delete r.escrow.pendingSeats[body.wallet];
   });
 
-  if (!round) return NextResponse.json({ error: "no active round in this arena", arena }, { status: 404 });
+  if (!round) return NextResponse.json({ error: "no active round in this pit", arena }, { status: 404 });
   if (enrollError) {
     // Paid but the round locked or filled first: the deposit is refunded at
     // settlement (every on-chain entry is settled, seated or not).
     return NextResponse.json(closedWithDeposit
-      ? { error: `${enrollError} Your deposit is safe — it's returned in full when this arena settles.`, refundable: true }
+      ? { error: `${enrollError} Your deposit is safe — it's returned in full when this pit settles.`, refundable: true }
       : { error: enrollError }, { status: 409 });
   }
   if (error) return NextResponse.json({ error }, { status: 500 });

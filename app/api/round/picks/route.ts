@@ -44,7 +44,7 @@ export async function POST(request: Request) {
       pick = body.pick;
       return;
     }
-    if (!r.predictions) { pickError = "this arena has no picks"; return; }
+    if (!r.predictions) { pickError = "this pit has no picks"; return; }
     if (r.status !== "enrolling") { pickError = "the round has started — picks are locked"; return; }
     if (!me) { pickError = "take a seat first"; return; }
     if (body.picks !== undefined) me.picks = { ...(me.picks ?? {}), ...normalizePicks(r.predictions.questions, body.picks) };
@@ -52,7 +52,7 @@ export async function POST(request: Request) {
     picks = me.picks ?? {};
     locks = me.locks ?? [];
   });
-  if (!round) return NextResponse.json({ error: "no active round in this arena" }, { status: 404 });
+  if (!round) return NextResponse.json({ error: "no active round in this pit" }, { status: 404 });
   if (pickError) return NextResponse.json({ error: pickError }, { status: 409 });
   if (error) return NextResponse.json({ error }, { status: 500 });
   return NextResponse.json(round.streak ? { ok: true, pick } : { ok: true, picks, locks });

@@ -33,8 +33,8 @@ function explorer(vault: string) {
 /** One-line result of a finished arena for this player. */
 function resultLine(i: PortfolioItem): string {
   const me = i.me;
-  if (i.status === "unknown") return "The game's record of this arena isn't available, but your payout is recorded on chain.";
-  if (i.status === "cancelled") return i.chain ? "Arena cancelled before it started — your seat is refunded in full." : "Arena cancelled before it started.";
+  if (i.status === "unknown") return "The game's record of this pit isn't available, but your payout is recorded on chain.";
+  if (i.status === "cancelled") return i.chain ? "Pit cancelled before it started — your seat is refunded in full." : "Pit cancelled before it started.";
   if (!me) return i.chain ? "You paid a seat but weren't seated — it's refunded in full." : "";
   const place = me.place ? `${ordinal(me.place)} of ${me.players}` : "Finished";
   const prize = (me.prizeUsdc > 0 ? ` · won ${usd.format(me.prizeUsdc)} from the pool` : "")
@@ -56,7 +56,7 @@ export default function ArenaPortfolio({ wallet, onToast }: { wallet: string; on
     try {
       const res = await fetch(`/api/portfolio?wallet=${encodeURIComponent(wallet)}`, { cache: "no-store" });
       const j = (await res.json()) as Portfolio & { error?: string };
-      if (!res.ok) { setLoadError(j.error ?? "Couldn't load your arenas."); return; }
+      if (!res.ok) { setLoadError(j.error ?? "Couldn't load your pits."); return; }
       setData(j);
       setLoadError(j.error ?? "");
     } catch {
@@ -116,7 +116,7 @@ export default function ArenaPortfolio({ wallet, onToast }: { wallet: string; on
   }, [wallet, onToast, load]);
 
   if (!data) {
-    return <div className="positions-shell"><div className="positions-empty">{loadError || "Loading your arenas…"}</div></div>;
+    return <div className="positions-shell"><div className="positions-empty">{loadError || "Loading your pits…"}</div></div>;
   }
 
   const claimable = data.items.filter((i) => i.action === "claim" || i.action === "recover");
@@ -127,7 +127,7 @@ export default function ArenaPortfolio({ wallet, onToast }: { wallet: string; on
     <div className="pf">
       <div className="positions-shell">
         <div className="positions-stats">
-          <div><span>Active arenas</span><b>{data.summary.active}</b></div>
+          <div><span>Active pits</span><b>{data.summary.active}</b></div>
           <div><span>In play</span><b>{usd.format(data.summary.inPlayUsdc)}</b></div>
           <div><span>Ready to withdraw</span><b className={data.summary.claimableUsdc > 0 ? "up" : ""}>{usd.format(data.summary.claimableUsdc)}</b></div>
           <div><span>Prizes won</span><b>{usd.format(data.summary.prizesUsdc)}</b></div>
@@ -138,8 +138,8 @@ export default function ArenaPortfolio({ wallet, onToast }: { wallet: string; on
       {data.items.length === 0 && (
         <div className="positions-shell">
           <div className="positions-empty">
-            <p>You haven&apos;t played an arena with this wallet yet.</p>
-            <a className="btn-cta" href="/" style={{ marginTop: 14, display: "inline-flex" }}>Find an arena</a>
+            <p>You haven&apos;t played a pit with this wallet yet.</p>
+            <a className="btn-cta" href="/" style={{ marginTop: 14, display: "inline-flex" }}>Find a pit</a>
           </div>
         </div>
       )}
@@ -157,7 +157,7 @@ export default function ArenaPortfolio({ wallet, onToast }: { wallet: string; on
                 </div>
                 <p className="pf-line">
                   {i.action === "recover"
-                    ? "This arena was never settled and its recovery window is open — take your full seat back."
+                    ? "This pit was never settled and its recovery window is open — take your full seat back."
                     : resultLine(i)}
                 </p>
                 {(() => {
@@ -236,8 +236,8 @@ function ActiveCard({ i, now }: { i: PortfolioItem; now: number }) {
       ) : i.format === "streak" && me.streak ? (
         <p className="pf-line">
           {!me.streak.alive ? <>Knocked out on leg {me.eliminatedRound} — you lasted {me.score ?? 0} leg{(me.score ?? 0) === 1 ? "" : "s"}.</>
-            : i.status === "enrolling" ? <>You&apos;re in. The streak starts when enrollment closes — keep the arena open, each leg gives 20 seconds to pick.</>
-            : <><b className="up">Still in</b> · leg {me.streak.leg} of up to {me.streak.maxLegs}{me.streak.picked ? "" : <> — <b className="down">open the arena to pick</b></>}.</>}
+            : i.status === "enrolling" ? <>You&apos;re in. The streak starts when enrollment closes — keep the pit open, each leg gives 20 seconds to pick.</>
+            : <><b className="up">Still in</b> · leg {me.streak.leg} of up to {me.streak.maxLegs}{me.streak.picked ? "" : <> — <b className="down">open the pit to pick</b></>}.</>}
         </p>
       ) : i.format === "predictions" ? (
         i.status === "enrolling" ? (
@@ -292,7 +292,7 @@ function ActiveCard({ i, now }: { i: PortfolioItem; now: number }) {
             : i.format === "predictions" ? "Predictions · most points take the pool"
             : i.format === "streak" ? "Streak · last caller standing takes the pool"
             : "Single round · top finishers split the pool"}
-          {" · "}<a href={`/a/${i.arena}`}>Open arena →</a>
+          {" · "}<a href={`/a/${i.arena}`}>Open pit →</a>
         </p>
       )}
     </article>

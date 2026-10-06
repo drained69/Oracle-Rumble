@@ -8,7 +8,7 @@
  * Every step emits a LifecycleUpdate so the UI can show live progress
  * ("Quoting on Panta…", "Sign the tx…", "Confirming…", "Attributed").
  * On success the returned signature is the on-chain transaction hash
- * that Panta credited to the Oracle Rumble attribution key.
+ * that Panta credited to The Pit's attribution key.
  *
  * The caller is expected to have a connected wallet + a real Panta
  * market id. For synthetic direction-board markets, don't invoke this
@@ -182,7 +182,7 @@ export async function executePantaOrder(args: ExecuteOrderArgs): Promise<Execute
     step: attributed ? "attributed" : "done",
     signature, source, attributed,
     note: attributed
-      ? `Attributed to Oracle Rumble${source === "mock" ? " (demo)" : ""}`
+      ? `Attributed to The Pit${source === "mock" ? " (demo)" : ""}`
       : "Attribution pending — Panta will pick it up on the next scan."
   });
   emit({ step: "done", signature, quoteId: quote.quoteId, attributed, source });

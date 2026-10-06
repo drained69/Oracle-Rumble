@@ -1,13 +1,14 @@
 "use client";
 
 /**
- * Home — a single-viewport lobby. Left: what Oracle Rumble is. Right: a
+ * Home — a single-viewport lobby. Left: what The Pit is. Right: a
  * card with two tabs, Join (live arenas) and Host (open a new arena).
  * Positions and Docs are their own routes, reached from the header.
  */
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { cancelArena, checkSeatFunds, enrollWithEscrow, newRound, prepareWallet, seatStepText, type SeatStep } from "@/lib/round-client";
+import { finishMarket, quoteMarket, type MarketQuote } from "@/lib/panta-client";
 import { shortPk, USERNAME_MAX, validateUsername } from "@/lib/username";
 import { DEFAULT_OPENING_CALL_PCT, PICKS_CHAIN_VAULT_USDC, hostAmountError, isPicksFormat, type RoundFormat } from "@/lib/royale";
 import { DEFAULT_LEG_SEC, LEG_LENGTHS, MAX_LEGS } from "@/lib/streak";
@@ -26,8 +27,27 @@ import CountUp from "@/app/CountUp";
 const usd = new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 0 });
 const usd2 = new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 2 });
 
+/** Where a hosted pit's market comes from. */
+type MarketSource = "crypto" | "panta" | "create";
+type CatalogItem = { id: string; question: string; category: string; yesCents: number; endMs: number | null; volumeUsdc: number };
+const CREATE_CATEGORIES = ["sports", "crypto", "politics", "entertainment", "finance", "science", "world", "other"] as const;
+/** A starting source of truth per category — the host can change it. */
+const DEFAULT_SOURCE: Record<string, string> = {
+  sports: "https://www.espn.com", crypto: "https://www.coinbase.com", politics: "https://apnews.com",
+  entertainment: "https://variety.com", finance: "https://www.reuters.com/markets", science: "https://www.nature.com",
+  world: "https://www.reuters.com/world", other: "https://www.reuters.com"
+};
+/** How long trading on a created market runs: label → seconds. */
+const MARKET_ENDS: { label: string; sec: number }[] = [
+  { label: "1h", sec: 3_600 }, { label: "3h", sec: 3 * 3_600 }, { label: "12h", sec: 12 * 3_600 },
+  { label: "1d", sec: 86_400 }, { label: "7d", sec: 7 * 86_400 }
+];
+/** Trading window of a pit on a Panta market (minutes). */
+const PIT_WINDOWS = [5, 15, 60];
+
 type ArenaItem = {
   arenaCode: string;
+  marketSource?: "crypto" | "panta";
   isPublic: boolean;
   inviteSlug: string;
   status: string;
@@ -71,7 +91,7 @@ type Tab = "play" | "host";
 
 /** Quick arenas stay open this long after the host's seat is confirmed. */
 const QUICK_ENROLL_SEC = 120;
-type HostStep = "" | "checking" | "opening" | SeatStep;
+type HostStep = "" | "checking" | "opening" | "quoting" | "building" | "signing" | "registering" | SeatStep;
 
 export default function ArenasDirectory() {
   const { wallet, username, toggleConnect, saveUsername, connectX, xRequired } = useWalletIdentity();
@@ -101,6 +121,47 @@ export default function ArenasDirectory() {
   const [hCall, setHCall] = useState<"YES" | "NO" | "LATER" | "">("");
   const [hCallPct, setHCallPct] = useState<number>(DEFAULT_OPENING_CALL_PCT);
   const [inviteInfo, setInviteInfo] = useState<{ code: string; url: string } | null>(null);
+
+  // Market source: crypto direction, an existing Panta market, or a new one.
+  const [hSource, setHSource] = useState<MarketSource>("crypto");
+  const [catalog, setCatalog] = useState<{ loaded: boolean; available: boolean; sandbox: boolean; items: CatalogItem[] }>({ loaded: false, available: false, sandbox: false, items: [] });
+  const [hPantaId, setHPantaId] = useState("");
+  const [hWindowMin, setHWindowMin] = useState(15);
+  const [mQuestion, setMQuestion] = useState("");
+  const [mCategory, setMCategory] = useState<string>("sports");
+  const [mRule, setMRule] = useState("");
+  const [mRuleTouched, setMRuleTouched] = useState(false);
+  const [mSource, setMSource] = useState(DEFAULT_SOURCE.sports);
+  const [mSourceTouched, setMSourceTouched] = useState(false);
+  const [mEndsSec, setMEndsSec] = useState(3 * 3_600);
+  const [mBreaking, setMBreaking] = useState(true);
+  // The fee quote for a market being created; `created` once Panta lists it.
+  const [mQuote, setMQuote] = useState<(MarketQuote & { created?: boolean }) | null>(null);
+  const [mFieldError, setMFieldError] = useState<{ field?: string; message: string } | null>(null);
+
+  const pantaHost = hSource !== "crypto";
+  // Predictions and Streak run on the BTC/ETH/SOL spot oracle — Panta pits trade.
+  useEffect(() => { if (pantaHost && (hFormat === "predictions" || hFormat === "streak")) setHFormat("single"); }, [pantaHost, hFormat]);
+  // Any edit to the market invalidates its quote.
+  useEffect(() => { setMQuote(null); setMFieldError(null); }, [mQuestion, mCategory, mRule, mSource, mEndsSec, mBreaking]);
+  // A sensible default rule and source until the host writes their own.
+  useEffect(() => {
+    if (!mRuleTouched) {
+      const q = mQuestion.trim();
+      setMRule(q ? `Resolves YES if the answer to "${q}" is yes, as reported by the source of truth below. Resolves NO otherwise.` : "");
+    }
+  }, [mQuestion, mRuleTouched]);
+  useEffect(() => { if (!mSourceTouched) setMSource(DEFAULT_SOURCE[mCategory] ?? DEFAULT_SOURCE.other); }, [mCategory, mSourceTouched]);
+  // A scheduled (non-live) market must open ~1h out, so it can't end within the hour.
+  useEffect(() => { if (!mBreaking && mEndsSec < 3 * 3_600) setMEndsSec(3 * 3_600); }, [mBreaking, mEndsSec]);
+
+  useEffect(() => {
+    if (hSource !== "panta" || catalog.loaded) return;
+    fetch("/api/markets/catalog", { cache: "no-store" })
+      .then((r) => r.json())
+      .then((j) => setCatalog({ loaded: true, available: !!j.available, sandbox: !!j.sandbox, items: j.items ?? [] }))
+      .catch(() => setCatalog({ loaded: true, available: false, sandbox: false, items: [] }));
+  }, [hSource, catalog.loaded]);
 
   useEffect(() => {
     document.body.classList.add("game-mode", "no-scroll");
@@ -152,7 +213,12 @@ export default function ArenasDirectory() {
 
   const doHostAndJoin = useCallback(async () => {
     if (hostInputError) { setToast(hostInputError); return; }
-    if (!hCall && !picks) { setToast(`Pick UP or DOWN on ${hAsset} (or decide later) before taking seat 1.`); return; }
+    if (hSource === "panta" && !hPantaId) { setToast("Pick a Panta market for the pit."); return; }
+    if (hSource === "create" && !wallet) { setToast("Connect a wallet to create a market — you're its creator on Panta."); return; }
+    if (!hCall && !picks) {
+      setToast(pantaHost ? "Pick YES or NO (or decide later) before taking seat 1." : `Pick UP or DOWN on ${hAsset} (or decide later) before taking seat 1.`);
+      return;
+    }
     // On-chain hosting needs the host's own seat deposit signature.
     if (escrow?.active && !wallet) {
       setToast("Connect a wallet first — hosting on-chain needs your seat deposit.");
@@ -171,8 +237,23 @@ export default function ArenasDirectory() {
     }
 
     const call = picks || hCall === "LATER" || !hCall ? null : hCall;
-    const onStep = (step: SeatStep, name?: string) => { setHostStep(step); setToast(seatStepText(step, hostSeat, call, name).toast); };
+    const onStep = (step: SeatStep, name?: string) => { setHostStep(step); setToast(seatStepText(step, hostSeat, call, name, pantaHost).toast); };
     try {
+      // New market, first press: get Panta's fee quote and stop, so the host
+      // sees exactly what creating it costs before anything is signed.
+      if (hSource === "create" && !mQuote) {
+        setHostStep("quoting");
+        const q = await quoteMarket({
+          question: mQuestion.trim(), category: mCategory, resolutionRule: mRule.trim(),
+          sourcesOfTruth: [mSource.trim()], endsAt: Math.floor(Date.now() / 1000) + mEndsSec, breaking: mBreaking
+        });
+        if (!q.ok) { setMFieldError({ field: q.field, message: q.error }); setToast(q.error); return; }
+        setMQuote(q.data);
+        setToast(q.data.sandbox
+          ? "Market checks out. Panta sandbox: no creation fee is charged. Press again to create it and open the pit."
+          : `Market checks out. Panta charges ${usd2.format(q.data.feeUsdc)} to create it. Press again to sign and open the pit.`);
+        return;
+      }
       // Check funds and the wallet BEFORE the operator pays for an on-chain
       // InitRound, so a declined sign-in doesn't leave a cancelled arena.
       if (wallet && escrow?.active) {
@@ -185,16 +266,29 @@ export default function ArenasDirectory() {
         if (!ready.ok) { setToast(ready.error); return; }
       }
 
+      // New market, second press: build → sign (pays the fee) → register.
+      if (hSource === "create" && mQuote && !mQuote.created) {
+        const made = await finishMarket(mQuote.draftId, wallet!, (st) => {
+          setHostStep(st);
+          setToast(st === "building" ? "Building the market on Panta…" : st === "signing" ? "Approve the market creation in your wallet…" : "Registering the market with Panta…");
+        }, mQuestion.trim());
+        if (!made.ok) { setToast(`Market not created — ${made.error}`); return; }
+        setMQuote({ ...mQuote, created: true });
+      }
+
       setHostStep("opening");
       const enrollmentSec = hMode === "scheduled" ? hStartInMin * 60 : QUICK_ENROLL_SEC;
       const v = await newRound({
-        asset: hAsset, horizon: hHorizon, format: hFormat,
+        format: hFormat,
+        ...(pantaHost
+          ? { marketSource: "panta" as const, liveSec: hWindowMin * 60, ...(hSource === "create" ? { draftId: mQuote?.draftId } : { pantaMarketId: hPantaId }) }
+          : { asset: hAsset, horizon: hHorizon }),
         entryUsdc: entryNum, startingBankroll: vaultNum,
         capacity: hCapacity, roundLimit: hFormat === "royale" ? hRounds : 1,
         ...(hFormat === "streak" ? { liveSec: hLegSec } : {}),
         enrollmentSec, host: wallet ?? "", hostFeePct: hHostFee
       });
-      if (v.error || !v.arena) { setToast(v.error ?? "Could not open the arena."); return; }
+      if (v.error || !v.arena) { setToast(v.error ?? "Could not open the pit."); return; }
       const url = `${window.location.origin}/a/${v.arena}`;
 
       if (!wallet) {
@@ -223,19 +317,21 @@ export default function ArenasDirectory() {
           return;
         }
         await cancelArena(v.arena, wallet).catch(() => { /* best effort */ });
-        setToast(`Arena not opened — ${enrollError}`);
+        setToast(`Pit not opened — ${enrollError}`);
         return;
       }
 
       setInviteInfo({ code: v.arena, url });
+      if (hSource === "create") { setMQuote(null); setMQuestion(""); setMRuleTouched(false); }
       setToast(hFormat === "streak"
-        ? `Arena ${v.arena} is open — you're in seat 1. Pick leg 1 in the arena, then share the link.`
+        ? `Pit ${v.arena} is open — you're in seat 1. Pick leg 1 in the pit, then share the link.`
         : picks
-        ? `Arena ${v.arena} is open — you're in seat 1. Make your picks in the arena, then share the link.`
-        : `Arena ${v.arena} is open — you're in seat 1. Share the link.`);
+        ? `Pit ${v.arena} is open — you're in seat 1. Make your picks in the pit, then share the link.`
+        : `Pit ${v.arena} is open — you're in seat 1. Share the link.`);
       refresh();
     } finally { setHostStep(""); }
-  }, [hostInputError, escrow, wallet, username, nameDraft, saveUsername, hostSeat, hMode, hStartInMin, hAsset, hHorizon, hFormat, entryNum, vaultNum, hCapacity, hRounds, hCall, hCallPct, refresh, picks, hLegSec, hHostFee]);
+  }, [hostInputError, escrow, wallet, username, nameDraft, saveUsername, hostSeat, hMode, hStartInMin, hAsset, hHorizon, hFormat, entryNum, vaultNum, hCapacity, hRounds, hCall, hCallPct, refresh, picks, hLegSec, hHostFee,
+      hSource, hPantaId, pantaHost, hWindowMin, mQuote, mQuestion, mCategory, mRule, mSource, mEndsSec, mBreaking]);
 
   const doCopy = useCallback(async (url: string) => {
     try { await navigator.clipboard.writeText(url); setToast("Invite link copied."); }
@@ -280,22 +376,22 @@ export default function ArenasDirectory() {
 
       <section className="jumper-stage">
         <div className="jumper-tagline">
-          <p className="jt-eyebrow">Prediction-market battle royale · Solana</p>
-          <h1 className="jt-title" data-text="Call it. Outplay the room.">
-            <span className="hl-a">Call it.</span><br />
-            <span className="hl-b">Outplay</span> the room.
+          <p className="jt-eyebrow">Trading pits on any prediction market · Solana</p>
+          <h1 className="jt-title" data-text="Any market. Outtrade the room.">
+            <span className="hl-a">Any market.</span><br />
+            <span className="hl-b">Outtrade</span> the room.
           </h1>
           <p className="jt-lead">
-            Everyone pays the same seat and gets the same trading vault. Call UP or DOWN on a live
-            BTC, ETH or SOL market and switch sides as the price moves.
-            Top finishers claim the pool — in a royale, the bottom half is cut each round.
-            Or play Predictions — five hidden picks, most points wins — or Streak, where one wrong call knocks you out.
+            Host a pit on tonight&apos;s game, a question you write, or live BTC, ETH and SOL. Everyone takes the
+            same seat and the same vault, the room trades its own odds, and the best vaults split the pool when the
+            bell rings. On the crypto board you can also play Predictions — five hidden picks — or Streak, where one
+            wrong call knocks you out.
           </p>
 
           <ol className="jt-steps">
-            <li><b>01</b><span>Take a seat — your entry funds the shared pool, your vault is the bankroll you trade with.</span></li>
-            <li><b>02</b><span>Call UP or DOWN at the live price on BTC, ETH or SOL. Switch sides or size up as the market moves.</span></li>
-            <li><b>03</b><span>Finish on top. The pool pays out to the top finishers&apos; wallets — in a royale, the bottom half is cut each round.</span></li>
+            <li><b>01</b><span>Pick any market — an open Panta market, one you create in a minute, or BTC, ETH and SOL.</span></li>
+            <li><b>02</b><span>Trade the room — every YES/NO trade moves the pit&apos;s odds. The Oracle reads the tape and Panta&apos;s line as you go.</span></li>
+            <li><b>03</b><span>Finish on top — Panta&apos;s resolver or the closing price settles it, and payouts go straight to the top vaults&apos; wallets.</span></li>
           </ol>
 
           <div className="jumper-stats" aria-live="polite">
@@ -321,7 +417,7 @@ export default function ArenasDirectory() {
 
           <ul className="jt-trust">
             <li>Non-custodial USDC escrow</li>
-            <li>Live price oracle</li>
+            <li>Markets by Panta</li>
             <li>0.1% platform fee</li>
           </ul>
 
@@ -329,7 +425,7 @@ export default function ArenasDirectory() {
         </div>
 
         <div className="jumper-card">
-          <div className="jc-tabs" role="tablist" aria-label="Arena actions">
+          <div className="jc-tabs" role="tablist" aria-label="Pit actions">
             <button role="tab" aria-selected={tab === "play"} className={`jc-tab ${tab === "play" ? "on" : ""}`} onClick={() => setTab("play")}>
               <span className="dot" aria-hidden="true" /> Join
             </button>
@@ -378,6 +474,15 @@ export default function ArenasDirectory() {
                 onEditUsername={() => setShowUsername(true)} onConnect={connect}
                 xRequired={xRequired} onConnectX={async () => { const r = await connectX(); if (!r.ok) setToast(r.message); }}
                 step={hostStep} onSubmit={doHostAndJoin}
+                market={{
+                  source: hSource, setSource: setHSource, catalog, pantaId: hPantaId, setPantaId: setHPantaId,
+                  windowMin: hWindowMin, setWindowMin: setHWindowMin,
+                  question: mQuestion, setQuestion: setMQuestion, category: mCategory, setCategory: setMCategory,
+                  rule: mRule, setRule: (v: string) => { setMRuleTouched(true); setMRule(v); },
+                  source2: mSource, setSource2: (v: string) => { setMSourceTouched(true); setMSource(v); },
+                  endsSec: mEndsSec, setEndsSec: setMEndsSec, breaking: mBreaking, setBreaking: setMBreaking,
+                  quote: mQuote, fieldError: mFieldError
+                }}
               />
             )}
           </div>
@@ -416,15 +521,15 @@ function PlayPanel({
   onSwitchToHost: () => void;
 }) {
   if (!loaded) {
-    return <div className="jc-empty" role="status"><p>Loading arenas…</p></div>;
+    return <div className="jc-empty" role="status"><p>Loading pits…</p></div>;
   }
   if (!featured) {
     return (
       <div className="jc-empty">
         <div className="jc-empty-icon" aria-hidden="true">◆</div>
-        <h3>No arenas open</h3>
+        <h3>No pits open</h3>
         <p>Open one in under a minute, then share the invite link with the players you want in the room.</p>
-        <button className="btn-cta" onClick={onSwitchToHost}>Host an arena</button>
+        <button className="btn-cta" onClick={onSwitchToHost}>Host a pit</button>
         <a className="jc-practice" href="/a/PUBLIC">New here? Play a free practice round against bots →</a>
         <a className="jc-practice" href="/a/PICKS">Or try Predictions free — five picks, no trading →</a>
         <a className="jc-practice" href="/a/STREAK">Or play a free Streak — last caller standing →</a>
@@ -499,7 +604,7 @@ function HostPanel({
   hFormat, setHFormat, hLegSec, setHLegSec, hHostFee, setHHostFee, hRounds, setHRounds,
   hCapacity, setHCapacity, hEntry, setHEntry, hVault, setHVault, hCall, setHCall, hCallPct, setHCallPct,
   hostSeat, poolIfFull, inputError, wallet, escrowActive, escrowKnown,
-  username, nameDraft, setNameDraft, onEditUsername, onConnect, xRequired, onConnectX, step, onSubmit
+  username, nameDraft, setNameDraft, onEditUsername, onConnect, xRequired, onConnectX, step, onSubmit, market
 }: {
   hMode: "quick" | "scheduled"; setHMode: (v: "quick" | "scheduled") => void;
   hStartInMin: number; setHStartInMin: (v: number) => void;
@@ -520,20 +625,34 @@ function HostPanel({
   onEditUsername: () => void; onConnect: () => void;
   xRequired: boolean; onConnectX: () => void;
   step: HostStep; onSubmit: () => void;
+  market: MarketProps;
 }) {
   const busy = step !== "";
+  const src = market.source;
+  const pantaHost = src !== "crypto";
+  const Yw = pantaHost ? "YES" : "UP";
+  const Nw = pantaHost ? "NO" : "DOWN";
+  const pickedMarket = market.catalog.items.find((m) => m.id === market.pantaId) ?? null;
+  const subject = pantaHost ? (src === "create" ? "your market" : "this market") : hAsset;
   const picks = isPicksFormat(hFormat);
   const streak = hFormat === "streak";
   const draftCheck = validateUsername(nameDraft);
   const needsWallet = escrowActive && !wallet;
   const label =
     step === "checking" ? "Checking balance…" :
-    step === "opening" ? "Opening arena…" :
-    step ? seatStepText(step, hostSeat).button :
-    !wallet && !escrowActive ? "Host practice arena" :
+    step === "opening" ? "Opening pit…" :
+    step === "quoting" ? "Checking the market with Panta…" :
+    step === "building" ? "Building the market…" :
+    step === "signing" ? "Approve the market in your wallet…" :
+    step === "registering" ? "Registering with Panta…" :
+    step ? seatStepText(step, hostSeat, undefined, undefined, pantaHost).button :
+    src === "create" && !market.quote ? "Check market & see the creation fee" :
+    src === "panta" && !market.pantaId ? "Pick a Panta market above" :
+    src === "create" && market.quote && !market.quote.created && !hCall ? `Pick YES or NO` :
+    !wallet && !escrowActive ? "Host practice pit" :
     picks ? `Deposit & take seat 1 · ${usd2.format(hostSeat)}${escrowActive ? "" : " · practice"}` :
-    !hCall ? `Pick UP or DOWN on ${hAsset}` :
-    `${hCall === "YES" ? "Deposit & call UP" : hCall === "NO" ? "Deposit & call DOWN" : "Deposit & take seat 1"} · ${usd2.format(hostSeat)}${escrowActive ? "" : " · practice"}`;
+    !hCall ? `Pick ${Yw} or ${Nw} on ${subject}` :
+    `${src === "create" && market.quote && !market.quote.created ? (market.quote.sandbox ? "Create market & " : `Pay ${usd2.format(market.quote.feeUsdc)} fee & `) : ""}${hCall === "YES" ? `deposit & call ${Yw}` : hCall === "NO" ? `deposit & call ${Nw}` : "deposit & take seat 1"} · ${usd2.format(hostSeat)}${escrowActive ? "" : " · practice"}`.replace(/^./, (c) => c.toUpperCase());
 
   return (
     <div className="jc-host">
@@ -575,6 +694,81 @@ function HostPanel({
         </label>
       ) : null}
 
+      <FieldRow label="Market">
+        <div className="gm-seg" role="radiogroup" aria-label="Market source">
+          <button role="radio" aria-checked={src === "crypto"} className={`opt ${src === "crypto" ? "on" : ""}`} onClick={() => market.setSource("crypto")}>Crypto</button>
+          <button role="radio" aria-checked={src === "panta"} className={`opt ${src === "panta" ? "on" : ""}`} onClick={() => market.setSource("panta")}>Panta market</button>
+          <button role="radio" aria-checked={src === "create"} className={`opt ${src === "create" ? "on" : ""}`} onClick={() => market.setSource("create")}>New market</button>
+        </div>
+      </FieldRow>
+      <p className="jc-help">
+        {src === "crypto" ? "BTC, ETH or SOL up or down — priced live from the spot market."
+          : src === "panta" ? "Run a pit on any open Panta market — sports, politics, culture. The room trades its own odds; Panta resolves it."
+          : "Write your own question — tonight's game, a stream bet, anything with a clear yes or no. It's listed on Panta and your pit runs on it."}
+      </p>
+
+      {src === "panta" && (
+        <div className="mkt-pick" role="listbox" aria-label="Panta markets">
+          {!market.catalog.loaded ? <p className="jc-help">Loading Panta&apos;s markets…</p>
+            : !market.catalog.available ? <p className="jc-help">Panta markets aren&apos;t available on this server. Use Crypto, or create a market once a Panta key is set.</p>
+            : market.catalog.items.length === 0 ? <p className="jc-help">No open Panta markets right now — create one with <b>New market</b>.</p>
+            : market.catalog.items.map((m) => (
+              <button key={m.id} role="option" aria-selected={market.pantaId === m.id} className={`mkt-opt ${market.pantaId === m.id ? "on" : ""}`} onClick={() => market.setPantaId(m.id)}>
+                <span className="mkt-cat">{m.category}</span>
+                <span className="mkt-q">{m.question}</span>
+                <span className="mkt-px">{m.yesCents}¢ YES{m.endMs ? ` · ${closesIn(m.endMs)}` : ""}</span>
+              </button>
+            ))}
+          {market.catalog.sandbox && market.catalog.loaded && (
+            <p className="jc-note mkt-sandbox">Panta sandbox key: Panta lists one test market. A live key lists every open market.</p>
+          )}
+        </div>
+      )}
+
+      {src === "create" && (
+        <div className="mkt-create">
+          <label className="mkt-field">
+            <span className="jc-field-label">Question</span>
+            <input value={market.question} onChange={(e) => market.setQuestion(e.target.value.slice(0, 200))} placeholder="Will the Lakers beat the Celtics tonight?" aria-invalid={market.fieldError?.field === "question"} />
+          </label>
+          <div className="gm-seg mkt-cats" role="radiogroup" aria-label="Category">
+            {CREATE_CATEGORIES.map((c) => (
+              <button key={c} role="radio" aria-checked={market.category === c} className={`opt ${market.category === c ? "on" : ""}`} onClick={() => market.setCategory(c)}>{c}</button>
+            ))}
+          </div>
+          <label className="mkt-field">
+            <span className="jc-field-label">Resolves YES if…</span>
+            <textarea rows={2} value={market.rule} onChange={(e) => market.setRule(e.target.value.slice(0, 600))} aria-invalid={market.fieldError?.field === "resolutionRule"} />
+          </label>
+          <label className="mkt-field">
+            <span className="jc-field-label">Source of truth</span>
+            <input value={market.source2} onChange={(e) => market.setSource2(e.target.value.slice(0, 300))} placeholder="https://…" inputMode="url" aria-invalid={market.fieldError?.field === "sourcesOfTruth"} />
+          </label>
+          <div className="mkt-row2">
+            <button className={`mkt-toggle ${market.breaking ? "on" : ""}`} role="switch" aria-checked={market.breaking} onClick={() => market.setBreaking(!market.breaking)}>
+              <span className="knob" aria-hidden="true" /> Live event — trades on Panta now
+            </button>
+            <div className="gm-seg" role="radiogroup" aria-label="Trading on the market ends in">
+              {MARKET_ENDS.filter((o) => market.breaking || o.sec >= 3 * 3_600).map((o) => (
+                <button key={o.label} role="radio" aria-checked={market.endsSec === o.sec} className={`opt ${market.endsSec === o.sec ? "on" : ""}`} onClick={() => market.setEndsSec(o.sec)}>{o.label}</button>
+              ))}
+            </div>
+          </div>
+          <p className="jc-help">
+            Panta&apos;s AI resolver settles it after trading ends, using your rule and source.
+            {market.breaking ? " A live event trades on Panta immediately." : " A scheduled market opens on Panta about an hour from now — your pit still runs right away."}
+          </p>
+          {market.fieldError && <p className="jc-error" role="alert">{market.fieldError.message}</p>}
+          {market.quote && (
+            <div className={`mkt-fee ${market.quote.sandbox ? "free" : ""}`} role="status">
+              {market.quote.created ? <><b>Market created on Panta.</b> Opening your pit on it.</>
+                : market.quote.sandbox ? <><b>No creation fee — Panta sandbox.</b> On mainnet Panta charges a creation fee (it seeds the market&apos;s liquidity); you&apos;d see it here before signing.</>
+                : <><b>Creation fee {usd2.format(market.quote.feeUsdc)}</b> — paid to Panta when you sign{market.quote.liquidityUsdc > 0 ? <>, {usd2.format(market.quote.liquidityUsdc)} of it seeds the market&apos;s liquidity</> : null}. As creator you earn a share of trading fees once it graduates.</>}
+            </div>
+          )}
+        </div>
+      )}
+
       <div className="gm-seg" role="radiogroup" aria-label="Start mode">
         <button role="radio" aria-checked={hMode === "quick"} className={`opt ${hMode === "quick" ? "on" : ""}`} onClick={() => setHMode("quick")}>Quick</button>
         <button role="radio" aria-checked={hMode === "scheduled"} className={`opt ${hMode === "scheduled" ? "on" : ""}`} onClick={() => setHMode("scheduled")}>Scheduled</button>
@@ -601,20 +795,20 @@ function HostPanel({
         <div className="gm-seg">
           <button className={`opt ${hFormat === "single" ? "on" : ""}`} onClick={() => setHFormat("single")}>Single</button>
           <button className={`opt ${hFormat === "royale" ? "on" : ""}`} onClick={() => setHFormat("royale")}>Royale</button>
-          <button className={`opt ${hFormat === "predictions" ? "on" : ""}`} onClick={() => setHFormat("predictions")}>Predictions</button>
-          <button className={`opt ${hFormat === "streak" ? "on" : ""}`} onClick={() => setHFormat("streak")}>Streak</button>
+          {!pantaHost && <button className={`opt ${hFormat === "predictions" ? "on" : ""}`} onClick={() => setHFormat("predictions")}>Predictions</button>}
+          {!pantaHost && <button className={`opt ${hFormat === "streak" ? "on" : ""}`} onClick={() => setHFormat("streak")}>Streak</button>}
         </div>
       </FieldRow>
       <p className="jc-help">
         {streak ? `No trading. Quick calls on BTC, ETH and SOL, one per leg — a wrong pick and you're out. Last caller standing takes the pool.`
           : picks ? "No trading. Everyone answers five questions on BTC, ETH and SOL; most points take the pool, and a lock can double your best calls."
-          : hFormat === "royale" ? "Trade UP/DOWN over several rounds; the bottom half is cut each round."
-          : "Trade UP/DOWN on one market for one round; the top finishers split the pool."}
+          : hFormat === "royale" ? `Trade ${Yw}/${Nw} over several rounds; the bottom half is cut each round.`
+          : `Trade ${Yw}/${Nw} for one round; the top finishers split the pool.`}
       </p>
 
       <div className="jc-host-grid">
-        {!picks && (
-          <FieldRow label="Market">
+        {!picks && !pantaHost && (
+          <FieldRow label="Coin">
             <div className="gm-seg">
               {(["BTC", "ETH", "SOL"] as const).map((a) => (
                 <button key={a} className={`opt ${hAsset === a ? "on" : ""}`} onClick={() => setHAsset(a)}>{a}</button>
@@ -627,6 +821,14 @@ function HostPanel({
             <div className="gm-seg">
               {LEG_LENGTHS.map((sec) => (
                 <button key={sec} className={`opt ${hLegSec === sec ? "on" : ""}`} onClick={() => setHLegSec(sec)}>{sec / 60}m</button>
+              ))}
+            </div>
+          </FieldRow>
+        ) : pantaHost ? (
+          <FieldRow label="Trading window">
+            <div className="gm-seg">
+              {PIT_WINDOWS.map((m) => (
+                <button key={m} className={`opt ${market.windowMin === m ? "on" : ""}`} onClick={() => market.setWindowMin(m)}>{m < 60 ? `${m}m` : `${m / 60}h`}</button>
               ))}
             </div>
           </FieldRow>
@@ -696,22 +898,28 @@ function HostPanel({
       {picks ? (
         <p className="jc-help call-help">
           {streak
-            ? `You take seat 1. The game starts when enrollment closes: up to ${MAX_LEGS} legs, 20 seconds to pick each — stay on the arena page while you play.`
-            : "You take seat 1. Right after the arena opens you make your five picks on its page — they stay hidden and lock when enrollment closes."}
+            ? `You take seat 1. The game starts when enrollment closes: up to ${MAX_LEGS} legs, 20 seconds to pick each — stay on the pit page while you play.`
+            : "You take seat 1. Right after the pit opens you make your five picks on its page — they stay hidden and lock when enrollment closes."}
         </p>
       ) : (
       <div className="jc-field host-call">
-        <span className="jc-field-label">Your call on {hAsset}</span>
+        <span className="jc-field-label">Your call on {subject}</span>
         <div className="gm-seg call-seg" role="radiogroup" aria-label="Your opening call">
-          <button role="radio" aria-checked={hCall === "YES"} className={`opt up ${hCall === "YES" ? "on" : ""}`} onClick={() => setHCall("YES")}>▲ Up</button>
-          <button role="radio" aria-checked={hCall === "NO"} className={`opt down ${hCall === "NO" ? "on" : ""}`} onClick={() => setHCall("NO")}>▼ Down</button>
+          <button role="radio" aria-checked={hCall === "YES"} className={`opt up ${hCall === "YES" ? "on" : ""}`} onClick={() => setHCall("YES")}>▲ {pantaHost ? "Yes" : "Up"}</button>
+          <button role="radio" aria-checked={hCall === "NO"} className={`opt down ${hCall === "NO" ? "on" : ""}`} onClick={() => setHCall("NO")}>▼ {pantaHost ? "No" : "Down"}</button>
           <button role="radio" aria-checked={hCall === "LATER"} className={`opt ${hCall === "LATER" ? "on" : ""}`} onClick={() => setHCall("LATER")}>Decide later</button>
         </div>
         {(hCall === "YES" || hCall === "NO") && (
           <CallSizePicker value={hCallPct} onChange={setHCallPct} vault={Number(hVault) || 0} disabled={busy} />
         )}
         <p className={`jc-help call-help ${hCall ? "" : "need"}`} role="status">
-          {!hCall
+          {pantaHost
+            ? (!hCall
+              ? "You take seat 1: pick YES if you think it happens, NO if not — or decide once trading opens. Seat calls fill at Panta's line, then the room trades its own odds."
+              : hCall === "LATER"
+                ? "Your vault stays in cash. You pick YES or NO, and how much, once trading starts."
+                : `${callSizeText(hCallPct, Number(hVault) || 0).stake.replace(/^./, (c) => c.toUpperCase())} goes on ${hCall} at Panta's opening line when trading starts. ${callSizeText(hCallPct, Number(hVault) || 0).rest ?? ""} You can switch any time during the round.`)
+          : !hCall
             ? `You take seat 1: pick UP if you think ${hAsset} finishes the round above its opening price, DOWN if below — or decide once trading opens.`
             : hCall === "LATER"
               ? `Your vault stays in cash. The round opens at ${hAsset}'s live price; you pick UP or DOWN once trading starts.`
@@ -725,11 +933,33 @@ function HostPanel({
         <p className="jc-note"><b>Practice mode.</b> Hosting works, but no USDC moves and your wallet won&apos;t be asked to sign.</p>
       )}
 
-      <button className="gm-host-cta" onClick={onSubmit} disabled={busy || !!inputError || needsWallet || (!!wallet && !hCall && !picks)} aria-busy={busy}>
+      <button className="gm-host-cta" onClick={onSubmit} disabled={busy || !!inputError || needsWallet || (!!wallet && !hCall && !picks) || (src === "panta" && !market.pantaId) || (src === "create" && market.question.trim().length < 10)} aria-busy={busy}>
         {label}
       </button>
     </div>
   );
+}
+
+type MarketProps = {
+  source: MarketSource; setSource: (v: MarketSource) => void;
+  catalog: { loaded: boolean; available: boolean; sandbox: boolean; items: CatalogItem[] };
+  pantaId: string; setPantaId: (v: string) => void;
+  windowMin: number; setWindowMin: (v: number) => void;
+  question: string; setQuestion: (v: string) => void;
+  category: string; setCategory: (v: string) => void;
+  rule: string; setRule: (v: string) => void;
+  source2: string; setSource2: (v: string) => void;
+  endsSec: number; setEndsSec: (v: number) => void;
+  breaking: boolean; setBreaking: (v: boolean) => void;
+  quote: (MarketQuote & { created?: boolean }) | null;
+  fieldError: { field?: string; message: string } | null;
+};
+
+function closesIn(endMs: number): string {
+  const ms = endMs - Date.now();
+  if (ms <= 0) return "closed";
+  const h = ms / 3_600_000;
+  return h >= 48 ? `${Math.round(h / 24)}d left` : h >= 1 ? `${Math.round(h)}h left` : `${Math.max(1, Math.round(ms / 60_000))}m left`;
 }
 
 function FieldRow({ label, children }: { label: string; children: React.ReactNode }) {
@@ -745,22 +975,22 @@ function FieldRow({ label, children }: { label: string; children: React.ReactNod
 function InviteResult({
   info, picks, streak, onCopy, onOpen, onReset
 }: { info: { code: string; url: string }; picks: boolean; streak: boolean; onCopy: (url: string) => void; onOpen: () => void; onReset: () => void }) {
-  const text = `Join my Oracle Rumble arena · ${info.url}`;
+  const text = `Take a seat in my pit on The Pit · ${info.url}`;
   return (
     <div className="jc-invite">
-      <p className="jc-invite-lead">{streak ? "Your arena is open. Share the code or link — Streak is best with a crowd." : picks ? "Your arena is open. Make your five picks there, then share the code or link." : "Your arena is open. Share the code or link."}</p>
-      <div className="gm-invite-code" aria-label={`Arena code ${info.code}`}>{info.code}</div>
+      <p className="jc-invite-lead">{streak ? "Your pit is open. Share the code or link — Streak is best with a crowd." : picks ? "Your pit is open. Make your five picks there, then share the code or link." : "Your pit is open. Share the code or link."}</p>
+      <div className="gm-invite-code" aria-label={`Pit code ${info.code}`}>{info.code}</div>
       <div className="gm-invite-url">
         <input readOnly value={info.url} onFocus={(e) => e.currentTarget.select()} aria-label="Invite link" />
         <button className="btn-host" style={{ height: 42, padding: "0 16px", fontSize: 11 }} onClick={() => onCopy(info.url)}>Copy</button>
       </div>
       <div className="jc-share">
         <a className="btn ghost sm" target="_blank" rel="noopener noreferrer" href={`https://twitter.com/intent/tweet?text=${encodeURIComponent(text)}`}>Share on X</a>
-        <a className="btn ghost sm" target="_blank" rel="noopener noreferrer" href={`https://t.me/share/url?url=${encodeURIComponent(info.url)}&text=${encodeURIComponent("Join my Oracle Rumble arena")}`}>Telegram</a>
+        <a className="btn ghost sm" target="_blank" rel="noopener noreferrer" href={`https://t.me/share/url?url=${encodeURIComponent(info.url)}&text=${encodeURIComponent("Take a seat in my pit on The Pit")}`}>Telegram</a>
         <a className="btn ghost sm" target="_blank" rel="noopener noreferrer" href={`https://wa.me/?text=${encodeURIComponent(text)}`}>WhatsApp</a>
       </div>
-      <button className="gm-host-cta" onClick={onOpen}>{streak ? `Enter ${info.code} and pick leg 1` : picks ? `Make my picks in ${info.code}` : `Enter arena ${info.code}`}</button>
-      <button className="link-btn" onClick={onReset} style={{ marginTop: 10 }}>Host another arena</button>
+      <button className="gm-host-cta" onClick={onOpen}>{streak ? `Enter ${info.code} and pick leg 1` : picks ? `Make my picks in ${info.code}` : `Enter pit ${info.code}`}</button>
+      <button className="link-btn" onClick={onReset} style={{ marginTop: 10 }}>Host another pit</button>
     </div>
   );
 }

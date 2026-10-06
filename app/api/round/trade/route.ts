@@ -5,6 +5,7 @@ import {
   buyPriceOf, isPicksFormat, buyShares, liquidate, logEvent, markToMarket, normalizeArenaCode, redactOpeningCalls, sellPriceOf,
   sideWord, standings, tradingOpen, TRADE_CUTOFF_MS, TRADE_SPREAD
 } from "@/lib/royale";
+import { bookBuy, bookCents, bookSell, recordTape } from "@/lib/room-book";
 import { tradePricing } from "@/lib/round-keeper";
 import type { AssetSymbol } from "@/lib/assets";
 
@@ -45,9 +46,9 @@ export async function POST(request: Request) {
   const arena = normalizeArenaCode(body.arena);
 
   const peek = await getActiveRound(arena);
-  if (!peek) return NextResponse.json({ error: "no active round in this arena", arena }, { status: 404 });
+  if (!peek) return NextResponse.json({ error: "no active round in this pit", arena }, { status: 404 });
   if (peek.status !== "live") return NextResponse.json({ error: "round is not live" }, { status: 409 });
-  if (isPicksFormat(peek.config.format)) return NextResponse.json({ error: "This arena is played by picking answers — there's nothing to trade." }, { status: 409 });
+  if (isPicksFormat(peek.config.format)) return NextResponse.json({ error: "This pit is played by picking answers — there's nothing to trade." }, { status: 409 });
   if (!tradingOpen(peek)) {
     return NextResponse.json({ error: `Trading is closed for the last ${TRADE_CUTOFF_MS / 1000} seconds of the round — positions are locked until it settles.`, closed: true }, { status: 409 });
   }
@@ -57,7 +58,8 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: `${pricing.pause} — trading pauses for a few seconds while the price settles. Try again shortly.`, retry: true, yesPrice: pricing.yesPrice }, { status: 409 });
   }
   const yes = pricing.yesPrice;
-  if (typeof body.quotedYes === "number" && Number.isFinite(body.quotedYes)) {
+  // Room-book pits check slippage inside the lock against the live book.
+  if (!peek.book && typeof body.quotedYes === "number" && Number.isFinite(body.quotedYes)) {
     const side = body.action === "buy" ? body.side! : null;
     const shownSide = side === "NO" ? 100 - body.quotedYes : body.quotedYes;
     const nowSide = side === "NO" ? 100 - yes : yes;
@@ -72,11 +74,45 @@ export async function POST(request: Request) {
 
   let tradeError: string | undefined;
   let fill = "";
+  let bookYes: number | undefined;
+  let repricedYes: number | undefined;
   const { round, error } = await mutateActiveRound(arena, (r) => {
     if (!tradingOpen(r)) { tradeError = "Trading has closed for this round."; return; }
     const entrant = r.entrants.find((e) => e.wallet === body.wallet);
     if (!entrant) { tradeError = "not enrolled in this round"; return; }
     if (entrant.eliminatedRound !== null) { tradeError = "eliminated"; return; }
+
+    if (r.book) {
+      // A pit on a Panta market: the trade fills against the room's book and
+      // moves its odds for everyone.
+      const book = r.book;
+      const now = bookCents(book);
+      if (typeof body.quotedYes === "number" && Number.isFinite(body.quotedYes)) {
+        const side = body.action === "buy" ? body.side! : entrant.side;
+        const shown = side === "NO" ? 100 - body.quotedYes : body.quotedYes;
+        const live = side === "NO" ? 100 - now : now;
+        if (Math.abs(live - shown) > MAX_SLIPPAGE) {
+          tradeError = `The room moved from ${Math.round(shown)}¢ to ${Math.round(live)}¢ ${side ?? "YES"} — check the new price and trade again.`;
+          repricedYes = now;
+          return;
+        }
+      }
+      if (body.action === "sell") {
+        if (!entrant.side || entrant.shares <= 0) { tradeError = "You have no position to sell."; return; }
+        const word = entrant.side;
+        const proceeds = bookSell(book, entrant);
+        fill = `Sold your ${word} for $${proceeds.toFixed(2)}.`;
+        logEvent(r, `${entrant.nickname} sold ${word} for $${proceeds.toFixed(2)} — room now ${Math.round(bookCents(book))}¢ YES.`);
+      } else {
+        const res = bookBuy(book, entrant, body.side!, body.usdc!);
+        if (!res.ok) { tradeError = res.reason; return; }
+        fill = `Bought ${body.side} at ${res.avgCents.toFixed(1)}¢ avg — room now ${Math.round(res.priceAfter)}¢ YES.`;
+        logEvent(r, `${entrant.nickname} bought ${body.side} $${body.usdc!.toFixed(2)} at ${res.avgCents.toFixed(1)}¢ — room now ${Math.round(res.priceAfter)}¢ YES.`);
+      }
+      bookYes = bookCents(book);
+      r.tape = recordTape(r.tape ?? [], Date.now(), bookYes);
+      return;
+    }
 
     if (body.action === "sell") {
       if (!entrant.side || entrant.shares <= 0) { tradeError = "You have no position to sell."; return; }
@@ -95,10 +131,12 @@ export async function POST(request: Request) {
     markToMarket(entrant, yes, pricing.priceMap);
   });
 
-  if (!round) return NextResponse.json({ error: "no active round in this arena", arena }, { status: 404 });
-  if (tradeError) return NextResponse.json({ error: tradeError }, { status: 409 });
+  if (!round) return NextResponse.json({ error: "no active round in this pit", arena }, { status: 404 });
+  if (tradeError) {
+    return NextResponse.json(repricedYes !== undefined ? { error: tradeError, repriced: true, yesPrice: repricedYes } : { error: tradeError }, { status: 409 });
+  }
   if (error) return NextResponse.json({ error }, { status: 500 });
 
   const entrant = round.entrants.find((e) => e.wallet === body.wallet);
-  return NextResponse.json({ round: redactOpeningCalls(round, body.wallet), arena, entrant, yesPrice: yes, fill, standings: standings(round) });
+  return NextResponse.json({ round: redactOpeningCalls(round, body.wallet), arena, entrant, yesPrice: bookYes ?? yes, fill, standings: standings(round) });
 }

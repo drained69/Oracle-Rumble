@@ -1,7 +1,7 @@
 /**
  * Tracked-markets store (client-only).
  *
- * When Oracle Rumble hosts a Panta market on behalf of a player (via
+ * When The Pit hosts a Panta market on behalf of a player (via
  * marketCreateRegister) OR when the player enters an arena that trades a
  * real Panta market id, we record that market in localStorage so the
  * graduation banner can watch for the "primary → graduated" phase

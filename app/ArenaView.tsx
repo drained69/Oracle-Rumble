@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { bookAvailableFor, closingWindowMs, proceedsForSell, sharesForSpend } from "@/lib/room-book";
 import { availableFor, buyPriceOf, DEFAULT_OPENING_CALL_PCT, hostAmountError, paidPlaces, payoutShares, scorePlace, seatCostUsdc, sellPriceOf, tradingOpen, TRADE_CUTOFF_MS, TRADE_SPREAD } from "@/lib/royale";
 import { changeOf, LOCK_MAX, pickCount, ptsText, scoreCard, type Picks } from "@/lib/predictions";
 import { claimFeeOf, HOST_FEE_OPTIONS, netOfClaimFee, PLATFORM_CLAIM_FEE_BPS } from "@/lib/fees";
@@ -24,6 +25,8 @@ import {
   USERNAME_MAX
 } from "@/lib/username";
 import ArenaStage from "@/app/ArenaStage";
+import PitTerminal from "@/app/PitTerminal";
+import CreatorKit from "@/app/CreatorKit";
 import PantaTradeTape from "@/app/PantaTradeTape";
 import PantaResolution from "@/app/PantaResolution";
 import PantaGraduationBanner from "@/app/PantaGraduationBanner";
@@ -172,6 +175,12 @@ export default function ArenaView({ arenaCode }: { arenaCode: string }) {
   const spot = view?.spot ?? round?.oracle?.last?.[asset] ?? null;
   const openPrice = round?.oracle?.open?.[asset] ?? null;
   const closePrice = round?.oracle?.close?.[asset] ?? null;
+  // A pit on a Panta market trades YES/NO on the room's own book; a crypto
+  // pit trades UP/DOWN on the spot price.
+  const pantaPit = round?.config.marketSource === "panta";
+  const sideName = useCallback((s: "YES" | "NO") => (pantaPit ? s : s === "YES" ? "UP" : "DOWN"), [pantaPit]);
+  const yesNow = Math.round(yesPrice);
+  const pantaLine = view?.line ?? null;
 
   const me = useMemo(() => (wallet ? standings.find((e) => e.wallet === wallet) ?? null : null), [standings, wallet]);
   const enrolled = !!me;
@@ -206,7 +215,7 @@ export default function ArenaView({ arenaCode }: { arenaCode: string }) {
     if (xRequired && !username && round?.escrow) { setToast("Connect your X account to play — your X handle becomes your username."); return; }
     const nick = v.value;
     if (!xRequired && round && !isUsernameFreeInArena(nick, round.entrants, wallet)) {
-      setToast(`Username "${nick}" is taken in this arena — pick another.`);
+      setToast(`Username "${nick}" is taken in this pit — pick another.`);
       return;
     }
     const predictions = round?.config.format === "predictions";
@@ -215,7 +224,7 @@ export default function ArenaView({ arenaCode }: { arenaCode: string }) {
       return;
     }
     const noCall = predictions || round?.config.format === "streak";
-    if (!noCall && !callPick) { setToast("Pick UP, DOWN or decide later."); return; }
+    if (!noCall && !callPick) { setToast(`Pick ${sideName("YES")}, ${sideName("NO")} or decide later.`); return; }
     const call: OpeningCall = noCall || callPick === "LATER" || !callPick ? null : callPick;
 
     setBusy(true);
@@ -229,12 +238,12 @@ export default function ArenaView({ arenaCode }: { arenaCode: string }) {
       const seatUsd = round ? seatCostUsdc(round.config) : 0;
       const r = await enrollWithEscrow(wallet, nick, arenaCode, call, (step, name) => {
         setSeatStep(step);
-        setToast(seatStepText(step, seatUsd, call, name).toast);
+        setToast(seatStepText(step, seatUsd, call, name, pantaPit).toast);
       }, callPct, predictions ? seatPicks : undefined, predictions ? seatLocks : undefined);
       const seated = !!(r.entrantId || r.already);
       if (seated) {
-        const callText = predictions ? " · your picks stay hidden until the start" : round?.config.format === "streak" ? " · pick leg 1 below" : call ? ` · opening call ${call === "YES" ? "UP" : "DOWN"}` : "";
-        setToast(`You're in arena ${arenaCode} as ${nick}${callText}.`);
+        const callText = predictions ? " · your picks stay hidden until the start" : round?.config.format === "streak" ? " · pick leg 1 below" : call ? ` · opening call ${sideName(call)}` : "";
+        setToast(`You're in pit ${arenaCode} as ${nick}${callText}.`);
         setShowEnroll(false);
       } else if (r.deposited) {
         // Paid on chain but not confirmed as seated yet — the keeper seats
@@ -246,7 +255,7 @@ export default function ArenaView({ arenaCode }: { arenaCode: string }) {
       }
       await refresh();
     } finally { setBusy(false); setSeatStep(null); }
-  }, [wallet, nickname, arenaCode, refresh, round, saveUsername, callPick, callPct, seatPicks, seatLocks, xRequired, username]);
+  }, [wallet, nickname, arenaCode, refresh, round, saveUsername, callPick, callPct, seatPicks, seatLocks, xRequired, username, sideName, pantaPit]);
 
   /** Add or remove a question from a lock (2–3 picks). */
   const nextLocks = useCallback((current: string[], questionId: string): string[] | null => {
@@ -301,11 +310,11 @@ export default function ArenaView({ arenaCode }: { arenaCode: string }) {
       const r = await setOpeningCall(wallet, arenaCode, call, pct);
       if (r.error) setToast(r.error);
       else setToast(call
-        ? `Opening call: ${call === "YES" ? "UP" : "DOWN"} with ${r.pct === 100 ? "your whole vault" : `${r.pct ?? pct ?? 100}% of your vault`}.`
-        : "You'll pick UP or DOWN once trading opens.");
+        ? `Opening call: ${sideName(call)} with ${r.pct === 100 ? "your whole vault" : `${r.pct ?? pct ?? 100}% of your vault`}.`
+        : `You'll pick ${sideName("YES")} or ${sideName("NO")} once trading opens.`);
       await refresh();
     } finally { setBusy(false); }
-  }, [wallet, arenaCode, refresh]);
+  }, [wallet, arenaCode, refresh, sideName]);
 
   // Streak: pick this leg's answer (one request at a time; the last click wins).
   const streakQueue = useRef<Promise<void>>(Promise.resolve());
@@ -328,7 +337,7 @@ export default function ArenaView({ arenaCode }: { arenaCode: string }) {
   useEffect(() => {
     if (!needsStreakPick) return;
     const original = document.title;
-    document.title = `⏱ Pick now — leg ${leg?.n} · Oracle Rumble`;
+    document.title = `⏱ Pick now — leg ${leg?.n} · The Pit`;
     return () => { document.title = original; };
   }, [needsStreakPick, leg?.n]);
 
@@ -411,7 +420,8 @@ export default function ArenaView({ arenaCode }: { arenaCode: string }) {
     if (!enrolled) return setToast("Enroll in the round first.");
     const v = Number(amount);
     if (!v || v <= 0) return setToast("Enter an amount.");
-    if (me && v > availableFor(me, side, yesPrice, TRADE_SPREAD) + 1e-9) return setToast(`You have ${usd2.format(availableFor(me, side, yesPrice, TRADE_SPREAD))} available for ${side === "YES" ? "UP" : "DOWN"}.`);
+    const avail = me ? (round?.book ? bookAvailableFor(round.book, me, side) : availableFor(me, side, yesPrice, TRADE_SPREAD)) : 0;
+    if (me && v > avail + 1e-9) return setToast(`You have ${usd2.format(avail)} available for ${sideName(side)}.`);
     setBusy(true);
     try {
       // Kick the Panta order lifecycle in parallel when opted in and the
@@ -433,7 +443,7 @@ export default function ArenaView({ arenaCode }: { arenaCode: string }) {
         setToast(r.error);
         if (r.repriced || r.retry || r.closed) await refresh();
       } else {
-        setToast(`${r.fill ?? `Bought ${side === "YES" ? "UP" : "DOWN"}.`} Stake ${usd2.format(v)}.`);
+        setToast(`${r.fill ?? `Bought ${sideName(side)}.`} Stake ${usd2.format(v)}.`);
         setAmount("");
         await refresh();
       }
@@ -442,7 +452,7 @@ export default function ArenaView({ arenaCode }: { arenaCode: string }) {
       // paths settle when the toggle was on.
       if (pantaLifecycle) await pantaLifecycle;
     } finally { setBusy(false); }
-  }, [wallet, enrolled, amount, side, arenaCode, refresh, pantaFillOn, pantaFillAvailable, marketId, me, yesPrice]);
+  }, [wallet, enrolled, amount, side, arenaCode, refresh, pantaFillOn, pantaFillAvailable, marketId, me, yesPrice, round?.book, sideName]);
 
   const doSell = useCallback(async () => {
     if (!wallet || !enrolled) return;
@@ -511,7 +521,7 @@ export default function ArenaView({ arenaCode }: { arenaCode: string }) {
       // No wallet → practice-mode arena, no seat deposit required.
       if (!wallet) {
         setInviteInfo({ code: v.arena, url });
-        setToast(`Arena ${v.arena} is open. Share the link.`);
+        setToast(`Pit ${v.arena} is open. Share the link.`);
         return;
       }
 
@@ -537,12 +547,12 @@ export default function ArenaView({ arenaCode }: { arenaCode: string }) {
           return;
         }
         await cancelArena(v.arena, wallet).catch(() => { /* best effort */ });
-        setToast(`Arena not opened — ${enrollError}`);
+        setToast(`Pit not opened — ${enrollError}`);
         return;
       }
 
       setInviteInfo({ code: v.arena, url });
-      setToast(`Arena ${v.arena} is open. Share the link.`);
+      setToast(`Pit ${v.arena} is open. Share the link.`);
     } finally { setBusy(false); setSeatStep(null); }
   }, [hAsset, hHorizon, hFormat, hEntry, hVault, hCapacity, hRounds, wallet, escrow, username, hCall, hCallPct, hostSeat, hostError, hostPicks, hLegSec, hHostFee]);
 
@@ -675,8 +685,14 @@ export default function ArenaView({ arenaCode }: { arenaCode: string }) {
             )}
             {!entryOnly && (
               <div className="rb-cell">
-                <span className="rb-k">UP / DOWN</span>
-                <span className="rb-v"><span className="yes">{yesPrice}¢</span> <em>/</em> <span className="no">{100 - yesPrice}¢</span></span>
+                <span className="rb-k">{pantaPit ? "Room YES / NO" : "UP / DOWN"}</span>
+                <span className="rb-v"><span className="yes">{yesNow}¢</span> <em>/</em> <span className="no">{100 - yesNow}¢</span></span>
+              </div>
+            )}
+            {pantaPit && pantaLine !== null && (
+              <div className="rb-cell">
+                <span className="rb-k">Panta line</span>
+                <span className="rb-v mono">{Math.round(pantaLine)}¢ <em className={`rb-move ${yesNow > pantaLine ? "up" : yesNow < pantaLine ? "down" : ""}`}>room {yesNow - Math.round(pantaLine) >= 0 ? "+" : "−"}{Math.abs(yesNow - Math.round(pantaLine))}¢</em></span>
               </div>
             )}
             {round.escrow && (
@@ -696,8 +712,8 @@ export default function ArenaView({ arenaCode }: { arenaCode: string }) {
         ) : (
           <div className="rb-cell grow">
             <span className="rb-v market">
-              {!view ? `Loading arena ${arenaCode}…` : isPublic ? "Opening the arena…" : `Arena ${arenaCode} has no active round. `}
-              {view && !isPublic && <a className="link" href="/">Browse open arenas →</a>}
+              {!view ? `Loading pit ${arenaCode}…` : isPublic ? "Opening the pit…" : `Pit ${arenaCode} has no active round. `}
+              {view && !isPublic && <a className="link" href="/">Browse open pits →</a>}
             </span>
           </div>
         )}
@@ -725,7 +741,17 @@ export default function ArenaView({ arenaCode }: { arenaCode: string }) {
 
       {/* ── ARENA STAGE (every round state) ─────────────────── */}
       {round && (
-        <ArenaStage round={round} standings={standings} survivors={cut} yesPrice={yesPrice} spot={spot} wallet={wallet} />
+        <ArenaStage round={round} standings={standings} survivors={cut} yesPrice={yesPrice} spot={spot} line={pantaLine} wallet={wallet} />
+      )}
+
+      {/* ── TERMINAL: price tape, room positioning, Oracle read ── */}
+      {round && !entryOnly && (
+        <PitTerminal arenaCode={arenaCode} round={round} standings={standings} yesPrice={yesPrice} line={pantaLine} now={now} />
+      )}
+
+      {/* ── CREATOR KIT: the host's stream tools while the pit is open ── */}
+      {round && !isPublic && !!wallet && round.config.host === wallet && (round.status === "enrolling" || round.status === "live") && (
+        <CreatorKit code={arenaCode} onToast={setToast} />
       )}
 
       {/* ── ARENA ───────────────────────────────────────────── */}
@@ -755,7 +781,7 @@ export default function ArenaView({ arenaCode }: { arenaCode: string }) {
               return (
                 <>
                   <p className="eyebrow">{picksMode ? "Predictions" : streakMode ? "Streak" : round.config.format === "single" ? "Single round" : `Round ${round.roundNumber}`} · final</p>
-                  <h1>{picksMode ? predictionsHeadline(standings) : streakMode ? streakHeadline(standings) : champ ? `${displayName(champ)} wins ${usd2.format(champ.prizeUsdc)}` : "Rumble complete"}</h1>
+                  <h1>{picksMode ? predictionsHeadline(standings) : streakMode ? streakHeadline(standings) : champ ? `${displayName(champ)} wins ${usd2.format(champ.prizeUsdc)}` : "Pit closed"}</h1>
                   {streakMode && (
                     <div className="pk-results">
                       <StreakHistory round={round} me={me} />
@@ -782,6 +808,13 @@ export default function ArenaView({ arenaCode }: { arenaCode: string }) {
                         </p>
                       )}
                     </div>
+                  )}
+                  {pantaPit && round.book?.close !== undefined && (
+                    <p className={`resolution ${round.book.close > 50 ? "up" : round.book.close < 50 ? "down" : ""}`}>
+                      {round.book.settledBy === "outcome"
+                        ? <>Panta resolved the market <b>{round.book.close >= 50 ? "YES" : "NO"}</b> — YES shares paid <b>{Math.round(round.book.close)}¢</b>.</>
+                        : <>Settled at <b>{round.book.close}¢ YES</b> — the room&apos;s average price over the closing {Math.round(closingWindowMs(round.config.liveSec) / 1000) >= 60 ? `${Math.round(closingWindowMs(round.config.liveSec) / 60000)} min` : `${Math.round(closingWindowMs(round.config.liveSec) / 1000)}s`}. Panta hadn&apos;t ruled by the bell.</>}
+                    </p>
                   )}
                   {!picksMode && openPrice && closePrice && (
                     <p className={`resolution ${closePrice > openPrice ? "up" : closePrice < openPrice ? "down" : ""}`}>
@@ -853,7 +886,7 @@ export default function ArenaView({ arenaCode }: { arenaCode: string }) {
                   )}
 
                   {!round.escrow && <p className="disclaimer">Practice round — no USDC moved.</p>}
-                  <button className="btn primary" onClick={() => { setInviteInfo(null); setHCall(""); if (entryOnly) setHFormat(streakMode ? "streak" : "predictions"); setShowHost(true); }} disabled={busy}>Host the next rumble →</button>
+                  <button className="btn primary" onClick={() => { setInviteInfo(null); setHCall(""); if (entryOnly) setHFormat(streakMode ? "streak" : "predictions"); setShowHost(true); }} disabled={busy}>Host the next pit →</button>
                   <div className="final-board">
                     <div className="fb-row fb-head" aria-hidden="true">
                       <span className="fb-rank">#</span>
@@ -879,7 +912,7 @@ export default function ArenaView({ arenaCode }: { arenaCode: string }) {
         ) : round?.status === "cancelled" ? (
           <div className="champion closed">
             <p className="eyebrow">Arena {arenaCode} · closed</p>
-            <h1>This arena didn&apos;t start</h1>
+            <h1>This pit didn&apos;t start</h1>
             <p className="lead">{cancelReason(round.history)}</p>
             {round.escrow && (
               <RefundCard
@@ -893,22 +926,22 @@ export default function ArenaView({ arenaCode }: { arenaCode: string }) {
               />
             )}
             <div className="cta-row" style={{ marginTop: 18 }}>
-              <a className="btn primary" href="/?tab=host">Host a new arena</a>
-              <a className="btn secondary" href="/">Browse arenas</a>
+              <a className="btn primary" href="/?tab=host">Host a new pit</a>
+              <a className="btn secondary" href="/">Browse pits</a>
             </div>
           </div>
         ) : !round ? (
           <div className="enroll-cta" style={{ margin: "20px 0" }}>
             {!view ? (
-              <p role="status">Loading the arena…</p>
+              <p role="status">Loading the pit…</p>
             ) : isPublic ? (
-              <p>Opening the walk-in arena…</p>
+              <p>Opening the walk-in pit…</p>
             ) : (
               <>
-                <p>This arena has no live rumble right now. Host the next one on the same code, or head back to the public arena.</p>
+                <p>This pit has no live game right now. Host the next one on the same code, or head back to the public pit.</p>
                 <div className="cta-row">
-                  <button className="btn primary" onClick={() => { setInviteInfo(null); setHCall(""); setShowHost(true); }}>Host a rumble</button>
-                  <button className="btn secondary" onClick={() => goToArena(PUBLIC_ARENA)}>Public arena →</button>
+                  <button className="btn primary" onClick={() => { setInviteInfo(null); setHCall(""); setShowHost(true); }}>Host a pit</button>
+                  <button className="btn secondary" onClick={() => goToArena(PUBLIC_ARENA)}>Public pit →</button>
                 </div>
               </>
             )}
@@ -1083,8 +1116,8 @@ export default function ArenaView({ arenaCode }: { arenaCode: string }) {
                   <h2>{round?.config.marketQuestion ?? "Loading market…"}</h2>
                 </div>
                 <div className="tc-price">
-                  <div><b className="up">{yesPrice}¢</b><span>▲ UP</span></div>
-                  <div><b className="down">{100 - yesPrice}¢</b><span>▼ DOWN</span></div>
+                  <div><b className="up">{yesNow}¢</b><span>▲ {sideName("YES")}</span></div>
+                  <div><b className="down">{100 - yesNow}¢</b><span>▼ {sideName("NO")}</span></div>
                 </div>
               </div>
 
@@ -1093,19 +1126,21 @@ export default function ArenaView({ arenaCode }: { arenaCode: string }) {
                   {round?.status === "enrolling" ? (
                     <>
                       <p>
-                        Call where <b>{asset}</b> goes: <b className="up">UP</b> if you think it finishes the round higher than it opens, <b className="down">DOWN</b> if lower.
+                        {pantaPit
+                          ? <>Call it: <b className="up">YES</b> if you think it happens, <b className="down">NO</b> if not. The room trades its own odds — every trade moves the price for everyone.</>
+                          : <>Call where <b>{asset}</b> goes: <b className="up">UP</b> if you think it finishes the round higher than it opens, <b className="down">DOWN</b> if lower.</>}
                         Your seat is <b>{usd.format(round.config.entryUsdc + round.config.startingBankroll)}</b> — <b>{usd.format(round.config.entryUsdc)}</b> into the shared prize pool plus a <b>{usd.format(round.config.startingBankroll)}</b> vault you trade with. At the end the players&apos; vault money is shared out by how each vault finished.
                       </p>
                       <div className="cta-row">
                         <button className="btn primary" onClick={() => { if (!wallet) { connect(); return; } setCallPick(""); setShowEnroll(true); }} disabled={busy}>
-                          {wallet ? "Enter the arena" : "Connect to enter"}
+                          {wallet ? "Enter the pit" : "Connect to enter"}
                         </button>
                         <button className="btn secondary" onClick={() => { setInviteInfo(null); setHCall(""); setShowHost(true); }} disabled={busy}>Host your own</button>
                         {!isPublic && <button className="btn secondary" onClick={() => doCopyInvite()}>Copy invite link</button>}
                       </div>
                     </>
                   ) : (
-                    <p>This round is <b>{STATUS_LABEL[round?.status ?? ""]?.toLowerCase()}</b>. Enrollment is closed — the next arena opens when this one settles.</p>
+                    <p>This round is <b>{STATUS_LABEL[round?.status ?? ""]?.toLowerCase()}</b>. Enrollment is closed — the next pit opens when this one settles.</p>
                   )}
                 </div>
               ) : (
@@ -1113,7 +1148,7 @@ export default function ArenaView({ arenaCode }: { arenaCode: string }) {
                   <div className="vault">
                     <div><span>Vault</span><b>{usd2.format(me!.bankroll)}</b></div>
                     <div><span>Cash</span><b>{usd2.format(me!.cash)}</b></div>
-                    <div><span>Position</span><b>{me!.side ? `${me!.shares.toFixed(1)} ${me!.side === "YES" ? "UP" : "DOWN"} @ ${me!.avgPrice.toFixed(0)}¢` : "—"}</b></div>
+                    <div><span>Position</span><b>{me!.side ? `${me!.shares.toFixed(1)} ${sideName(me!.side)} @ ${me!.avgPrice.toFixed(0)}¢` : "—"}</b></div>
                     <div className={myPnl >= 0 ? "up" : "down"}><span>Vault P&amp;L</span><b>{myPnl >= 0 ? "+" : ""}{usd2.format(myPnl)}</b></div>
                   </div>
 
@@ -1125,18 +1160,71 @@ export default function ArenaView({ arenaCode }: { arenaCode: string }) {
                     <>
                       <p className="last-call">
                         Trading closes in <b className="mono">{fmtClock(Math.max(0, round.liveDeadline - TRADE_CUTOFF_MS - now))}</b> — last call is {TRADE_CUTOFF_MS / 1000}s before the end.
-                        Each trade buys {TRADE_SPREAD}¢ above and sells {TRADE_SPREAD}¢ below the market price.
+                        {pantaPit
+                          ? <> Every trade moves the room&apos;s odds — the bigger the trade, the further the price moves while it fills.</>
+                          : <> Each trade buys {TRADE_SPREAD}¢ above and sells {TRADE_SPREAD}¢ below the market price.</>}
                       </p>
-                      {openPrice ? (
+                      {pantaPit ? (
+                        <p className="trade-rule">
+                          At the bell <b className="up">YES</b> shares are worth $1 if Panta has resolved the market YES — otherwise the room&apos;s average YES price over the closing {Math.round(closingWindowMs(round.config.liveSec) / 1000) >= 60 ? `${Math.round(closingWindowMs(round.config.liveSec) / 60000)} min` : `${Math.round(closingWindowMs(round.config.liveSec) / 1000)}s`}. <b className="down">NO</b> is the other side.
+                        </p>
+                      ) : openPrice ? (
                         <p className="trade-rule">
                           <b className="up">UP</b> pays $1 a share if {asset} closes above <b>{usdPx(openPrice)}</b>; <b className="down">DOWN</b> pays $1 if it closes below. Prices move with {asset}.
                         </p>
                       ) : null}
                       <div className="sides">
-                        <button className={side === "YES" ? "side yes on" : "side yes"} onClick={() => setSide("YES")} aria-pressed={side === "YES"}>▲ UP <b>{yesPrice}¢</b></button>
-                        <button className={side === "NO" ? "side no on" : "side no"} onClick={() => setSide("NO")} aria-pressed={side === "NO"}>▼ DOWN <b>{100 - yesPrice}¢</b></button>
+                        <button className={side === "YES" ? "side yes on" : "side yes"} onClick={() => setSide("YES")} aria-pressed={side === "YES"}>▲ {sideName("YES")} <b>{yesNow}¢</b></button>
+                        <button className={side === "NO" ? "side no on" : "side no"} onClick={() => setSide("NO")} aria-pressed={side === "NO"}>▼ {sideName("NO")} <b>{100 - yesNow}¢</b></button>
                       </div>
-                      {(() => {
+                      {round?.book ? (() => {
+                        // Room book: quote the exact fill — your own trade moves the price.
+                        const book = round.book;
+                        const avail = bookAvailableFor(book, me!, side);
+                        const stake = Number(amount || 0);
+                        const over = stake > avail + 1e-9;
+                        const switching = !!me!.side && me!.side !== side && me!.shares > 0;
+                        const sellValue = me!.side ? proceedsForSell(book, me!.side, me!.shares) : 0;
+                        // Quote against the book as it will be after any switch-sell.
+                        const after = switching && me!.side ? (me!.side === "YES" ? { ...book, qYes: book.qYes - me!.shares } : { ...book, qNo: book.qNo - me!.shares }) : book;
+                        const spend = Math.min(stake, avail);
+                        const shares = spend > 0 ? sharesForSpend(after, side, spend) : 0;
+                        const avg = shares > 0 ? (spend * 100) / shares : 0;
+                        const moved = shares > 0 ? (() => {
+                          const q = side === "YES" ? { ...after, qYes: after.qYes + shares } : { ...after, qNo: after.qNo + shares };
+                          return 100 / (1 + Math.exp((q.qNo - q.qYes) / q.b));
+                        })() : yesPrice;
+                        return (
+                          <>
+                            <label className="field">
+                              <span className="field-head">
+                                Stake from your vault (USDC)
+                                <em>{usd2.format(avail)} available{switching ? ` — sells your ${sideName(me!.side!)} first` : ""}</em>
+                              </span>
+                              <div className={`field-input ${over ? "bad" : ""}`}>
+                                <span className="curr">$</span>
+                                <input value={amount} placeholder={avail > 0 ? avail.toFixed(2) : "0.00"} onChange={(e) => setAmount(e.target.value.replace(/[^0-9.]/g, ""))} inputMode="decimal" aria-invalid={over} />
+                                <button type="button" className="max" onClick={() => setAmount(String(Math.floor(avail * 100) / 100))}>MAX</button>
+                              </div>
+                            </label>
+                            <div className="summary">
+                              <span>Average fill</span><b>{shares > 0 ? `${avg.toFixed(1)}¢` : "—"} <em className="muted">room {yesNow}¢ YES now</em></b>
+                              <span>Shares</span><b>{shares.toFixed(2)}</b>
+                              <span>Room after your trade</span><b>{Math.round(moved)}¢ YES</b>
+                              <span>Pays if {side} wins</span><b className="accent">{usd2.format(shares)}</b>
+                            </div>
+                            {over && <p className="jc-error" role="alert">That&apos;s more than the {usd2.format(avail)} you have available.</p>}
+                            <div className="trade-actions">
+                              <button className="btn primary full" onClick={doBuy} disabled={busy || !stake || over}>
+                                {switching ? `Switch to ${side}` : `Buy ${side}`}
+                              </button>
+                              <button className="btn secondary" onClick={doSell} disabled={busy || !me!.side} title={me!.side ? `Sells your whole position back to the room for about ${usd2.format(sellValue)}` : "No position to sell"}>
+                                {me!.side ? `Sell all · ${usd2.format(sellValue)}` : "Sell all"}
+                              </button>
+                            </div>
+                          </>
+                        );
+                      })() : (() => {
                         const avail = availableFor(me!, side, yesPrice, TRADE_SPREAD);
                         const stake = Number(amount || 0);
                         const market = side === "YES" ? yesPrice : 100 - yesPrice;
@@ -1150,7 +1238,7 @@ export default function ArenaView({ arenaCode }: { arenaCode: string }) {
                             <label className="field">
                               <span className="field-head">
                                 Stake from your vault (USDC)
-                                <em>{usd2.format(avail)} available{switching ? ` — sells your ${me!.side === "YES" ? "UP" : "DOWN"} first` : ""}</em>
+                                <em>{usd2.format(avail)} available{switching ? ` — sells your ${sideName(me!.side!)} first` : ""}</em>
                               </span>
                               <div className={`field-input ${over ? "bad" : ""}`}>
                                 <span className="curr">$</span>
@@ -1166,7 +1254,7 @@ export default function ArenaView({ arenaCode }: { arenaCode: string }) {
                             {over && <p className="jc-error" role="alert">That&apos;s more than the {usd2.format(avail)} you have available.</p>}
                             <div className="trade-actions">
                               <button className="btn primary full" onClick={doBuy} disabled={busy || !stake || over}>
-                                {switching ? `Switch to ${side === "YES" ? "UP" : "DOWN"}` : `Buy ${side === "YES" ? "UP" : "DOWN"}`}
+                                {switching ? `Switch to ${sideName(side)}` : `Buy ${sideName(side)}`}
                               </button>
                               <button className="btn secondary" onClick={doSell} disabled={busy || !me!.side} title={me!.side ? `Sells at ${sellPriceOf(mySide)}¢ (market less ${TRADE_SPREAD}¢)` : "No position to sell"}>
                                 {me!.side ? `Sell all · ${usd2.format(sellValue)}` : "Sell all"}
@@ -1204,8 +1292,8 @@ export default function ArenaView({ arenaCode }: { arenaCode: string }) {
                       <div className="call-row" role="group" aria-label="Your opening call">
                         <span className="call-k">Opening call</span>
                         <div className="seg">
-                          <button className={me!.openingCall === "YES" ? "seg-opt on up" : "seg-opt"} onClick={() => doChangeCall("YES")} disabled={busy} aria-pressed={me!.openingCall === "YES"}>▲ UP</button>
-                          <button className={me!.openingCall === "NO" ? "seg-opt on down" : "seg-opt"} onClick={() => doChangeCall("NO")} disabled={busy} aria-pressed={me!.openingCall === "NO"}>▼ DOWN</button>
+                          <button className={me!.openingCall === "YES" ? "seg-opt on up" : "seg-opt"} onClick={() => doChangeCall("YES")} disabled={busy} aria-pressed={me!.openingCall === "YES"}>▲ {sideName("YES")}</button>
+                          <button className={me!.openingCall === "NO" ? "seg-opt on down" : "seg-opt"} onClick={() => doChangeCall("NO")} disabled={busy} aria-pressed={me!.openingCall === "NO"}>▼ {sideName("NO")}</button>
                           <button className={!me!.openingCall ? "seg-opt on" : "seg-opt"} onClick={() => doChangeCall(null)} disabled={busy} aria-pressed={!me!.openingCall}>Decide later</button>
                         </div>
                       </div>
@@ -1214,8 +1302,8 @@ export default function ArenaView({ arenaCode }: { arenaCode: string }) {
                       )}
                       <p className="call-note">
                         {me!.openingCall
-                          ? <>{callSizeText(me!.openingCallPct ?? 100, me!.cash).stake.replace(/^./, (c) => c.toUpperCase())} goes on <b className={me!.openingCall === "YES" ? "up" : "down"}>{me!.openingCall === "YES" ? "UP" : "DOWN"}</b> at the opening price (50¢ a share) the moment trading opens. {callSizeText(me!.openingCallPct ?? 100, me!.cash).rest} You can switch or sell any time while the round is live.</>
-                          : <>No call yet — your vault stays in cash until you trade. You&apos;ll get UP and DOWN buttons the moment the round goes live.</>}
+                          ? <>{callSizeText(me!.openingCallPct ?? 100, me!.cash).stake.replace(/^./, (c) => c.toUpperCase())} goes on <b className={me!.openingCall === "YES" ? "up" : "down"}>{sideName(me!.openingCall)}</b> at the opening price ({pantaPit ? "Panta's line" : "50¢ a share"}) the moment trading opens. {callSizeText(me!.openingCallPct ?? 100, me!.cash).rest} You can switch or sell any time while the round is live.</>
+                          : <>No call yet — your vault stays in cash until you trade. You&apos;ll get {sideName("YES")} and {sideName("NO")} buttons the moment the round goes live.</>}
                       </p>
                       {!isPublic && currentInviteUrl && (
                         <div className="invite-inline">
@@ -1286,7 +1374,7 @@ export default function ArenaView({ arenaCode }: { arenaCode: string }) {
 
       {/* ── HOW IT WORKS ────────────────────────────────────── */}
       <section className="how-shell" id="how">
-        <h2>How the arena works</h2>
+        <h2>How the pit works</h2>
         {streakMode ? (
         <div className="how-grid">
           <div><b>1 · One seat, one entry</b><p>Everyone pays the same entry into the prize pool. There&apos;s no vault and nothing to trade.</p></div>
@@ -1303,16 +1391,16 @@ export default function ArenaView({ arenaCode }: { arenaCode: string }) {
           <div><b>3 · Hidden until the start</b><p>Nobody sees your picks while enrollment is open. You can change them until the round locks — then everyone&apos;s picks are revealed.</p></div>
           <div><b>4 · The prices decide</b><p>Each coin is judged against its live price at the lock. At the close every right answer is a point; a dead-level result scores for nobody.</p></div>
           <div><b>5 · Most points wins</b><p>Each right answer is a point; a lock of 2–3 picks that all land adds a point each, but one miss zeroes the lock. The top scores take the pool — 62.5% / 23.4% / 14.1%, or all of it in a duel. Players who tie split the places they share.</p></div>
-          <div><b>6 · Withdraw</b><p>Winners withdraw their prize from the arena or the Positions page once the results are recorded on chain.</p></div>
+          <div><b>6 · Withdraw</b><p>Winners withdraw their prize from the pit or the Positions page once the results are recorded on chain.</p></div>
         </div>
         ) : (
         <div className="how-grid">
-          <div><b>1 · Host chooses the game</b><p>Any user opens their own arena — pick BTC, ETH or SOL, the player limit, the entry, the starting vault, and one to four rounds. You get a shareable link.</p></div>
-          <div><b>2 · Invite friends</b><p>Send the arena link. Anyone with the link takes a seat in your room — everyone else plays a different arena on the same site.</p></div>
+          <div><b>1 · Host chooses the game</b><p>Any user opens their own pit — pick BTC, ETH or SOL, the player limit, the entry, the starting vault, and one to four rounds. You get a shareable link.</p></div>
+          <div><b>2 · Invite friends</b><p>Send the pit link. Anyone with the link takes a seat in your room — everyone else plays a different pit on the same site.</p></div>
           <div><b>3 · Entry and vault separate</b><p>Your entry joins the shared prize pool. Your vault is your trading bankroll for the round.</p></div>
           <div><b>4 · Call UP or DOWN</b><p>Pick a direction when you sit down, or trade once the round opens. The round opens at the asset&apos;s live price: UP pays $1 a share if it closes higher, DOWN if lower.</p></div>
           <div><b>5 · The price decides</b><p>At the deadline the live price settles every position and players are ranked by vault value. In a royale the bottom half is cut and survivors carry their bankroll on.</p></div>
-          <div><b>6 · Everyone withdraws</b><p>Top finishers share the pool — 62.5% / 23.4% / 14.1%, or all of it in a duel. The players&apos; vault money is shared by how each vault finished, so losses fund gains. Withdraw from the arena or your Positions page.</p></div>
+          <div><b>6 · Everyone withdraws</b><p>Top finishers share the pool — 62.5% / 23.4% / 14.1%, or all of it in a duel. The players&apos; vault money is shared by how each vault finished, so losses fund gains. Withdraw from the pit or your Positions page.</p></div>
         </div>
         )}
         <p className="disclaimer">
@@ -1341,13 +1429,13 @@ export default function ArenaView({ arenaCode }: { arenaCode: string }) {
         const hint = nickname.length === 0
           ? "3–16 characters: letters, numbers and underscores."
           : !v.ok ? v.reason
-          : clash ? `"${v.value}" is already taken in this arena.`
-          : "Available — shown on the arena stage, standings and results.";
+          : clash ? `"${v.value}" is already taken in this pit.`
+          : "Available — shown on the pit stage, standings and results.";
         const seat = seatCostUsdc(round.config);
         const vault = round.config.startingBankroll;
         const liveMin = Math.round(round.config.liveSec / 60);
         const rounds = round.config.format === "royale" ? round.config.roundLimit : 1;
-        const cta = callPick === "YES" ? "call UP" : callPick === "NO" ? "call DOWN" : "join";
+        const cta = callPick === "YES" ? `call ${sideName("YES")}` : callPick === "NO" ? `call ${sideName("NO")}` : "join";
         const seatPicked = pickCount(questions, seatPicks);
         const ready = streakMode ? true : picksMode ? seatPicked >= questions.length : !!callPick;
         return (
@@ -1355,7 +1443,7 @@ export default function ArenaView({ arenaCode }: { arenaCode: string }) {
             <div className="modal seat-modal" role="dialog" aria-modal="true" aria-labelledby="seat-title" onClick={(e) => e.stopPropagation()}>
               <button className="close" onClick={() => setShowEnroll(false)} aria-label="Close">×</button>
               <h2 id="seat-title">Take your seat</h2>
-              <p className="sub">Arena <b>{arenaCode}</b> · {round.config.marketQuestion}</p>
+              <p className="sub">Pit <b>{arenaCode}</b> · {round.config.marketQuestion}</p>
 
               <form onSubmit={(e) => { e.preventDefault(); if (ok && ready && !busy && wallet) doEnroll(); }}>
                 {streakMode ? (
@@ -1375,17 +1463,17 @@ export default function ArenaView({ arenaCode }: { arenaCode: string }) {
                   </fieldset>
                 ) : (
                 <fieldset className="call-pick">
-                  <legend>Your call on {asset}{spot ? <> · now <b>{usdPx(spot)}</b></> : null}</legend>
+                  <legend>{pantaPit ? <>Your call{pantaLine !== null ? <> · Panta has YES at <b>{Math.round(pantaLine)}¢</b></> : null}</> : <>Your call on {asset}{spot ? <> · now <b>{usdPx(spot)}</b></> : null}</>}</legend>
                   <div className="call-options">
                     <button type="button" className={`call-opt up ${callPick === "YES" ? "on" : ""}`} onClick={() => setCallPick("YES")} aria-pressed={callPick === "YES"}>
                       <span className="co-arrow" aria-hidden="true">▲</span>
-                      <span className="co-t">UP</span>
-                      <span className="co-d">{asset} finishes the round higher than it opens</span>
+                      <span className="co-t">{sideName("YES")}</span>
+                      <span className="co-d">{pantaPit ? "It happens — the market resolves YES" : `${asset} finishes the round higher than it opens`}</span>
                     </button>
                     <button type="button" className={`call-opt down ${callPick === "NO" ? "on" : ""}`} onClick={() => setCallPick("NO")} aria-pressed={callPick === "NO"}>
                       <span className="co-arrow" aria-hidden="true">▼</span>
-                      <span className="co-t">DOWN</span>
-                      <span className="co-d">{asset} finishes the round lower than it opens</span>
+                      <span className="co-t">{sideName("NO")}</span>
+                      <span className="co-d">{pantaPit ? "It doesn't — the market resolves NO" : `${asset} finishes the round lower than it opens`}</span>
                     </button>
                   </div>
                   <button type="button" className={`call-later ${callPick === "LATER" ? "on" : ""}`} onClick={() => setCallPick("LATER")} aria-pressed={callPick === "LATER"}>
@@ -1396,10 +1484,10 @@ export default function ArenaView({ arenaCode }: { arenaCode: string }) {
                   )}
                   <p className="call-explain" role="status">
                     {callPick === "YES" || callPick === "NO"
-                      ? <>When enrollment locks, {callSizeText(callPct, vault).stake} buys <b className={callPick === "YES" ? "up" : "down"}>{callPick === "YES" ? "UP" : "DOWN"}</b> at the opening price — 50¢ a share, each paying $1 if you&apos;re right. {callSizeText(callPct, vault).rest} You can switch sides or sell any time during the round, and change this call until it starts.</>
+                      ? <>When enrollment locks, {callSizeText(callPct, vault).stake} buys <b className={callPick === "YES" ? "up" : "down"}>{sideName(callPick)}</b> at the opening price — {pantaPit ? "Panta's line" : "50¢ a share"}, each paying $1 if you&apos;re right. {callSizeText(callPct, vault).rest} You can switch sides or sell any time during the round, and change this call until it starts.</>
                       : callPick === "LATER"
-                        ? <>Your {usd2.format(vault)} vault stays in cash. Once the round is live you pick UP or DOWN, and how much, yourself.</>
-                        : <>Pick the direction you think {asset} moves. Nothing is placed until trading opens.</>}
+                        ? <>Your {usd2.format(vault)} vault stays in cash. Once the round is live you pick {sideName("YES")} or {sideName("NO")}, and how much, yourself.</>
+                        : pantaPit ? <>Pick the side you think wins. Nothing is placed until trading opens.</> : <>Pick the direction you think {asset} moves. Nothing is placed until trading opens.</>}
                   </p>
                 </fieldset>
                 )}
@@ -1410,6 +1498,7 @@ export default function ArenaView({ arenaCode }: { arenaCode: string }) {
                     ? <li><b>Up to {MAX_LEGS} legs</b> of {liveMin} min, {PICK_MS / 1000}s to pick each — no trading</li>
                     : picksMode
                     ? <li><b>{liveMin} min</b> on the live BTC, ETH and SOL prices — no trading</li>
+                    : pantaPit ? <li><b>{liveMin} min</b> trading the room&apos;s odds on this Panta market{rounds > 1 ? `, ${rounds} rounds` : ""}</li>
                     : <li><b>{liveMin} min</b> of trading on the live {asset} price{rounds > 1 ? `, ${rounds} rounds` : ""}</li>}
                   {streakMode
                     ? <li><b>Last caller standing</b> takes the pool · ties split their places</li>
@@ -1463,13 +1552,13 @@ export default function ArenaView({ arenaCode }: { arenaCode: string }) {
                   </>
                 )}
                 <button type="submit" className="btn primary full" disabled={busy || !ok || !wallet || !ready} style={{ marginTop: 10 }}>
-                  {busy ? (seatStep ? seatStepText(seatStep, seat, callPick === "YES" || callPick === "NO" ? callPick : null).button : "Checking your wallet…")
+                  {busy ? (seatStep ? seatStepText(seatStep, seat, callPick === "YES" || callPick === "NO" ? callPick : null, undefined, pantaPit).button : "Checking your wallet…")
                     : !wallet ? "Connect a wallet first"
                     : xRequired && !username && round.escrow ? "Connect X above to play"
                     : streakMode ? (round.escrow ? `Deposit ${usd2.format(seat)} & take a seat` : "Take a practice seat")
                     : picksMode && !ready ? `Answer all ${questions.length} questions · ${seatPicked}/${questions.length}`
                     : picksMode ? (round.escrow ? `Deposit ${usd2.format(seat)} & lock in my picks` : "Take a practice seat")
-                    : !callPick ? "Pick UP, DOWN or decide later"
+                    : !callPick ? `Pick ${sideName("YES")}, ${sideName("NO")} or decide later`
                     : round.escrow ? `Deposit ${usd2.format(seat)} & ${cta}` : `Take a practice seat & ${cta}`}
                 </button>
               </form>
@@ -1478,7 +1567,7 @@ export default function ArenaView({ arenaCode }: { arenaCode: string }) {
                   ? <>Held in a non-custodial escrow program on Solana {CLUSTER}. After settlement, winners withdraw their prize to this wallet.</>
                   : round.escrow
                   ? <>Held in a non-custodial escrow program on Solana {CLUSTER}. After settlement you withdraw your payout: any prize plus your share of the vault money.</>
-                  : <>Practice arena — no USDC moves and nothing is deposited.</>}
+                  : <>Practice pit — no USDC moves and nothing is deposited.</>}
               </p>
             </div>
           </div>
@@ -1493,8 +1582,8 @@ export default function ArenaView({ arenaCode }: { arenaCode: string }) {
             {inviteInfo ? (
               // ── SHARE INVITE SCREEN (after successful host) ──────────
               <>
-                <h2>Your arena is live</h2>
-                <p className="sub">Send this link to your friends. Anyone with it takes a seat in your rumble.</p>
+                <h2>Your pit is live</h2>
+                <p className="sub">Send this link to your friends. Anyone with it takes a seat in your pit.</p>
 
                 <div className="invite-box">
                   <div className="invite-code">{inviteInfo.code}</div>
@@ -1504,36 +1593,37 @@ export default function ArenaView({ arenaCode }: { arenaCode: string }) {
                   </div>
                   <div className="invite-share">
                     <a className="btn secondary sm" target="_blank" rel="noopener noreferrer"
-                       href={`https://twitter.com/intent/tweet?text=${encodeURIComponent(`Join my Oracle Rumble arena · ${inviteInfo.url}`)}`}>
+                       href={`https://twitter.com/intent/tweet?text=${encodeURIComponent(`Take a seat in my pit on The Pit · ${inviteInfo.url}`)}`}>
                       Share on X
                     </a>
                     <a className="btn secondary sm" target="_blank" rel="noopener noreferrer"
-                       href={`https://t.me/share/url?url=${encodeURIComponent(inviteInfo.url)}&text=${encodeURIComponent("Join my Oracle Rumble arena")}`}>
+                       href={`https://t.me/share/url?url=${encodeURIComponent(inviteInfo.url)}&text=${encodeURIComponent("Take a seat in my pit on The Pit")}`}>
                       Telegram
                     </a>
                     <a className="btn secondary sm" target="_blank" rel="noopener noreferrer"
-                       href={`https://wa.me/?text=${encodeURIComponent(`Join my Oracle Rumble arena · ${inviteInfo.url}`)}`}>
+                       href={`https://wa.me/?text=${encodeURIComponent(`Take a seat in my pit on The Pit · ${inviteInfo.url}`)}`}>
                       WhatsApp
                     </a>
                   </div>
                 </div>
 
                 <button className="btn primary full" onClick={() => goToArena(inviteInfo.code)} style={{ marginTop: 12 }}>
-                  {hostStreak ? `Go to ${inviteInfo.code} and pick leg 1 →` : hostPicks ? `Make my picks in ${inviteInfo.code} →` : `Go to arena ${inviteInfo.code} →`}
+                  {hostStreak ? `Go to ${inviteInfo.code} and pick leg 1 →` : hostPicks ? `Make my picks in ${inviteInfo.code} →` : `Go to pit ${inviteInfo.code} →`}
                 </button>
                 <p className="disclaimer" style={{ marginTop: 10 }}>
                   {hostStreak
-                    ? "Next: open the arena and pick leg 1. The game starts when enrollment closes — stay on the page, legs come quickly."
+                    ? "Next: open the pit and pick leg 1. The game starts when enrollment closes — stay on the page, legs come quickly."
                     : hostPicks
-                    ? "Next: open the arena and make your five picks — they lock when enrollment closes."
+                    ? "Next: open the pit and make your five picks — they lock when enrollment closes."
                     : "Enrollment is open now. Your game starts the moment the timer locks, with whoever joined."}
                 </p>
               </>
             ) : (
               // ── CONFIGURE ROOM SCREEN ────────────────────────────────
               <>
-                <h2>Host a rumble</h2>
+                <h2>Host a pit</h2>
                 <p className="sub">You set the terms and get a shareable link. Every player funds the same seat — you can&apos;t hand anyone a bigger vault.</p>
+                <p className="sub"><a className="link" href="/?tab=host">Host on a Panta market or a market you create →</a></p>
 
                 <div className="host-field">
                   <span className="host-label">Game</span>
@@ -1548,7 +1638,7 @@ export default function ArenaView({ arenaCode }: { arenaCode: string }) {
                   <p className="host-call-help" role="status">
                     {hostStreak
                       ? `No trading: a chain of quick calls on BTC, ETH and SOL. ${PICK_MS / 1000}s to pick each leg; a wrong pick and you're out. Last caller standing takes the pool.`
-                      : "No trading: everyone answers five questions on BTC, ETH and SOL (up or down, which does best, a head-to-head). Most points take the pool. You make your picks in the arena after it opens."}
+                      : "No trading: everyone answers five questions on BTC, ETH and SOL (up or down, which does best, a head-to-head). Most points take the pool. You make your picks in the pit after it opens."}
                   </p>
                 )}
 
@@ -1658,7 +1748,7 @@ export default function ArenaView({ arenaCode }: { arenaCode: string }) {
                 {hostError && <p className="jc-error" role="alert">{hostError}</p>}
                 <button className="btn primary full" onClick={doHost} disabled={busy || !!hostError || (!!wallet && !hCall && !hostPicks)} style={{ marginTop: 12 }}>
                   {busy ? (seatStep ? seatStepText(seatStep, hostSeat).button : "Opening…")
-                    : !wallet ? (hostStreak ? "Open practice streak" : hostPicks ? "Open practice predictions" : `Open ${hAsset} practice rumble`)
+                    : !wallet ? (hostStreak ? "Open practice streak" : hostPicks ? "Open practice predictions" : `Open ${hAsset} practice pit`)
                     : hostPicks ? `Deposit ${usd2.format(hostSeat)} & take seat 1 · get invite link`
                     : !hCall ? `Pick UP or DOWN on ${hAsset}`
                     : `Deposit ${usd2.format(hostSeat)} & ${hCall === "YES" ? "call UP" : hCall === "NO" ? "call DOWN" : "open"} · get invite link`}
@@ -1705,7 +1795,7 @@ function streakHeadline(standings: Entrant[]): string {
 function cancelReason(history: string[]): string {
   const line = [...history].reverse().find((h) => /cancelled/i.test(h)) ?? "";
   if (/no players/i.test(line)) return "No seat was confirmed before enrollment closed, so the round never started.";
-  if (/host deposit/i.test(line)) return "The host's seat deposit wasn't approved, so the arena was closed before anyone could join.";
+  if (/host deposit/i.test(line)) return "The host's seat deposit wasn't approved, so the pit was closed before anyone could join.";
   if (/only \d+ entrants/i.test(line)) return "Not enough players joined before enrollment closed.";
   return "The round was cancelled before it started.";
 }
@@ -1737,14 +1827,14 @@ function RefundCard({
   if (!wallet) {
     return (
       <div className="refund-card">
-        <p><b>Deposited into this arena?</b> Connect that wallet to get your refund.</p>
+        <p><b>Deposited into this pit?</b> Connect that wallet to get your refund.</p>
         <button className="btn primary full" onClick={onConnect}>Connect wallet</button>
       </div>
     );
   }
   if (!state) return <div className="refund-card"><p>Checking your deposit…</p></div>;
   if (!state.deposited) {
-    return <div className="refund-card muted"><p>This wallet has no deposit in this arena — nothing to refund.</p></div>;
+    return <div className="refund-card muted"><p>This wallet has no deposit in this pit — nothing to refund.</p></div>;
   }
   if (state.claimed) {
     return (
@@ -1770,7 +1860,7 @@ function RefundCard({
         <b>Your {money(state.seatUsdc)} deposit is safe in escrow.</b>{" "}
         {refundReady
           ? "Your refund is being recorded — this page updates automatically."
-          : "A full refund is being prepared and opens within about two minutes of the arena closing. This page updates automatically."}
+          : "A full refund is being prepared and opens within about two minutes of the pit closing. This page updates automatically."}
       </p>
       {canRecover && (
         <button className="btn secondary full" onClick={onRecover} disabled={busy}>Recover deposit directly</button>

@@ -7,8 +7,8 @@ type Params = { params: Promise<{ code: string }> };
 export async function generateMetadata({ params }: Params): Promise<Metadata> {
   const code = normalizeArenaCode((await params).code);
   return {
-    title: `Arena ${code}`,
-    description: `Join arena ${code} on Oracle Rumble — take a seat, trade the live market, survive the cut.`
+    title: `Pit ${code}`,
+    description: `Join pit ${code} on The Pit — take a seat, trade the live odds, finish on top.`
   };
 }
 

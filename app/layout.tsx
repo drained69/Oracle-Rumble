@@ -3,21 +3,21 @@ import "./globals.css";
 import PrivyMount from "@/app/PrivyMount";
 
 const DESCRIPTION =
-  "A prediction-market battle royale on Solana. Equal seats, UP or DOWN calls on live BTC, ETH and SOL prices, the bottom half cut each round — survivors split the pool. Non-custodial USDC escrow.";
+  "Trading pits on any prediction market. Host a pit on tonight's game, a creator's question or live BTC, ETH and SOL — everyone takes the same seat, the room trades its own odds, Panta resolves the market and the best vaults split the pool. Non-custodial USDC escrow on Solana.";
 
 export const metadata: Metadata = {
-  title: { default: "Oracle Rumble — prediction-market battle royale", template: "%s · Oracle Rumble" },
+  title: { default: "The Pit — trading pits on any prediction market", template: "%s · The Pit" },
   description: DESCRIPTION,
-  applicationName: "Oracle Rumble",
+  applicationName: "The Pit",
   openGraph: {
     type: "website",
-    siteName: "Oracle Rumble",
-    title: "Oracle Rumble — prediction-market battle royale",
+    siteName: "The Pit",
+    title: "The Pit — trading pits on any prediction market",
     description: DESCRIPTION
   },
   twitter: {
     card: "summary",
-    title: "Oracle Rumble — prediction-market battle royale",
+    title: "The Pit — trading pits on any prediction market",
     description: DESCRIPTION
   }
 };

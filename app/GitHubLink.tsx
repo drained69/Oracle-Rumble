@@ -1,9 +1,9 @@
 /**
- * GitHubLink — the GitHub mark linking out to the Oracle Rumble source.
+ * GitHubLink — the GitHub mark linking out to The Pit source.
  * Used in the site and docs footers.
  */
 
-export const REPO_URL = "https://github.com/drained69/Oracle-Rumble";
+export const REPO_URL = "https://github.com/drained69/the-pit";
 
 export default function GitHubLink() {
   return (
@@ -12,8 +12,8 @@ export default function GitHubLink() {
       href={REPO_URL}
       target="_blank"
       rel="noopener noreferrer"
-      aria-label="Oracle Rumble on GitHub"
-      title="Oracle Rumble on GitHub"
+      aria-label="The Pit on GitHub"
+      title="The Pit on GitHub"
     >
       <svg viewBox="0 0 16 16" width="15" height="15" aria-hidden="true" focusable="false">
         <path

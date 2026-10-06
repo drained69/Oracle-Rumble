@@ -70,9 +70,9 @@ export async function POST(request: Request) {
   if (body.action === "deposit" || body.action === "claim" || body.action === "recover") {
     const arena = normalizeArenaCode(body.arena);
     const round = (await getActiveRound(arena)) ?? (await getLatestRound(arena));
-    if (!round) return NextResponse.json({ error: "arena not found", arena }, { status: 404 });
+    if (!round) return NextResponse.json({ error: "pit not found", arena }, { status: 404 });
     const escrow = round.escrow;
-    if (!escrow?.roundVault) return NextResponse.json({ error: "arena is ledger-only (no on-chain escrow record)" }, { status: 409 });
+    if (!escrow?.roundVault) return NextResponse.json({ error: "pit is ledger-only (no on-chain escrow record)" }, { status: 409 });
     let roundVault: PublicKey;
     try { roundVault = new PublicKey(escrow.roundVault); }
     catch { return NextResponse.json({ error: "invalid stored roundVault" }, { status: 500 }); }
@@ -91,10 +91,10 @@ export async function POST(request: Request) {
       // will fail with AlreadyInitialized. Short-circuit.
       const dep = await verifyPlayerDeposited(body.wallet, escrow.roundVault);
       if (dep.ok) {
-        return NextResponse.json({ error: "wallet already deposited into this arena", alreadyDeposited: true }, { status: 409 });
+        return NextResponse.json({ error: "wallet already deposited into this pit", alreadyDeposited: true }, { status: 409 });
       }
       if (round.entrants.filter((e) => !e.isBot).length >= round.config.capacity) {
-        return NextResponse.json({ error: "arena is full" }, { status: 409 });
+        return NextResponse.json({ error: "pit is full" }, { status: 409 });
       }
       // Funds check: without it the wallet shows a red "failed to simulate"
       // warning instead of telling the player they're short on USDC/SOL.
@@ -118,12 +118,12 @@ export async function POST(request: Request) {
         return NextResponse.json({ error: `round is ${round.status} — nothing to claim yet` }, { status: 409 });
       }
       if (!escrow.settleSignatures || escrow.settleSignatures.length === 0) {
-        return NextResponse.json({ error: round.status === "cancelled" ? "refund is still being prepared — try again in a minute" : "arena not settled yet — settlement pending" }, { status: 409 });
+        return NextResponse.json({ error: round.status === "cancelled" ? "refund is still being prepared — try again in a minute" : "pit not settled yet — settlement pending" }, { status: 409 });
       }
       // Claims go by the on-chain entry: it covers players, refunds of
       // cancelled arenas, and deposits that never got a seat.
       const pe = await readPlayerEntry(body.wallet, escrow.roundVault);
-      if (!pe) return NextResponse.json({ error: "this wallet has no deposit in this arena" }, { status: 403 });
+      if (!pe) return NextResponse.json({ error: "this wallet has no deposit in this pit" }, { status: 403 });
       if (pe.claimed) return NextResponse.json({ error: "already claimed" }, { status: 409 });
       if (!pe.settled) return NextResponse.json({ error: "settlement for this wallet isn't recorded yet — try again in a minute" }, { status: 409 });
       if (pe.entitlementUsdc <= 0) return NextResponse.json({ error: "nothing to claim — this vault finished at $0" }, { status: 409 });
@@ -135,7 +135,7 @@ export async function POST(request: Request) {
       // Only depositors can recover; refuse observers early so they don't get
       // a wallet prompt for a tx that would fail with AccountMismatch.
       const dep = await verifyPlayerDeposited(body.wallet, escrow.roundVault);
-      if (!dep.ok) return NextResponse.json({ error: "this wallet did not deposit into this arena" }, { status: 403 });
+      if (!dep.ok) return NextResponse.json({ error: "this wallet did not deposit into this pit" }, { status: 403 });
     }
 
     if (body.action === "deposit" && sessionWallet(request) === body.wallet) {
@@ -157,7 +157,7 @@ export async function POST(request: Request) {
     // The memo is public on chain, so it never carries a hidden call or picks.
     const seatUsdc = seatCostUsdc(round.config);
     const game = round.config.format === "predictions" || round.config.format === "streak" ? round.config.format : `${round.config.asset} ${round.config.format === "royale" ? "royale" : "single round"}`;
-    const memo = `Oracle Rumble arena ${arena}: ${seatUsdc.toFixed(2)} USDC seat, ${game}`;
+    const memo = `The Pit ${arena}: ${seatUsdc.toFixed(2)} USDC seat, ${game}`;
     const res = body.action === "deposit"
       ? await buildDepositTx(wallet, roundVault, memo)
       : await buildWithdrawTx(wallet, roundVault, body.action === "recover");

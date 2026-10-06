@@ -147,7 +147,7 @@ export async function GET(request: Request) {
     if (seenVaults.has(dep.roundVault)) continue;
     const { action, usdc } = actionFor(null, dep);
     items.push({
-      arena: "", status: "unknown", question: "Arena not found", asset: "", format: "single",
+      arena: "", status: "unknown", question: "Pit not found", asset: "", format: "single",
       roundNumber: 0, roundLimit: 0, createdAt: 0, endedAt: 0, deadline: 0, practice: false, me: null,
       chain: {
         roundVault: dep.roundVault,

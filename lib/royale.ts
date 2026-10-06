@@ -22,6 +22,7 @@ import { jointProbability } from "@/lib/joint-prob";
 import { answersFor, normalizeLocks, normalizePicks, resultsLine, scorePicks, type Picks, type PredictionsState } from "@/lib/predictions";
 import type { StreakState } from "@/lib/streak";
 import { hostFeeOf, normalizeHostFeePct } from "@/lib/fees";
+import type { RoomBook, Tape } from "@/lib/room-book";
 
 export type RoundStatus =
   | "enrolling"   // accepting entrants, before lock
@@ -126,6 +127,12 @@ export type RoundConfig = {
   roundLimit: number;     // rounds before forced finish (1 for single, 2–4 royale)
   /** Host's cut of the prize pool, 0–5 (%). Paid to the host's seat at settlement. */
   hostFeePct?: number;
+  /**
+   * Where the market comes from. "crypto" (default): a BTC/ETH/SOL direction
+   * market priced by the spot oracle. "panta": any Panta market — the room
+   * trades its own line (lib/room-book.ts) and Panta resolves it.
+   */
+  marketSource?: "crypto" | "panta";
 };
 
 // Host-configurable bounds. The host picks values inside these; the engine
@@ -360,6 +367,10 @@ export type Round = {
   streak?: StreakState;
   /** Host fee taken from the pool at the final settlement (USDC), paid to config.host. */
   hostFeeUsdc?: number;
+  /** Pits on a Panta market: the room's own order book (LMSR). */
+  book?: RoomBook;
+  /** Price history of the round's YES price — powers the odds chart and the settlement average. */
+  tape?: Tape;
 };
 
 /**
@@ -524,6 +535,16 @@ export function sideWord(side: Side): "UP" | "DOWN" {
   return side === "YES" ? "UP" : "DOWN";
 }
 
+/** Is this a pit on a Panta market (room book, YES/NO) rather than a crypto direction market? */
+export function isPantaPit(config: Pick<RoundConfig, "marketSource"> | undefined): boolean {
+  return config?.marketSource === "panta";
+}
+
+/** A side's name for this pit's market: YES/NO on a Panta market, UP/DOWN on a crypto direction market. */
+export function sideWordFor(config: Pick<RoundConfig, "marketSource"> | undefined, side: Side): string {
+  return isPantaPit(config) ? side : sideWord(side);
+}
+
 /** `nickname`, or `nickname_2`, `nickname_3`… if another entrant already uses it (case-insensitive). */
 function uniqueNickname(round: Round, wallet: string, nickname: string): string {
   const taken = new Set(round.entrants.filter((e) => e.wallet !== wallet).map((e) => e.nickname.toLowerCase()));
@@ -641,7 +662,7 @@ export function placeOpeningCalls(round: Round, yesPrice: number): void {
     const pct = e.openingCallPct ?? 100;
     const stake = Math.floor(e.cash * pct) / 100;
     if (buyShares(e, call, stake, price, yesPrice).ok) {
-      logEvent(round, `${e.nickname} bought ${sideWord(call)} $${stake.toFixed(2)} at ${price}¢ (opening call).`);
+      logEvent(round, `${e.nickname} bought ${sideWordFor(round.config, call)} $${stake.toFixed(2)} at ${price}¢ (opening call).`);
     }
   }
 }
@@ -838,7 +859,7 @@ export function settle(round: Round, finalYesPrice: number, priceMap?: PriceMap)
     const champPrize = champ ? (payouts[champ.id] ?? 0) : 0;
     logEvent(round, champ
       ? `${champ.nickname} wins $${champPrize.toFixed(2)} from the $${round.prizePoolUsdc.toFixed(2)} pool.`
-      : `Rumble complete.`);
+      : `Pit closed.`);
   } else {
     round.status = "advancing";
   }

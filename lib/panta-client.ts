@@ -89,47 +89,68 @@ export function reportTrade(args: { signature: string; wallet?: string; marketId
   return jpost<TradeStatusResponse>("/api/trades/report", { signature: args.signature });
 }
 
-// ---- Market creation (host-a-ring) lifecycle --------------------------
+// ---- Market creation (a pit on a new Panta market) --------------------
 
-export type MarketCreateQuoteRequest = {
-  wallet: string;
+export type MarketDraftInput = {
   question: string;
+  category: string;
   resolutionRule: string;
   sourcesOfTruth: string[];
-  category: string;
-  startTime: number;     // unix seconds
-  endTime: number;       // unix seconds
-  resolutionTime: number;// unix seconds
-  imageUrl: string;
+  /** When trading on the market ends, unix seconds. */
+  endsAt: number;
+  /** An event already under way (e.g. tonight's game) — trades immediately. */
+  breaking: boolean;
 };
-export type MarketCreateQuoteResponse = {
-  source: "panta" | "mock";
-  createId: string;
-  paymentUsdc: string;
-  liquidityInjectionUsdc?: string;
-  platformRevenueUsdc?: string;
-  expectedEventPda: string;
-  expiresAt?: string;
-};
-export function marketCreateQuote(args: MarketCreateQuoteRequest) {
-  return jpost<MarketCreateQuoteResponse>("/api/markets/quote", args);
+export type MarketQuote = { draftId: string; feeUsdc: number; liquidityUsdc: number; sandbox: boolean; expiresAt: string | null };
+
+async function postJson<T>(url: string, body: unknown): Promise<{ ok: true; data: T } | { ok: false; error: string; field?: string }> {
+  try {
+    const res = await fetch(url, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) return { ok: false, error: (data as { error?: string }).error ?? `Request failed (${res.status})`, field: (data as { field?: string }).field };
+    return { ok: true, data: data as T };
+  } catch {
+    return { ok: false, error: "Network error — check your connection and try again." };
+  }
 }
-export function marketCreateBuild(args: { createId: string; wallet: string }) {
-  return jpost<{ source: "panta" | "mock"; transaction: string; buildFingerprint?: string; lastValidBlockHeight?: number; expiresAt?: string }>(
-    "/api/markets/build", args
-  );
+
+/** Step 1: validate the market and get Panta's creation fee. */
+export async function quoteMarket(input: MarketDraftInput) {
+  return postJson<MarketQuote>("/api/markets/quote", input);
 }
-export async function marketCreateRegister(args: { createId: string; signature: string }) {
-  const res = await jpost<{ source: "panta" | "mock"; marketId: string; status: "registered" | "pending"; title?: string; category?: string }>(
-    "/api/markets/register", args
-  );
-  // Any market we register goes into the tracked-markets store so the
-  // graduation banner can watch it flip from "primary" → "graduated".
+
+/**
+ * Steps 2–3: build the creation transaction, have the creator's wallet sign
+ * it (it pays the fee), and register the market with Panta. In Panta's
+ * sandbox there's no transaction — nothing to sign, nothing charged.
+ */
+export async function finishMarket(
+  draftId: string,
+  wallet: string,
+  onStep?: (step: "building" | "signing" | "registering") => void,
+  question?: string
+): Promise<{ ok: true; marketId: string } | { ok: false; error: string }> {
+  onStep?.("building");
+  const built = await postJson<{ transaction: string; sandbox: boolean }>("/api/markets/build", { draftId });
+  if (!built.ok) return built;
+  let signature = "";
+  if (built.data.transaction) {
+    onStep?.("signing");
+    try {
+      ({ signature } = await signAndBroadcast({ serializedTx: built.data.transaction, wallet }));
+    } catch (err) {
+      return { ok: false, error: err instanceof Error ? err.message : "The wallet didn't sign the market." };
+    }
+  }
+  onStep?.("registering");
+  const reg = await postJson<{ marketId: string }>("/api/markets/register", { draftId, signature });
+  if (!reg.ok) return reg;
+  // Watch the market for its primary → graduated flip (creator fees start then).
   try {
     const { trackMarket } = await import("@/lib/tracked-markets");
-    if (res.marketId) trackMarket({ marketId: res.marketId, question: res.title, role: "creator" });
-  } catch { /* client-only helper — noop on server */ }
-  return res;
+    trackMarket({ marketId: reg.data.marketId, question, role: "creator" });
+  } catch { /* client-only helper */ }
+  return { ok: true, marketId: reg.data.marketId };
 }
 
 // ---- Wallet detection -------------------------------------------------
