@@ -21,7 +21,8 @@ const rpc = process.env.NEXT_PUBLIC_SOLANA_RPC ?? "";
 const mint = process.env.NEXT_PUBLIC_USDC_MINT ?? "";
 const program = process.env.NEXT_PUBLIC_ESCROW_PROGRAM_ID ?? "";
 check("cluster", cluster === "mainnet-beta");
-const productionRpc = /^https:\/\//.test(rpc) && !/api\.(mainnet|mainnet-beta|devnet|testnet)\.solana\.com|devnet|testnet/i.test(rpc);
+const httpsRpc = /^https:\/\//.test(rpc) && !/devnet|testnet/i.test(rpc);
+const productionRpc = httpsRpc && !/api\.(mainnet|mainnet-beta)\.solana\.com/i.test(rpc);
 check("private production RPC", productionRpc);
 check("Circle mainnet USDC", mint === MAINNET_USDC);
 check("persistent database", !!process.env.DATABASE_URL);
@@ -39,7 +40,10 @@ if (process.env.DATABASE_URL) {
 }
 check("live Panta key", /^pk_live_/.test(process.env.PANTA_API_KEY ?? ""));
 check("Privy app ID and server secret", !!process.env.NEXT_PUBLIC_PRIVY_APP_ID && !!process.env.PRIVY_APP_SECRET);
-check("independent session secret", (process.env.SESSION_SECRET ?? "").length >= 32);
+const sessionSecret = process.env.SESSION_SECRET ?? "";
+check("independent session secret", sessionSecret.length >= 32
+  && sessionSecret !== process.env.ESCROW_HOST_SECRET_KEY
+  && sessionSecret !== process.env.ROUND_HOST_SECRET);
 let operator = null;
 try { operator = Keypair.fromSecretKey(Uint8Array.from(JSON.parse(process.env.ESCROW_HOST_SECRET_KEY ?? ""))); }
 catch { /* no secret material is printed */ }
@@ -48,7 +52,10 @@ let programKey = null;
 try { programKey = new PublicKey(program); } catch { /* invalid public key */ }
 check("escrow program ID", !!programKey);
 
-if (cluster === "mainnet-beta" && productionRpc) {
+// A public RPC is insufficient for production, but still useful for finding
+// missing mainnet accounts during staging. Do not skip those checks merely
+// because the endpoint is public.
+if (cluster === "mainnet-beta" && httpsRpc) {
   try {
     const conn = new Connection(rpc, "confirmed");
     const genesis = await conn.getGenesisHash();

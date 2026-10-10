@@ -2,11 +2,19 @@
 
 ## Current decision: NO GO
 
-The product is still configured for devnet and a Panta sandbox key. This review
-found a fund-lock race in escrow settlement and several live API paths that
-reported mock success after Panta failures. Fixes are in this working tree,
-but they have not been exercised in a full devnet deposit → trade → settle →
-claim/recover test. Do not route real USDC through this build yet.
+Railway still serves the devnet build. The Panta API key is live and verified,
+but the Solana side is not ready for real funds. A read-only mainnet check on
+10 October found that the currently configured devnet escrow program ID has
+no executable account on mainnet and the operator wallet holds 0 mainnet SOL.
+The local `.env.local` now stages the mainnet cluster, canonical Circle USDC,
+and the public mainnet RPC for read-only checks, with the escrow program ID
+cleared so paid pits cannot open there. Railway retains its devnet chain
+settings until a reviewed mainnet program and production RPC are available.
+
+The earlier review found a fund-lock race in escrow settlement and live API
+paths that reported mock success after Panta failures. The fixes have not
+been exercised in a full devnet deposit → trade → settle → claim/recover test.
+Do not route real USDC through this build yet.
 
 This is a code review and local test pass, not an independent smart contract
 audit or a guarantee that all vulnerabilities have been found.
@@ -44,10 +52,12 @@ audit or a guarantee that all vulnerabilities have been found.
    has one local unit test for the close-account proof; no program-test suite.
 3. **Production infrastructure:** provision a dedicated mainnet RPC with
    indexing support for `getProgramAccounts`, durable Postgres with backup
-   and restore drill, a live Panta key, production Privy app, independent
-   session secret, and isolated operator/deployer/upgrade keys. Set the
-   canonical mainnet USDC mint. Confirm the RPC genesis hash and the deployed
-   program's executable account with `npm run preflight:mainnet`.
+   and restore drill, a production Privy app, and isolated operator/deployer/
+   upgrade keys. The live Panta key is installed in Railway; an independent
+   session secret is staged for its next deployment. Set the canonical mainnet
+   USDC mint and deploy the reviewed escrow program. Confirm the RPC genesis
+   hash and the deployed program's executable account with
+   `npm run preflight:mainnet`.
 4. **Realistic canary:** run the exact build through a complete devnet cycle,
    then a limited mainnet canary with capped deposits and monitored operator
    balance, transaction landing, settlement, and user claims. Verify a
@@ -86,9 +96,8 @@ audit or a guarantee that all vulnerabilities have been found.
    rollback plan. A web rollback cannot undo an on-chain deployment or
    already accepted deposits; keep recovery and settlement available.
 
-The code changes were pushed to GitHub `main`. The local `video/` directory is
+The previous audit's code changes were pushed to GitHub `main`. The local `video/` directory is
 excluded from the current branch and remains on the developer machine. The
 earlier pushed commit that contained the video files remains in branch history;
 the removal commit makes them absent from the current tree. No mainnet
-transaction, Railway deployment, or live Panta order was performed in this
-audit.
+transaction or live Panta order has been performed in this readiness pass.
