@@ -63,6 +63,28 @@ bash scripts/deploy-escrow.sh
 #    NEXT_PUBLIC_USDC_MINT=<the USDC mint Panta uses on devnet>
 ```
 
+## Mainnet deployment
+
+The wallet in `PRIVATE_KEY` is configured locally as the escrow operator and
+mainnet deployment payer/upgrade authority. Its local keypair file is
+`.keys/mainnet-admin.json` (gitignored, mode 0600). The program ID still uses
+its own keypair at `.keys/escrow-program-keypair.json`; that file initializes
+the on-chain program address and does not pay deployment or runtime costs.
+
+Do not deploy until the escrow has completed an independent security review,
+the deployment wallet is funded, and a dedicated production RPC is available.
+Then set `SOLANA_MAINNET_RPC` to that RPC and `MAINNET_AUDIT_APPROVED=YES`, and
+run:
+
+```bash
+bash scripts/deploy-escrow-mainnet.sh
+```
+
+This initial-deploy script refuses public Solana RPC endpoints, non-mainnet
+genesis hashes, missing audit approval, and program IDs that already exist on
+mainnet. After deployment, set `NEXT_PUBLIC_ESCROW_PROGRAM_ID` to the reported
+program ID and run the release preflight in the intended Railway environment.
+
 When both env vars are set, `lib/escrow.ts` reports `ESCROW_ACTIVE = true` and
 the app moves real USDC; otherwise it runs in ledger mode (server-side
 accounting only) so the game is always playable.
