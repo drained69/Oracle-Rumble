@@ -221,7 +221,7 @@ const ESCROW_ERRORS = [
   "account already initialized", "account not initialized", "not the round host", "the pit is full",
   "the pit is not open", "the pit is not settled", "already claimed", "your payout isn't recorded yet",
   "entitlements exceed escrowed funds", "the recovery deadline hasn't passed", "account mismatch",
-  "numeric overflow", "invalid amount"
+  "numeric overflow", "invalid amount", "not every deposit is settled or recovered", "settlement leaves funds unallocated"
 ];
 
 function explainSimulation(err: unknown, logs: string[] | null): string {
@@ -242,7 +242,7 @@ function explainSimulation(err: unknown, logs: string[] | null): string {
  * dry-run it first, so a transaction that would fail on chain is never put
  * in front of the player.
  */
-async function buildTx(ixs: Awaited<ReturnType<typeof ixDeposit>>[], feePayer: PublicKey): Promise<{ base64: string } | { error: string }> {
+async function buildTx(ixs: Awaited<ReturnType<typeof ixDeposit>>[], feePayer: PublicKey, coSigner?: Keypair): Promise<{ base64: string } | { error: string }> {
   const conn = connection();
   const { blockhash } = await conn.getLatestBlockhash("confirmed");
   const tx = new Transaction();
@@ -260,6 +260,7 @@ async function buildTx(ixs: Awaited<ReturnType<typeof ixDeposit>>[], feePayer: P
     // The dry run is a courtesy — an RPC hiccup must not block the player.
     console.warn(`[escrow] simulation unavailable: ${err instanceof Error ? err.message : String(err)}`);
   }
+  if (coSigner) tx.partialSign(coSigner);
   return { base64: Buffer.from(tx.serialize({ requireAllSignatures: false, verifySignatures: false })).toString("base64") };
 }
 
@@ -276,13 +277,15 @@ function ixMemo(text: string, signer: PublicKey): TransactionInstruction {
 
 export async function buildDepositTx(player: PublicKey, roundVault: PublicKey, memo?: string): Promise<{ base64: string } | { error: string }> {
   if (!escrowReady() || !USDC_MINT) return { error: "escrow inactive" };
+  const host = hostKeypair();
+  if (!host) return { error: "escrow operator unavailable" };
   // Prepend an idempotent ATA-create for the player's USDC ATA. Without this
   // a fresh wallet that has never held USDC on this cluster has no ATA yet,
   // Deposit simulation fails, and Backpack/Phantom flag the tx "unsafe".
   // The idempotent variant is a no-op if the ATA already exists.
   const createAta = ixCreateAtaIdempotent({ payer: player, owner: player, mint: USDC_MINT });
-  const deposit = ixDeposit({ player, roundVault, mint: USDC_MINT });
-  return buildTx(memo ? [createAta, deposit, ixMemo(memo, player)] : [createAta, deposit], player);
+  const deposit = ixDeposit({ player, host: host.publicKey, roundVault, mint: USDC_MINT });
+  return buildTx(memo ? [createAta, deposit, ixMemo(memo, player)] : [createAta, deposit], player, host);
 }
 
 export async function buildWithdrawTx(player: PublicKey, roundVault: PublicKey, recover = false): Promise<{ base64: string } | { error: string }> {
@@ -306,7 +309,7 @@ export type SettleEntry = { wallet: string; entitlementUsdc: number };
  * unsettled entry can't claim, a closed vault can't recover), so we stop
  * before closing and report `retry` — SettlePlayer is idempotent.
  */
-export async function settleArenaOnChain(roundVaultPk: string, players: SettleEntry[], expectDeposited?: number, refund = false): Promise<{ ok: true; signatures: string[] } | { ok: false; error: string; retry?: boolean }> {
+export async function settleArenaOnChain(roundVaultPk: string, players: SettleEntry[], expectDeposited: number, refund = false): Promise<{ ok: true; signatures: string[] } | { ok: false; error: string; retry?: boolean }> {
   const host = hostKeypair();
   if (!escrowReady() || !host) return { ok: false, error: "escrow inactive" };
   const roundVault = new PublicKey(roundVaultPk);
@@ -329,8 +332,15 @@ export async function settleArenaOnChain(roundVaultPk: string, players: SettleEn
         return { ok: false, retry: true, error: "a new deposit landed during settlement — settling again" };
       }
     }
+    // The program checks this complete list against its deposit counter in
+    // the close transaction. An in-flight deposit invalidates the close.
+    const depositors = await listDepositors(roundVaultPk);
+    if (depositors.length !== expectDeposited || depositors.some((d) => !d.settled && !d.claimed)) {
+      return { ok: false, retry: true, error: "deposit accounting changed during settlement" };
+    }
+    const playerEntries = depositors.map((d) => playerEntryPda(roundVault, new PublicKey(d.wallet))[0]);
     // A cancelled arena closes as a refund: its claims carry no platform fee.
-    const closeIx = ixCloseSettlement({ host: host.publicKey, roundVault, refund });
+    const closeIx = ixCloseSettlement({ host: host.publicKey, roundVault, playerEntries, refund });
     const closeSig = await signSendConfirm(new Transaction().add(closeIx), [host]);
     sigs.push(closeSig);
     return { ok: true, signatures: sigs };

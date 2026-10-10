@@ -16,9 +16,12 @@ export async function GET(_req: Request, ctx: { params: Promise<{ id: string }> 
   if (PANTA_LIVE) {
     try {
       const raw = await pantaFetch<PantaLiveMarket>(`/markets/${encodeURIComponent(id)}`);
-      return NextResponse.json({ source: "panta", market: pantaMarketToUi(raw) });
+      const market = pantaMarketToUi(raw);
+      if (market.id !== id) return NextResponse.json({ source: "panta", error: "Panta did not return that market." }, { status: 404 });
+      return NextResponse.json({ source: "panta", market });
     } catch (err) {
-      console.error("panta /markets/{id} failed, serving mock:", err);
+      console.error("panta /markets/{id} failed:", err);
+      return NextResponse.json({ source: "panta", error: "Panta market details are temporarily unavailable." }, { status: 502 });
     }
   }
   const hit = findMockMarket(id);

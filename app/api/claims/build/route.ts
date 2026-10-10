@@ -29,6 +29,9 @@ function sharesToUsdc(shares: string | number | undefined): string {
 }
 
 export async function POST(request: Request) {
+  if (process.env.NEXT_PUBLIC_SOLANA_CLUSTER === "mainnet-beta" && !/^pk_live_/.test(process.env.PANTA_API_KEY ?? "")) {
+    return NextResponse.json({ error: "Live Panta claims are unavailable on this deployment." }, { status: 503 });
+  }
   const limited = limitByIp(request, "panta-write", 30, 60_000);
   if (limited) return limited;
   const body = (await request.json()) as ClaimBuildRequest;
@@ -54,7 +57,8 @@ export async function POST(request: Request) {
       };
       return NextResponse.json(resp);
     } catch (err) {
-      console.error("panta /claim/build failed, serving mock:", err);
+      console.error("panta /claim/build failed:", err);
+      return NextResponse.json({ error: "Panta could not build this claim." }, { status: 502 });
     }
   }
 

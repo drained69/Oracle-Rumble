@@ -103,11 +103,11 @@ export type MarketDraftInput = {
 };
 export type MarketQuote = { draftId: string; feeUsdc: number; liquidityUsdc: number; sandbox: boolean; expiresAt: string | null };
 
-async function postJson<T>(url: string, body: unknown): Promise<{ ok: true; data: T } | { ok: false; error: string; field?: string }> {
+async function postJson<T>(url: string, body: unknown): Promise<{ ok: true; data: T } | { ok: false; error: string; field?: string; code?: string }> {
   try {
     const res = await fetch(url, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
     const data = await res.json().catch(() => ({}));
-    if (!res.ok) return { ok: false, error: (data as { error?: string }).error ?? `Request failed (${res.status})`, field: (data as { field?: string }).field };
+    if (!res.ok) return { ok: false, error: (data as { error?: string }).error ?? `Request failed (${res.status})`, field: (data as { field?: string }).field, code: (data as { code?: string }).code };
     return { ok: true, data: data as T };
   } catch {
     return { ok: false, error: "Network error — check your connection and try again." };
@@ -117,6 +117,38 @@ async function postJson<T>(url: string, body: unknown): Promise<{ ok: true; data
 /** Step 1: validate the market and get Panta's creation fee. */
 export async function quoteMarket(input: MarketDraftInput) {
   return postJson<MarketQuote>("/api/markets/quote", input);
+}
+
+/** Keep a sent creation signature through registration retries and reloads. */
+const pendingCreateKey = (draftId: string, wallet: string) => `pit:panta:create:${wallet}:${draftId}`;
+const pendingCreateMemory = new Map<string, string>();
+export function pendingMarketSignature(draftId: string | undefined, wallet: string): string {
+  if (!draftId || !wallet || typeof window === "undefined") return "";
+  const key = pendingCreateKey(draftId, wallet);
+  try {
+    const signature = pendingCreateMemory.get(key) ?? window.localStorage.getItem(key) ?? "";
+    return /^[1-9A-HJ-NP-Za-km-z]{64,90}$/.test(signature) ? signature : "";
+  } catch { return ""; }
+}
+
+function rememberMarketSignature(draftId: string, wallet: string, signature: string): void {
+  pendingCreateMemory.set(pendingCreateKey(draftId, wallet), signature);
+  try { window.localStorage.setItem(pendingCreateKey(draftId, wallet), signature); } catch { /* storage can be disabled */ }
+}
+
+function canRememberMarketSignature(draftId: string, wallet: string): boolean {
+  try {
+    const key = `${pendingCreateKey(draftId, wallet)}:check`;
+    window.localStorage.setItem(key, "ok");
+    const works = window.localStorage.getItem(key) === "ok";
+    window.localStorage.removeItem(key);
+    return works;
+  } catch { return false; }
+}
+
+function forgetMarketSignature(draftId: string, wallet: string): void {
+  pendingCreateMemory.delete(pendingCreateKey(draftId, wallet));
+  try { window.localStorage.removeItem(pendingCreateKey(draftId, wallet)); } catch { /* storage can be disabled */ }
 }
 
 /**
@@ -129,22 +161,54 @@ export async function finishMarket(
   wallet: string,
   onStep?: (step: "building" | "signing" | "registering") => void,
   question?: string
-): Promise<{ ok: true; marketId: string } | { ok: false; error: string }> {
-  onStep?.("building");
-  const built = await postJson<{ transaction: string; sandbox: boolean }>("/api/markets/build", { draftId });
-  if (!built.ok) return built;
-  let signature = "";
-  if (built.data.transaction) {
-    onStep?.("signing");
-    try {
-      ({ signature } = await signAndBroadcast({ serializedTx: built.data.transaction, wallet }));
-    } catch (err) {
-      return { ok: false, error: err instanceof Error ? err.message : "The wallet didn't sign the market." };
+): Promise<{ ok: true; marketId: string } | { ok: false; error: string; requote?: boolean; pendingRegistration?: boolean }> {
+  let signature = pendingMarketSignature(draftId, wallet);
+  if (!signature) {
+    onStep?.("building");
+    const built = await postJson<{ transaction: string; sandbox: boolean }>("/api/markets/build", { draftId });
+    if (!built.ok) return {
+      ...built,
+      requote: built.code === "CREATE_EXPIRED" || /(?:quote|draft|session).*expired/i.test(built.error)
+    };
+    if (built.data.transaction) {
+      if (!canRememberMarketSignature(draftId, wallet)) return { ok: false, error: "Browser storage is unavailable. Enable it before paying Panta so a sent transaction can be safely registered after a retry." };
+      onStep?.("signing");
+      try {
+        ({ signature } = await signAndBroadcast({
+          serializedTx: built.data.transaction, wallet,
+          // Save as soon as broadcast returns, before waiting for RPC confirmation.
+          onBroadcast: (sent) => rememberMarketSignature(draftId, wallet, sent)
+        }));
+      } catch (err) {
+        // An explicit on-chain failure is safe to re-quote. For any other
+        // post-broadcast error, retain the signature for registration retry.
+        if (pendingMarketSignature(draftId, wallet)) {
+          if (err instanceof WalletSignatureError) forgetMarketSignature(draftId, wallet);
+          else return { ok: false, error: "The creation transaction was sent. Retry Panta registration with the same signature; do not sign or pay again.", pendingRegistration: true };
+        }
+        return { ok: false, error: err instanceof Error ? err.message : "The wallet didn't sign the market." };
+      }
     }
   }
   onStep?.("registering");
-  const reg = await postJson<{ marketId: string }>("/api/markets/register", { draftId, signature });
-  if (!reg.ok) return reg;
+  let reg = await postJson<{ marketId: string }>("/api/markets/register", { draftId, signature });
+  for (let attempt = 0; !reg.ok && reg.code === "TX_NOT_FOUND" && attempt < 2; attempt++) {
+    await new Promise((resolve) => setTimeout(resolve, 1_500));
+    reg = await postJson<{ marketId: string }>("/api/markets/register", { draftId, signature });
+  }
+  if (!reg.ok) {
+    if (reg.code === "TX_FAILED") {
+      forgetMarketSignature(draftId, wallet);
+      return { ok: false, error: "Panta confirmed the transaction failed on chain. Check a new creation fee quote before trying again.", requote: true };
+    }
+    if (signature) return {
+      ok: false,
+      error: reg.code === "CREATE_EXPIRED" ? reg.error : `The transaction was sent, but Panta has not registered it yet. Retry registration without signing again. ${reg.error}`,
+      pendingRegistration: true
+    };
+    return reg;
+  }
+  forgetMarketSignature(draftId, wallet);
   // Watch the market for its primary → graduated flip (creator fees start then).
   try {
     const { trackMarket } = await import("@/lib/tracked-markets");
@@ -186,8 +250,8 @@ async function pollConfirmation(connection: import("@solana/web3.js").Connection
     try {
       const st = await connection.getSignatureStatus(signature, { searchTransactionHistory: true });
       const v = st.value?.confirmationStatus;
-      if (v === "confirmed" || v === "finalized") return true;
       if (st.value?.err) throw new WalletSignatureError(new Error(JSON.stringify(st.value.err)));
+      if (v === "confirmed" || v === "finalized") return true;
     } catch (err) {
       if (err instanceof WalletSignatureError) throw err;
     }
@@ -204,6 +268,7 @@ async function pollConfirmation(connection: import("@solana/web3.js").Connection
 export async function signAndBroadcast(args: {
   serializedTx: string;
   wallet: string;
+  onBroadcast?: (signature: string) => void;
 }): Promise<{ signature: string; confirmed: boolean }> {
   if (typeof window === "undefined") throw new Error("client only");
   const bytes = b64ToBytes(args.serializedTx);
@@ -223,6 +288,7 @@ export async function signAndBroadcast(args: {
   } catch (err) {
     throw new WalletSignatureError(new Error(describeWalletError(err, "The transaction")));
   }
+  args.onBroadcast?.(signature);
   const confirmed = await pollConfirmation(connection, signature);
   return { signature, confirmed };
 }

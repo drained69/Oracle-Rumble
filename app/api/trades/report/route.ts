@@ -40,7 +40,7 @@ async function readStatus(signature: string): Promise<TradeStatusResponse> {
     };
   } catch (err) {
     console.error("panta /trades/{sig} failed:", err);
-    return { signature, status: "unknown", source: "mock" };
+    return { signature, status: "unknown", source: "panta" };
   }
 }
 

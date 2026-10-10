@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { PANTA_LIVE } from "@/lib/panta";
-import { listPantaMarkets, PANTA_SANDBOX } from "@/lib/panta-market";
+import { listPantaMarkets, pantaCatalogFetchFailed, PANTA_SANDBOX } from "@/lib/panta-market";
 
 export const dynamic = "force-dynamic";
 
@@ -13,11 +13,12 @@ export async function GET() {
   return NextResponse.json({
     available: PANTA_LIVE,
     sandbox: PANTA_SANDBOX,
+    stale: pantaCatalogFetchFailed(),
     items: list.slice(0, 60).map((m) => ({
       id: m.id,
       question: m.question,
       category: m.category,
-      yesCents: m.yesCents,
+      yesCents: m.priceAvailable ? m.yesCents : null,
       endMs: m.endMs,
       volumeUsdc: m.volumeUsdc
     }))

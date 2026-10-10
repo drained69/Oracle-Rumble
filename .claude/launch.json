@@ -1,6 +1,25 @@
 {
   "version": "0.0.1",
   "configurations": [
-    { "name": "oracle-rumble", "runtimeExecutable": "npm", "runtimeArgs": ["run", "dev"], "port": 3000 }
+    {
+      "name": "oracle-rumble",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": [
+        "run",
+        "dev"
+      ],
+      "port": 3000
+    },
+    {
+      "name": "pit-practice",
+      "runtimeExecutable": "env",
+      "runtimeArgs": [
+        "ESCROW_HOST_SECRET_KEY=",
+        "npm",
+        "run",
+        "dev"
+      ],
+      "port": 3000
+    }
   ]
 }

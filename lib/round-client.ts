@@ -28,16 +28,18 @@ async function signAndBroadcastLegacy(
   const { Connection, Transaction } = await import("@solana/web3.js");
   const conn = new Connection(SOLANA_RPC, "confirmed");
   const tx = Transaction.from(b64ToBytes(base64));
+  const serverSigned = tx.signatures.some((s) => !!s.signature && s.publicKey.toBase58() !== wallet);
 
   let signature = "";
   for (let attempt = 0; ; attempt++) {
-    // Stamp a fresh blockhash right before the wallet prompt: a transaction
-    // is only valid for ~150 blocks from its blockhash, and the one the
-    // server built with is already seconds old. Safe — the player is the
-    // only signer.
-    const fresh = await conn.getLatestBlockhash("confirmed");
-    tx.recentBlockhash = fresh.blockhash;
-    for (const s of tx.signatures) s.signature = null; // a retry must be signed afresh
+    // Refresh only transactions signed by the player alone. Deposits carry
+    // the operator's admission signature, which would be invalidated by
+    // changing their blockhash or clearing their signature.
+    const fresh = serverSigned ? null : await conn.getLatestBlockhash("confirmed");
+    if (fresh) {
+      tx.recentBlockhash = fresh.blockhash;
+      for (const s of tx.signatures) s.signature = null; // a retry must be signed afresh
+    }
     const broadcast = async (raw: Uint8Array) => {
       try {
         return await conn.sendRawTransaction(raw, { skipPreflight: false, preflightCommitment: "confirmed", maxRetries: 5 });
@@ -45,7 +47,7 @@ async function signAndBroadcastLegacy(
         // A lagging RPC node can report a still-valid blockhash as unknown:
         // if it hasn't actually expired, send the same signed bytes without
         // that node's pre-check (on-chain failures are caught when confirming).
-        if (/blockhash not found/i.test(String((err as Error)?.message ?? err))) {
+        if (fresh && /blockhash not found/i.test(String((err as Error)?.message ?? err))) {
           const height = await conn.getBlockHeight("confirmed").catch(() => 0);
           if (height && height <= fresh.lastValidBlockHeight) {
             return conn.sendRawTransaction(raw, { skipPreflight: true, maxRetries: 5 });
@@ -59,7 +61,7 @@ async function signAndBroadcastLegacy(
       break;
     } catch (err) {
       // Really expired while the prompt was open: ask once more, fresh.
-      if (err instanceof WalletError && err.reason === "expired" && attempt === 0) { onRetry?.(); continue; }
+      if (err instanceof WalletError && err.reason === "expired" && attempt === 0 && !serverSigned) { onRetry?.(); continue; }
       throw new Error(describeWalletError(err, action));
     }
   }
@@ -384,19 +386,21 @@ export async function newRound(config: HostConfig, wallet: string): Promise<Roun
  * Check a wallet can afford a seat before any on-chain work happens.
  * Returns null when affordable (or escrow is off), otherwise a user-facing reason.
  */
-export async function checkSeatFunds(wallet: string, seatUsdc: number, what = "This seat"): Promise<string | null> {
+export async function checkSeatFunds(wallet: string, seatUsdc: number, what = "This seat", requireBalance = false): Promise<string | null> {
   try {
     const r = await fetch(`/api/escrow/balance?wallet=${encodeURIComponent(wallet)}`, { cache: "no-store" }).then((x) => x.json());
-    if (r.escrow !== "active" || r.usdc == null) return null;
+    if (r.usdc == null) return requireBalance ? "Could not verify your wallet's USDC balance. Retry before paying Panta." : null;
+    if (r.escrow !== "active" && !requireBalance) return null;
+    const mainnet = process.env.NEXT_PUBLIC_SOLANA_CLUSTER === "mainnet-beta";
     if (r.usdc + 1e-9 < seatUsdc) {
-      return `${what.replace(/^./, (c) => c.toUpperCase())} costs ${seatUsdc.toFixed(2)} USDC but your X wallet holds ${Number(r.usdc).toFixed(2)} devnet USDC. Open your account (top right) for its address, then get test USDC at faucet.circle.com (Solana Devnet).`;
+      return `${what.replace(/^./, (c) => c.toUpperCase())} costs ${seatUsdc.toFixed(2)} USDC but your X wallet holds ${Number(r.usdc).toFixed(2)} ${mainnet ? "mainnet" : "devnet"} USDC. ${mainnet ? "Fund that wallet with USDC before trying again." : "Open your account (top right) for its address, then get test USDC at faucet.circle.com (Solana Devnet)."}`;
     }
     if (r.sol < 0.005) {
-      return `You need about 0.005 devnet SOL for network fees (your X wallet holds ${Number(r.sol).toFixed(4)}). Open your account (top right) for its address, then get SOL at faucet.solana.com.`;
+      return `You need about 0.005 ${mainnet ? "" : "devnet "}SOL for network fees (your X wallet holds ${Number(r.sol).toFixed(4)}). ${mainnet ? "Fund that wallet with SOL before trying again." : "Open your account (top right) for its address, then get SOL at faucet.solana.com."}`;
     }
     return null;
   } catch {
-    return null; // the deposit route re-checks server-side
+    return requireBalance ? "Could not verify your wallet's balance. Retry before paying Panta." : null; // deposit route re-checks
   }
 }
 

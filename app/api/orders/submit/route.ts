@@ -11,6 +11,9 @@ import { PANTA_LIVE, pantaFetch, type SubmitRequest, type SubmitResponse } from 
  * /orders/verify to learn when it confirms.
  */
 export async function POST(request: Request) {
+  if (process.env.NEXT_PUBLIC_SOLANA_CLUSTER === "mainnet-beta" && !/^pk_live_/.test(process.env.PANTA_API_KEY ?? "")) {
+    return NextResponse.json({ error: "Live Panta orders are unavailable on this deployment." }, { status: 503 });
+  }
   const limited = limitByIp(request, "panta-write", 30, 60_000);
   if (limited) return limited;
   const body = (await request.json()) as SubmitRequest;
@@ -35,7 +38,8 @@ export async function POST(request: Request) {
       };
       return NextResponse.json(resp);
     } catch (err) {
-      console.error("panta /primaryordersubmit failed, serving mock:", err);
+      console.error("panta /primaryordersubmit failed:", err);
+      return NextResponse.json({ error: "Panta submission is unavailable; check the transaction signature before retrying." }, { status: 502 });
     }
   }
 

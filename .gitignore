@@ -3,6 +3,7 @@ node_modules
 .env.local
 .env*.local
 *.tsbuildinfo
+/video/
 
 # Solana program + deployer secret keypairs — never commit
 .keys/

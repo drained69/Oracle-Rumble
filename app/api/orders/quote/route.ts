@@ -44,6 +44,9 @@ function decimalToCents(v: number | string | undefined): number {
 }
 
 export async function POST(request: Request) {
+  if (process.env.NEXT_PUBLIC_SOLANA_CLUSTER === "mainnet-beta" && !/^pk_live_/.test(process.env.PANTA_API_KEY ?? "")) {
+    return NextResponse.json({ error: "Live Panta orders are unavailable on this deployment." }, { status: 503 });
+  }
   const limited = limitByIp(request, "panta-write", 30, 60_000);
   if (limited) return limited;
   const body = (await request.json()) as QuoteRequest;
@@ -62,7 +65,7 @@ export async function POST(request: Request) {
         wallet,
         side: body.side.toLowerCase(),
         amountUsdc: body.usdcAmount,
-        ...(body.userId ? { userId: body.userId } : PANTA_USER_ID ? { userId: PANTA_USER_ID } : {})
+        ...(PANTA_USER_ID ? { userId: PANTA_USER_ID } : {})
       };
       const data = await pantaFetch<PantaPrimaryQuote>("/primaryorderquote", {
         method: "POST",
@@ -82,7 +85,8 @@ export async function POST(request: Request) {
       };
       return NextResponse.json(resp);
     } catch (err) {
-      console.error("panta /primaryorderquote failed, serving mock:", err);
+      console.error("panta /primaryorderquote failed:", err);
+      return NextResponse.json({ error: "Panta could not quote this order." }, { status: 502 });
     }
   }
 

@@ -37,8 +37,10 @@ export async function GET() {
       }
       if (derived.length) return NextResponse.json({ source: "panta", categories: derived });
     } catch (err) {
-      console.error("panta /categories failed, serving mock:", err);
+      console.error("panta /categories failed:", err);
+      return NextResponse.json({ error: "Panta categories are temporarily unavailable." }, { status: 502 });
     }
+    return NextResponse.json({ source: "panta", categories: [] });
   }
 
   // Mock fallback — derive from the seed arenas.

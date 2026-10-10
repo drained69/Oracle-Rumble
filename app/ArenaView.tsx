@@ -386,20 +386,6 @@ export default function ArenaView({ arenaCode }: { arenaCode: string }) {
     if (me && v > avail + 1e-9) return setToast(`You have ${usd2.format(avail)} available for ${sideName(side)}.`);
     setBusy(true);
     try {
-      // Kick the Panta order lifecycle in parallel when opted in and the
-      // market is a real Panta id. This walks the full quote → build →
-      // sign → submit → verify → report chain against the same size the
-      // player bought at inside the round. Attribution becomes live-honest.
-      let pantaLifecycle: Promise<unknown> | null = null;
-      if (pantaFillOn && pantaFillAvailable && marketId) {
-        setPantaOrder({ step: "quoting", note: "Starting…" });
-        pantaLifecycle = executePantaOrder({
-          marketId, side, usdcAmount: v, wallet,
-          onUpdate: (u) => setPantaOrder(u)
-        }).catch((err) => {
-          setPantaOrder({ step: "error", error: err instanceof Error ? err.message : String(err) });
-        });
-      }
       const r = await tradeRound({ wallet, action: "buy", side, usdc: v, arena: arenaCode, quotedYes: yesPrice });
       if (r.error) {
         setToast(r.error);
@@ -408,11 +394,13 @@ export default function ArenaView({ arenaCode }: { arenaCode: string }) {
         setToast(`${r.fill ?? `Bought ${sideName(side)}.`} Stake ${usd2.format(v)}.`);
         setAmount("");
         await refresh();
+        // A real Panta purchase only starts after the pit trade succeeds.
+        if (pantaFillOn && pantaFillAvailable && marketId) {
+          setPantaOrder({ step: "quoting", note: "Starting…" });
+          await executePantaOrder({ marketId, side, usdcAmount: v, wallet,
+            onUpdate: (u) => setPantaOrder(u) });
+        }
       }
-      // Don't block the UI on the Panta lifecycle — it streams via
-      // setPantaOrder. We do await it so `busy` clears only after both
-      // paths settle when the toggle was on.
-      if (pantaLifecycle) await pantaLifecycle;
     } finally { setBusy(false); }
   }, [wallet, enrolled, amount, side, arenaCode, refresh, pantaFillOn, pantaFillAvailable, marketId, me, yesPrice, round?.book, sideName]);
 
