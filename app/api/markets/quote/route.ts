@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { limitByIp, overLimit } from "@/lib/rate-limit";
 import { PANTA_LIVE, pantaFetch } from "@/lib/panta";
 import { PANTA_CATEGORIES, PANTA_SANDBOX, saveDraft, type PantaCategory } from "@/lib/panta-market";
+import { STORE_ENABLED } from "@/lib/round-store";
 import { sessionWallet } from "@/lib/session";
 
 export const dynamic = "force-dynamic";
@@ -35,6 +36,11 @@ export async function POST(request: Request) {
   const limited = limitByIp(request, "panta-write", 30, 60_000);
   if (limited) return limited;
   if (!PANTA_LIVE) return NextResponse.json({ error: "Market creation needs a Panta API key on this server." }, { status: 503 });
+  if (!PANTA_SANDBOX && !STORE_ENABLED) return NextResponse.json({ error: "Paid Panta market creation requires persistent database storage on this server." }, { status: 503 });
+  if (!PANTA_SANDBOX && (!process.env.NEXT_PUBLIC_SOLANA_RPC || !(process.env.NEXT_PUBLIC_USDC_MINT || process.env.USDC_MINT)
+    || process.env.NEXT_PUBLIC_SOLANA_CLUSTER !== "mainnet-beta" || /devnet|testnet/i.test(process.env.NEXT_PUBLIC_SOLANA_RPC))) {
+    return NextResponse.json({ error: "Paid Panta market creation needs a configured mainnet Solana RPC and USDC mint on this server." }, { status: 503 });
+  }
 
   const wallet = sessionWallet(request);
   if (!wallet) return NextResponse.json({ error: "Sign in with X to create a market.", needsAuth: true }, { status: 401 });
@@ -91,9 +97,10 @@ export async function POST(request: Request) {
     );
     if (!q.createId) return NextResponse.json({ error: "Panta didn't return a quote — try again." }, { status: 502 });
     const feeUsdc = Number(q.paymentUsdc ?? "0") / 1e6;
+    if (!Number.isFinite(feeUsdc) || feeUsdc < 0) return NextResponse.json({ error: "Panta returned an invalid creation fee — try again." }, { status: 502 });
     const draft = await saveDraft({
       wallet, question, category: category as PantaCategory, resolutionRule: rule, sourcesOfTruth: sources,
-      endMs: endsAt * 1000, breaking, createId: q.createId, feeUsdc
+      endMs: endsAt * 1000, breaking, createId: q.createId, feeUsdc, quoteExpiresAt: q.expiresAt ?? null
     });
     return NextResponse.json({
       draftId: draft.draftId,

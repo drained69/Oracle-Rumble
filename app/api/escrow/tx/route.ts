@@ -80,6 +80,7 @@ export async function POST(request: Request) {
     // BUG F — pre-flight checks so the wallet is never asked to sign a tx
     // that will predictably fail on-chain.
     if (body.action === "deposit") {
+      const mainnet = process.env.NEXT_PUBLIC_SOLANA_CLUSTER === "mainnet-beta";
       // A paid seat needs a linked X account when usernames come from X.
       if ((await playerName(body.wallet, body.nickname, false)).needsX) {
         return NextResponse.json({ error: NEEDS_X_MESSAGE, needsX: true }, { status: 403 });
@@ -102,13 +103,17 @@ export async function POST(request: Request) {
       const bal = await playerBalances(wallet);
       if (bal.usdc + 1e-9 < seat) {
         return NextResponse.json({
-          error: `Not enough devnet USDC: this seat costs ${seat.toFixed(2)} USDC and your X wallet holds ${bal.usdc.toFixed(2)}. Get test USDC at faucet.circle.com (Solana Devnet).`,
+          error: mainnet
+            ? `Not enough mainnet USDC: this seat costs ${seat.toFixed(2)} USDC and your X wallet holds ${bal.usdc.toFixed(2)}. Fund that wallet before joining.`
+            : `Not enough devnet USDC: this seat costs ${seat.toFixed(2)} USDC and your X wallet holds ${bal.usdc.toFixed(2)}. Get test USDC at faucet.circle.com (Solana Devnet).`,
           insufficient: "usdc", needUsdc: seat, haveUsdc: bal.usdc
         }, { status: 402 });
       }
       if (bal.sol < 0.005) {
         return NextResponse.json({
-          error: `Not enough devnet SOL for fees: you hold ${bal.sol.toFixed(4)} SOL, need about 0.005. Get some at faucet.solana.com.`,
+          error: mainnet
+            ? `Not enough SOL for fees: you hold ${bal.sol.toFixed(4)} SOL, need about 0.005. Fund that wallet before joining.`
+            : `Not enough devnet SOL for fees: you hold ${bal.sol.toFixed(4)} SOL, need about 0.005. Get some at faucet.solana.com.`,
           insufficient: "sol", haveSol: bal.sol
         }, { status: 402 });
       }

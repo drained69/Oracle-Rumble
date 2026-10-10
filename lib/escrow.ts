@@ -149,10 +149,11 @@ export function ixInitRound(p: InitRoundParams): TransactionInstruction {
 /** Deposit (tag 1) — player funds entry + vault. */
 export function ixDeposit(params: {
   player: PublicKey;
+  host: PublicKey;
   roundVault: PublicKey;
   mint: PublicKey;
 }): TransactionInstruction {
-  const { player, roundVault, mint } = params;
+  const { player, host, roundVault, mint } = params;
   const [vaultAuthority] = vaultAuthorityPda(roundVault);
   const escrowTa = associatedTokenAddress(vaultAuthority, mint);
   const [playerEntry] = playerEntryPda(roundVault, player);
@@ -166,7 +167,8 @@ export function ixDeposit(params: {
       { pubkey: playerAta, isSigner: false, isWritable: true },
       { pubkey: escrowTa, isSigner: false, isWritable: true },
       { pubkey: SystemProgram.programId, isSigner: false, isWritable: false },
-      { pubkey: TOKEN_PROGRAM_ID, isSigner: false, isWritable: false }
+      { pubkey: TOKEN_PROGRAM_ID, isSigner: false, isWritable: false },
+      { pubkey: host, isSigner: true, isWritable: false }
     ],
     data: Buffer.from([1])
   });
@@ -220,12 +222,13 @@ export function ixSettlePlayer(params: {
  * CloseSettlement (tag 3) — host locks settlement so players can claim.
  * `refund` uses CloseRefund (tag 7): a cancelled arena's refunds carry no fee.
  */
-export function ixCloseSettlement(params: { host: PublicKey; roundVault: PublicKey; refund?: boolean }): TransactionInstruction {
+export function ixCloseSettlement(params: { host: PublicKey; roundVault: PublicKey; playerEntries: PublicKey[]; refund?: boolean }): TransactionInstruction {
   return new TransactionInstruction({
     programId: pid(),
     keys: [
       { pubkey: params.host, isSigner: true, isWritable: false },
-      { pubkey: params.roundVault, isSigner: false, isWritable: true }
+      { pubkey: params.roundVault, isSigner: false, isWritable: true },
+      ...params.playerEntries.map((pubkey) => ({ pubkey, isSigner: false, isWritable: false }))
     ],
     data: Buffer.from([params.refund ? 7 : 3])
   });

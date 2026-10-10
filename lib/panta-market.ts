@@ -31,11 +31,15 @@ export type PantaSnapshot = {
   category: string;
   /** Panta's YES price, cents. */
   yesCents: number;
+  /** Catalog lists omit spot prices; only market detail can confirm a line. */
+  priceAvailable: boolean;
   phase: "active" | "resolved" | "graduated" | "pending";
   resolved: boolean;
+  unavailable: boolean;
   /** Resolved outcome when Panta has ruled, else null. */
   outcome: "YES" | "NO" | null;
   endMs: number | null;
+  startMs: number | null;
   resolutionMs: number | null;
   volumeUsdc: number;
 };
@@ -60,8 +64,13 @@ export function toMs(v: string | number | null | undefined): number | null {
 }
 
 export function snapshotFrom(m: RawMarket): PantaSnapshot {
-  const yes = toCents(m.yesPrice);
-  const resolved = !!m.resolved || (m.phase ?? "").toLowerCase() === "resolved";
+  const rawPrice = m.yesPrice ?? m.primaryYesPrice ?? m.secondaryYesPrice;
+  const priceAvailable = rawPrice !== undefined && rawPrice !== null && rawPrice !== "" && Number.isFinite(Number(rawPrice));
+  const yes = toCents(rawPrice);
+  const phase = (m.phase ?? "").toLowerCase();
+  const status = (m.status ?? "").toLowerCase();
+  const resolved = !!m.resolved || phase === "resolved" || status === "resolved";
+  const unavailable = ["cancelled", "canceled"].includes(phase) || ["cancelled", "canceled"].includes(status);
   // Panta reports a resolved market's price at the paid side; use an explicit
   // outcome when present, otherwise read it from a decisive price.
   const outcome = m.outcome === "YES" || m.outcome === "NO"
@@ -72,10 +81,13 @@ export function snapshotFrom(m: RawMarket): PantaSnapshot {
     question: (m.title ?? m.question ?? "").trim(),
     category: (m.category ?? "other").toLowerCase(),
     yesCents: Math.max(1, Math.min(99, yes)),
-    phase: mapPhase(m.phase, m.resolved),
+    priceAvailable,
+    phase: mapPhase(m.phase ?? m.status, resolved),
     resolved,
+    unavailable,
     outcome,
     endMs: toMs(m.endTime),
+    startMs: toMs(m.startTime),
     resolutionMs: toMs(m.resolutionTime ?? m.resolveAt ?? m.resolutionTimestamp),
     volumeUsdc: Number.parseFloat(String(m.volumeUsdc ?? "0")) || 0
   };
@@ -86,6 +98,7 @@ export function snapshotFrom(m: RawMarket): PantaSnapshot {
 type Cache = {
   market: Map<string, { at: number; snap: PantaSnapshot | null }>;
   catalog?: { at: number; list: PantaSnapshot[] };
+  catalogFetchFailed?: boolean;
   drafts: Map<string, MarketDraft>;
 };
 const _g = globalThis as unknown as { __pit_markets?: Cache };
@@ -93,21 +106,27 @@ const cache: Cache = (_g.__pit_markets ??= { market: new Map(), drafts: new Map(
 
 const MARKET_TTL_MS = 8_000;
 const CATALOG_TTL_MS = 30_000;
+export function pantaCatalogFetchFailed(): boolean { return !!cache.catalogFetchFailed; }
 
 /** A single Panta market, or null when Panta is off or doesn't know the id. */
-export async function getPantaMarket(id: string): Promise<PantaSnapshot | null> {
+export async function getPantaMarket(id: string, requireFresh = false): Promise<PantaSnapshot | null> {
   if (!PANTA_LIVE || !id) return null;
   const hit = cache.market.get(id);
-  if (hit && Date.now() - hit.at < MARKET_TTL_MS) return hit.snap;
+  if (!requireFresh && hit && Date.now() - hit.at < MARKET_TTL_MS) return hit.snap;
   let snap: PantaSnapshot | null = null;
   try {
     const raw = await pantaFetch<RawMarket>(`/markets/${encodeURIComponent(id)}`);
     snap = snapshotFrom(raw);
-    if (!snap.id) snap = null;
+    // Sandbox can answer an unknown address with its fixed fixture. Never
+    // treat that fixture as the market the host requested.
+    if (!snap.id || snap.id !== id) snap = null;
+    // A temporary RPC price gap must not replace a previously known line.
+    if (!requireFresh && snap && !snap.priceAvailable && hit?.snap?.priceAvailable) return hit.snap;
   } catch {
     // Keep serving the last good snapshot through a Panta blip.
-    if (hit) return hit.snap;
+    if (!requireFresh && hit) return hit.snap;
   }
+  if (requireFresh && (!snap || (!snap.priceAvailable && hit?.snap?.priceAvailable))) return snap;
   cache.market.set(id, { at: Date.now(), snap });
   if (cache.market.size > 500) cache.market.delete(cache.market.keys().next().value!);
   return snap;
@@ -118,16 +137,29 @@ export async function listPantaMarkets(): Promise<PantaSnapshot[]> {
   if (!PANTA_LIVE) return [];
   if (cache.catalog && Date.now() - cache.catalog.at < CATALOG_TTL_MS) return cache.catalog.list;
   try {
-    const data = await pantaFetch<{ items?: RawMarket[]; markets?: RawMarket[] } | RawMarket[]>("/markets");
-    const raw = Array.isArray(data) ? data : (data.items ?? data.markets ?? []);
+    const raw: RawMarket[] = [];
+    let cursor: string | null = null;
+    for (let page = 0; page < 4; page++) {
+      const query = new URLSearchParams({ limit: "50" });
+      if (cursor) query.set("cursor", cursor);
+      const data = await pantaFetch<{ items?: RawMarket[]; markets?: RawMarket[]; nextCursor?: string | null } | RawMarket[]>(`/markets/?${query}`);
+      const items = Array.isArray(data) ? data : (data.items ?? data.markets ?? []);
+      raw.push(...items);
+      cursor = Array.isArray(data) ? null : data.nextCursor ?? null;
+      if (!cursor || items.length === 0) break;
+    }
     const now = Date.now();
     const list = raw
       .map(snapshotFrom)
-      .filter((m) => m.id && m.question && !m.resolved && (m.endMs === null || m.endMs > now))
+      .filter((m) => m.id && m.question && !m.resolved && !m.unavailable
+        && m.phase !== "pending" && (m.startMs === null || m.startMs <= now)
+        && (m.endMs === null || m.endMs > now))
       .sort((a, b) => b.volumeUsdc - a.volumeUsdc);
+    cache.catalogFetchFailed = false;
     cache.catalog = { at: Date.now(), list };
     return list;
   } catch {
+    cache.catalogFetchFailed = true;
     return cache.catalog?.list ?? [];
   }
 }
@@ -146,13 +178,15 @@ export type MarketDraft = {
   createId: string;
   /** Creation fee Panta quoted, USDC. */
   feeUsdc: number;
+  quoteExpiresAt?: string | null;
   createdAt: number;
   marketId?: string;
   signature?: string;
 };
 
-/** An unregistered draft (quoted, not yet paid) lasts this long. */
-const DRAFT_TTL_MS = 2 * 3_600_000;
+/** Keep drafts long enough to retry registration of a broadcast transaction.
+ * Unpaid quotes still cannot be built after their own Panta expiry. */
+const DRAFT_TTL_MS = 30 * 24 * 3_600_000;
 /** A registered draft is the creator's market: kept so they can host on it again. */
 const REGISTERED_TTL_MS = 30 * 24 * 3_600_000;
 

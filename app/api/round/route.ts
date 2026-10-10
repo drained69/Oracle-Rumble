@@ -185,6 +185,17 @@ export async function POST(request: Request) {
   const arena = wantArena && forceOk ? wantArena : newArenaCode();
 
   const onChain = escrowReady() && !isPracticeArena(arena);
+  if (process.env.NEXT_PUBLIC_SOLANA_CLUSTER === "mainnet-beta" && !isPracticeArena(arena)) {
+    const liveKey = /^pk_live_/.test(process.env.PANTA_API_KEY ?? "");
+    const mainnetMint = process.env.NEXT_PUBLIC_USDC_MINT === "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
+    if (!onChain || !STORE_ENABLED || !liveKey || !mainnetMint || !process.env.SESSION_SECRET
+        || !process.env.NEXT_PUBLIC_PRIVY_APP_ID || !process.env.PRIVY_APP_SECRET) {
+      return NextResponse.json({ error: "Mainnet hosting is disabled until escrow, persistent storage, live Panta, USDC, and identity/session configuration are complete." }, { status: 503 });
+    }
+  }
+  if (onChain && !STORE_ENABLED) {
+    return NextResponse.json({ error: "Paid pits require persistent database storage." }, { status: 503 });
+  }
   const limited = limitByIp(request, "host", 12, 10 * 60_000);
   if (limited) return limited;
   // Every hosted pit has a signed-in host (an X account where X sign-in is
@@ -213,12 +224,21 @@ export async function POST(request: Request) {
       const draft = await getDraft(cfg.draftId);
       if (!draft || !draft.marketId) return NextResponse.json({ error: "That market draft expired or was never registered — create it again." }, { status: 410 });
       if (!host || draft.wallet !== host) return NextResponse.json({ error: "Only the wallet that created this market can host a pit on it." }, { status: 403 });
+      const snap = await getPantaMarket(draft.marketId, true);
+      if (!snap || snap.unavailable || snap.resolved || snap.phase === "pending") return NextResponse.json({ error: "Panta has not made this market available for trading. The creation fee was already sent; retry hosting later without paying again." }, { status: 409 });
+      if (snap.startMs !== null && snap.startMs > Date.now()) return NextResponse.json({ error: "Your market is registered but Panta trading has not opened yet. Return when it opens; you will not pay the creation fee again." }, { status: 409 });
+      if (snap.endMs !== null && snap.endMs <= Date.now()) return NextResponse.json({ error: "Trading on your Panta market has ended. The creation fee was already sent; choose another market for the pit." }, { status: 409 });
+      if (!snap.priceAvailable) return NextResponse.json({ error: "Panta has not published a live YES price for this market yet. Retry hosting when its line is available; you will not pay the creation fee again." }, { status: 409 });
       panta = { marketId: draft.marketId, question: draft.question, category: draft.category };
     } else if (typeof cfg.pantaMarketId === "string" && cfg.pantaMarketId) {
-      const snap = await getPantaMarket(cfg.pantaMarketId);
-      if (!snap) return NextResponse.json({ error: "Panta doesn't know that market — pick another." }, { status: 404 });
+      const snap = await getPantaMarket(cfg.pantaMarketId, true);
+      if (!snap) return NextResponse.json({ error: "Panta could not confirm that market right now — retry shortly or pick another." }, { status: 503 });
+      if (snap.unavailable) return NextResponse.json({ error: "Panta cancelled that market — pick another." }, { status: 409 });
       if (snap.resolved) return NextResponse.json({ error: "That market has already resolved — pick an open one." }, { status: 409 });
+      if (snap.phase === "pending") return NextResponse.json({ error: "Trading on that Panta market has not opened yet — pick an active one." }, { status: 409 });
+      if (snap.startMs !== null && snap.startMs > Date.now()) return NextResponse.json({ error: "Trading on that Panta market has not opened yet — pick an active one." }, { status: 409 });
       if (snap.endMs !== null && snap.endMs <= Date.now()) return NextResponse.json({ error: "Trading on that market has ended — pick an open one." }, { status: 409 });
+      if (!snap.priceAvailable) return NextResponse.json({ error: "Panta's live price is unavailable for that market right now — retry shortly or pick another." }, { status: 503 });
       panta = { marketId: snap.id, question: snap.question || "Panta market", category: snap.category };
     } else {
       return NextResponse.json({ error: "Pick a Panta market or create one." }, { status: 400 });
@@ -233,11 +253,16 @@ export async function POST(request: Request) {
   if (onChain) {
     const seat = seatCostUsdc(fresh.config);
     const bal = await playerBalances(new PublicKey(host!));
+    const mainnet = process.env.NEXT_PUBLIC_SOLANA_CLUSTER === "mainnet-beta";
     if (bal.usdc + 1e-9 < seat) {
-      return NextResponse.json({ error: `This seat costs ${seat.toFixed(2)} USDC but your X wallet holds ${bal.usdc.toFixed(2)} devnet USDC. Get test USDC at faucet.circle.com (Solana Devnet).` }, { status: 402 });
+      return NextResponse.json({ error: mainnet
+        ? `This seat costs ${seat.toFixed(2)} USDC but your X wallet holds ${bal.usdc.toFixed(2)} mainnet USDC. Fund that wallet before hosting.`
+        : `This seat costs ${seat.toFixed(2)} USDC but your X wallet holds ${bal.usdc.toFixed(2)} devnet USDC. Get test USDC at faucet.circle.com (Solana Devnet).` }, { status: 402 });
     }
     if (bal.sol < 0.005) {
-      return NextResponse.json({ error: `You need about 0.005 devnet SOL for fees (you hold ${bal.sol.toFixed(4)}). Get some at faucet.solana.com.` }, { status: 402 });
+      return NextResponse.json({ error: mainnet
+        ? `You need about 0.005 SOL for fees (you hold ${bal.sol.toFixed(4)}). Fund that wallet before hosting.`
+        : `You need about 0.005 devnet SOL for fees (you hold ${bal.sol.toFixed(4)}). Get some at faucet.solana.com.` }, { status: 402 });
     }
   }
 

@@ -1,0 +1,37 @@
+{
+  "name": "the-pit-video",
+  "private": true,
+  "version": "1.0.0",
+  "description": "The Pit product demo video \u2014 Remotion, every frame and every sound is code.",
+  "scripts": {
+    "audio": "tsx scripts/build-audio.ts",
+    "voiceover": "tsx scripts/build-voiceover.ts",
+    "studio": "npm run audio && remotion studio",
+    "stills": "npm run audio && tsx scripts/render-stills.ts",
+    "render": "npm run audio && remotion render ThePitDemo out/the-pit-1920x1080.mp4 --codec=h264 --crf=14 --pixel-format=yuv420p --audio-codec=aac --audio-bitrate=320k --x264-preset=slow",
+    "typecheck": "tsc --noEmit",
+    "voiceover:say": "node scripts/generate-voiceover.mjs",
+    "voiceover:pitch": "tsx scripts/build-voiceover.ts --film pitch",
+    "audio:pitch": "node --import tsx scripts/build-pitch-audio.ts",
+    "script:pitch": "node --import tsx scripts/export-pitch-script.ts",
+    "stills:pitch": "npm run audio:pitch && node --import tsx scripts/render-stills.ts pitch",
+    "render:pitch": "npm run script:pitch && npm run audio:pitch && remotion render ThePitPitch out/the-pit-pitch-1920x1080.mp4 --props=src/pitch/narrated-props.json --codec=h264 --crf=14 --pixel-format=yuv420p --audio-codec=aac --audio-bitrate=320k --x264-preset=slow",
+    "render:pitch:music": "npm run script:pitch && npm run audio:pitch && remotion render ThePitPitch out/the-pit-pitch-music-only-1920x1080.mp4 --props=src/pitch/music-props.json --codec=h264 --crf=14 --pixel-format=yuv420p --audio-codec=aac --audio-bitrate=320k --x264-preset=slow"
+  },
+  "dependencies": {
+    "@remotion/cli": "4.0.534",
+    "@remotion/google-fonts": "4.0.534",
+    "qrcode": "^1.5.4",
+    "react": "^19.1.0",
+    "react-dom": "^19.1.0",
+    "remotion": "4.0.534",
+    "@remotion/bundler": "4.0.534",
+    "@remotion/renderer": "4.0.534"
+  },
+  "devDependencies": {
+    "@types/qrcode": "^1.5.5",
+    "@types/react": "^19.1.0",
+    "tsx": "^4.20.0",
+    "typescript": "^5.9.0"
+  }
+}

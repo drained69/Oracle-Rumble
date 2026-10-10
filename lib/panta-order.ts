@@ -106,12 +106,10 @@ export async function executePantaOrder(args: ExecuteOrderArgs): Promise<Execute
 
   // 3. Sign + broadcast. Panta returns raw instructions + recentBlockhash
   // (not a pre-serialized tx) — compile a v0 VersionedTransaction locally.
-  // In sandbox / demo mode Panta returns an empty instructions array; we
-  // catch that and synthesize a signature so the lifecycle still exercises
-  // /submit + /verify + /trades/{sig} proxies.
+  // Only explicit local mock mode may skip a wallet signature. An empty
+  // instruction list from Panta is an invalid live order.
   emit({ step: "signing", quoteId: quote.quoteId, note: "Waiting for wallet…" });
   let signature = "";
-  let confirmed = false;
   const canSign = build.source === "panta" && build.instructions && build.instructions.length > 0;
   if (canSign) {
     try {
@@ -121,15 +119,20 @@ export async function executePantaOrder(args: ExecuteOrderArgs): Promise<Execute
         recentBlockhash: build.recentBlockhash
       });
       signature = res.signature;
-      confirmed = res.confirmed;
+      // Even a confirmed Solana signature still needs Panta's order status.
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       emit({ step: "error", error: `sign/broadcast failed: ${msg}` });
       return { ok: false, quoteId: quote.quoteId, error: msg };
     }
-  } else {
+  } else if (build.source === "mock" && quote.source === "mock"
+      && process.env.NEXT_PUBLIC_SOLANA_CLUSTER !== "mainnet-beta") {
     signature = `demo-${Date.now().toString(36)}-${args.marketId.slice(0, 4)}`;
     emit({ step: "signing", quoteId: quote.quoteId, note: "Sandbox mode — skipping wallet signature." });
+  } else {
+    const error = "Panta returned no signable transaction; no order was placed.";
+    emit({ step: "error", quoteId: quote.quoteId, error });
+    return { ok: false, quoteId: quote.quoteId, error };
   }
   emit({ step: "broadcasting", signature, quoteId: quote.quoteId, note: signature ? `Broadcast · ${signature.slice(0, 8)}…` : "Broadcasting…" });
 
@@ -146,7 +149,7 @@ export async function executePantaOrder(args: ExecuteOrderArgs): Promise<Execute
   emit({ step: "confirming", signature, note: "Confirming on Panta…" });
   const deadline = Date.now() + VERIFY_TIMEOUT_MS;
   type VerifyStatus = "built" | "submitted" | "pending" | "confirmed" | "failed" | "expired";
-  let verifyStatus: VerifyStatus = confirmed ? "confirmed" : "submitted";
+  let verifyStatus: VerifyStatus = "submitted";
   const isTerminal = (s: VerifyStatus) => s === "confirmed" || s === "failed" || s === "expired";
   while (Date.now() < deadline && !isTerminal(verifyStatus)) {
     try {
@@ -161,6 +164,11 @@ export async function executePantaOrder(args: ExecuteOrderArgs): Promise<Execute
   if (verifyStatus === "failed" || verifyStatus === "expired") {
     emit({ step: "error", signature, error: `Panta reported the tx as ${verifyStatus}.` });
     return { ok: false, signature, quoteId: quote.quoteId, error: `tx ${verifyStatus}` };
+  }
+  if (verifyStatus !== "confirmed") {
+    const error = "Transaction status is still unknown. Check this signature before placing another order.";
+    emit({ step: "error", signature, error });
+    return { ok: false, signature, quoteId: quote.quoteId, error };
   }
   emit({ step: "confirmed", signature, note: `Confirmed · ${verifyStatus}` });
 

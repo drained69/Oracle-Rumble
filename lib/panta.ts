@@ -174,7 +174,10 @@ export class PantaError extends Error {
 export async function pantaFetch<T>(path: string, init: RequestInit = {}): Promise<T> {
   const method = (init.method ?? "GET").toUpperCase();
   // Panta requires trailing slashes on all endpoints.
-  const p = path.endsWith("/") || path.includes("?") ? path : path + "/";
+  const queryAt = path.indexOf("?");
+  const pathname = queryAt < 0 ? path : path.slice(0, queryAt);
+  const query = queryAt < 0 ? "" : path.slice(queryAt);
+  const p = `${pathname.endsWith("/") ? pathname : `${pathname}/`}${query}`;
 
   if (!PANTA_LIVE) {
     // Demo mode: record the fact that a mock was served so the console

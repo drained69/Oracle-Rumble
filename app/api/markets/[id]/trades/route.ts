@@ -55,7 +55,8 @@ export async function GET(_req: Request, ctx: { params: Promise<{ id: string }> 
       });
       return NextResponse.json({ source: "panta", trades });
     } catch (err) {
-      console.error("panta /markets/{id}/trades failed, serving mock:", err);
+      console.error("panta /markets/{id}/trades failed:", err);
+      return NextResponse.json({ error: "Panta trade history is temporarily unavailable." }, { status: 502 });
     }
   }
 

@@ -77,6 +77,10 @@ export async function POST(request: Request) {
   let bookYes: number | undefined;
   let repricedYes: number | undefined;
   const { round, error } = await mutateActiveRound(arena, (r) => {
+    if (r.id !== peek.id || r.config.marketId !== peek.config.marketId || r.config.asset !== peek.config.asset) {
+      tradeError = "The round changed while this trade was being priced. Refresh and try again.";
+      return;
+    }
     if (!tradingOpen(r)) { tradeError = "Trading has closed for this round."; return; }
     const entrant = r.entrants.find((e) => e.wallet === body.wallet);
     if (!entrant) { tradeError = "not enrolled in this round"; return; }

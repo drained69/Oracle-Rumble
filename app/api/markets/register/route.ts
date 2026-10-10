@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { limitByIp } from "@/lib/rate-limit";
-import { PANTA_LIVE, pantaFetch } from "@/lib/panta";
+import { PANTA_LIVE, PantaError, pantaFetch } from "@/lib/panta";
 import { getDraft, markDraftRegistered, PANTA_SANDBOX } from "@/lib/panta-market";
 import { sessionWallet } from "@/lib/session";
 
@@ -40,6 +40,19 @@ export async function POST(request: Request) {
     return NextResponse.json({ marketId: r.marketId, draftId: draft.draftId, status: r.status ?? "registered", sandbox: PANTA_SANDBOX });
   } catch (err) {
     console.error("panta /markets/register failed:", err);
+    if (err instanceof PantaError) {
+      try {
+        const detail = JSON.parse(err.body) as { code?: string; error?: { code?: string } };
+        const code = detail.code ?? detail.error?.code;
+        if (code === "TX_NOT_FOUND" || code === "CREATE_EXPIRED" || code === "TX_FAILED") {
+          return NextResponse.json({ code, error: code === "TX_NOT_FOUND"
+            ? "Panta has not seen the confirmed transaction yet. Registration can be retried with the same signature."
+            : code === "CREATE_EXPIRED"
+              ? "Panta's creation session expired after the transaction was sent. Keep the signature and contact Panta support; do not pay again."
+              : "Panta reports that the creation transaction failed on chain." }, { status: code === "CREATE_EXPIRED" ? 410 : 502 });
+        }
+      } catch { /* Panta returned non-JSON */ }
+    }
     return NextResponse.json({ error: `Panta couldn't register the market: ${(err instanceof Error ? err.message : "failed").slice(0, 160)}` }, { status: 502 });
   }
 }

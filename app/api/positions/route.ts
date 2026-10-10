@@ -24,7 +24,8 @@ export async function GET(request: Request) {
       );
       return NextResponse.json({ source: "panta", ...data });
     } catch (err) {
-      console.error("panta /positions failed, serving mock:", err);
+      console.error("panta /positions failed:", err);
+      return NextResponse.json({ error: "Panta positions are temporarily unavailable." }, { status: 502 });
     }
   }
   return NextResponse.json({ source: "mock", positions: [] });

@@ -7,11 +7,14 @@ host can never move them to itself.
 
 ## Trust model
 
-- The **host** is trusted only to compute the **rankings** (who won), because
-  ranking depends on off-chain price history from the round.
-- The host is **not** trusted with custody. It cannot withdraw funds, cannot
-  assign more entitlements than were actually escrowed (conservation is
-  enforced), and cannot stop a player recovering after the deadline.
+- The **host/operator** authorizes deposits and computes each player's
+  entitlement from off-chain results. Players must trust that calculation:
+  the program enforces conservation and complete accounting, but it cannot
+  decide whether the ranking is fair.
+- The host cannot transfer escrow directly to itself. It can settle the
+  vault before the recovery deadline; after that, players claim their
+  recorded entitlements. If it never closes settlement, players can recover
+  their own deposit after the deadline.
 - Every payout goes to a **player's own wallet**. USDC leaves the escrow only
   via `Claim` (settled entitlement) or `Recover` (entry + vault, after the
   deadline, if the host never settles).
@@ -31,13 +34,13 @@ host can never move them to itself.
 | Ix | Who | Effect |
 |----|-----|--------|
 | `InitRound` | host | Create the vault + escrow token account; set entry/vault/capacity/deadline. |
-| `Deposit` | player | Transfer entry + vault into escrow; open a `PlayerEntry`. |
+| `Deposit` | player + operator | Transfer entry + vault into escrow; operator co-signature approves admission and opens a `PlayerEntry`. |
 | `SettlePlayer` | host | Assign a player's entitlement (≤ remaining escrowed). |
-| `CloseSettlement` | host | Lock settlement so players can claim. |
+| `CloseSettlement` | host | Prove every deposit is settled or recovered and all funds allocated, then unlock claims. |
 | `Claim` | player | Withdraw the assigned entitlement, once. |
 | `Recover` | player | After the deadline on an unsettled round, reclaim entry + vault. |
 
-Program id: `Ea9pUaAdVwuR71L5xv6SYdryLXeTuMRUtEkMChaBUyUx`
+Current devnet program id: `Ea9pUaAdVwuR71L5xv6SYdryLXeTuMRUtEkMChaBUyUx`
 (keypair: `.keys/escrow-program-keypair.json`, gitignored).
 
 ## Build & deploy (devnet)
@@ -64,8 +67,7 @@ When both env vars are set, `lib/escrow.ts` reports `ESCROW_ACTIVE = true` and
 the app moves real USDC; otherwise it runs in ledger mode (server-side
 accounting only) so the game is always playable.
 
-> **Status note:** in the build environment used to author this, the SBF
-> platform-tools download and the devnet faucet were both network-blocked, so
-> the `.so` had not yet been produced or deployed. The program compiles against
-> `cargo-build-sbf` once the toolchain finishes downloading; nothing in the
-> source depends on that environment.
+> **Status note:** the current source builds to SBF locally, but the new
+> admission and close checks have not been deployed or tested end-to-end on
+> devnet. The program is not independently audited for real-funds use. See
+> `MAINNET_READINESS.md` before any mainnet deployment.

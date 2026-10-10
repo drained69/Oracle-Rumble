@@ -6,9 +6,9 @@
  * Positions and Docs are their own routes, reached from the header.
  */
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { cancelArena, checkSeatFunds, enrollWithEscrow, newRound, prepareWallet, seatStepText, type SeatStep } from "@/lib/round-client";
-import { finishMarket, quoteMarket, type MarketQuote } from "@/lib/panta-client";
+import { finishMarket, pendingMarketSignature, quoteMarket, type MarketQuote } from "@/lib/panta-client";
 import { DEFAULT_OPENING_CALL_PCT, PICKS_CHAIN_VAULT_USDC, hostAmountError, isPicksFormat, type RoundFormat } from "@/lib/royale";
 import { DEFAULT_LEG_SEC, LEG_LENGTHS, MAX_LEGS } from "@/lib/streak";
 import { HOST_FEE_OPTIONS } from "@/lib/fees";
@@ -27,7 +27,7 @@ const usd2 = new Intl.NumberFormat("en-US", { style: "currency", currency: "USD"
 
 /** Where a hosted pit's market comes from. */
 type MarketSource = "crypto" | "panta" | "create";
-type CatalogItem = { id: string; question: string; category: string; yesCents: number; endMs: number | null; volumeUsdc: number };
+type CatalogItem = { id: string; question: string; category: string; yesCents: number | null; endMs: number | null; volumeUsdc: number };
 const CREATE_CATEGORIES = ["sports", "crypto", "politics", "entertainment", "finance", "science", "world", "other"] as const;
 /** A starting source of truth per category — the host can change it. */
 const DEFAULT_SOURCE: Record<string, string> = {
@@ -42,6 +42,35 @@ const MARKET_ENDS: { label: string; sec: number }[] = [
 ];
 /** Trading window of a pit on a Panta market (minutes). */
 const PIT_WINDOWS = [5, 15, 60];
+const MARKET_ID_RE = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/;
+/** Re-quote before Panta's short-lived create session reaches its deadline. */
+function quoteExpired(quote: MarketQuote | null, now = Date.now()): boolean {
+  if (!quote?.expiresAt) return false;
+  const deadline = Date.parse(quote.expiresAt);
+  return Number.isFinite(deadline) && deadline <= now + 15_000;
+}
+type SavedHostMarket = {
+  quote: MarketQuote & { created?: boolean };
+  question: string; category: string; rule: string; source: string; endsSec: number; breaking: boolean;
+};
+const hostMarketKey = (wallet: string) => `pit:panta:host:${wallet}`;
+function saveHostMarket(wallet: string, market: SavedHostMarket): boolean {
+  try {
+    window.localStorage.setItem(hostMarketKey(wallet), JSON.stringify(market));
+    return window.localStorage.getItem(hostMarketKey(wallet)) !== null;
+  } catch { return false; }
+}
+function loadHostMarket(wallet: string): SavedHostMarket | null {
+  try {
+    const raw = window.localStorage.getItem(hostMarketKey(wallet));
+    if (!raw) return null;
+    const saved = JSON.parse(raw) as SavedHostMarket;
+    return saved?.quote && /^md_[A-Za-z0-9_-]{6,32}$/.test(saved.quote.draftId) && typeof saved.question === "string" ? saved : null;
+  } catch { return null; }
+}
+function clearHostMarket(wallet: string): void {
+  try { window.localStorage.removeItem(hostMarketKey(wallet)); } catch { /* storage can be disabled */ }
+}
 
 type ArenaItem = {
   arenaCode: string;
@@ -120,7 +149,7 @@ export default function ArenasDirectory() {
 
   // Market source: crypto direction, an existing Panta market, or a new one.
   const [hSource, setHSource] = useState<MarketSource>("crypto");
-  const [catalog, setCatalog] = useState<{ loaded: boolean; available: boolean; sandbox: boolean; items: CatalogItem[] }>({ loaded: false, available: false, sandbox: false, items: [] });
+  const [catalog, setCatalog] = useState<{ loaded: boolean; available: boolean; sandbox: boolean; stale: boolean; items: CatalogItem[] }>({ loaded: false, available: false, sandbox: false, stale: false, items: [] });
   const [hPantaId, setHPantaId] = useState("");
   const [hWindowMin, setHWindowMin] = useState(15);
   const [mQuestion, setMQuestion] = useState("");
@@ -134,6 +163,7 @@ export default function ArenasDirectory() {
   // The fee quote for a market being created; `created` once Panta lists it.
   const [mQuote, setMQuote] = useState<(MarketQuote & { created?: boolean }) | null>(null);
   const [mFieldError, setMFieldError] = useState<{ field?: string; message: string } | null>(null);
+  const restoringMarket = useRef(false);
 
   const pantaHost = hSource !== "crypto";
   // Predictions and Streak run on the BTC/ETH/SOL spot oracle — Panta pits trade.
@@ -141,17 +171,35 @@ export default function ArenasDirectory() {
   // Any edit to the market invalidates its quote — until it's created on
   // Panta (paid): then the form is locked so a retry reuses that market.
   useEffect(() => {
-    setMQuote((q) => (q?.created ? q : null));
+    if (restoringMarket.current) { restoringMarket.current = false; return; }
+    setMQuote((q) => {
+      if (q?.created || (wallet && pendingMarketSignature(q?.draftId, wallet))) return q;
+      if (q && wallet) clearHostMarket(wallet);
+      return null;
+    });
     setMFieldError(null);
   }, [mQuestion, mCategory, mRule, mSource, mEndsSec, mBreaking]);
+  // A paid create or registered market must remain recoverable after reload.
+  useEffect(() => {
+    if (!wallet) return;
+    const saved = loadHostMarket(wallet);
+    if (!saved || (!saved.quote.created && !pendingMarketSignature(saved.quote.draftId, wallet))) return;
+    restoringMarket.current = true;
+    setMQuestion(saved.question); setMCategory(saved.category);
+    setMRuleTouched(true); setMRule(saved.rule);
+    setMSourceTouched(true); setMSource(saved.source);
+    setMEndsSec(saved.endsSec); setMBreaking(saved.breaking);
+    setMQuote(saved.quote); setHSource("create"); setTab("host");
+  }, [wallet]);
   // A sensible default rule and source until the host writes their own.
   useEffect(() => {
+    if (restoringMarket.current) return;
     if (!mRuleTouched) {
       const q = mQuestion.trim();
       setMRule(q ? `Resolves YES if the answer to "${q}" is yes, as reported by the source of truth below. Resolves NO otherwise.` : "");
     }
   }, [mQuestion, mRuleTouched]);
-  useEffect(() => { if (!mSourceTouched) setMSource(DEFAULT_SOURCE[mCategory] ?? DEFAULT_SOURCE.other); }, [mCategory, mSourceTouched]);
+  useEffect(() => { if (!restoringMarket.current && !mSourceTouched) setMSource(DEFAULT_SOURCE[mCategory] ?? DEFAULT_SOURCE.other); }, [mCategory, mSourceTouched]);
   // A scheduled (non-live) market must open ~1h out, so it can't end within the hour.
   useEffect(() => { if (!mBreaking && mEndsSec < 3 * 3_600) setMEndsSec(3 * 3_600); }, [mBreaking, mEndsSec]);
 
@@ -159,8 +207,8 @@ export default function ArenasDirectory() {
     if (hSource !== "panta" || catalog.loaded) return;
     fetch("/api/markets/catalog", { cache: "no-store" })
       .then((r) => r.json())
-      .then((j) => setCatalog({ loaded: true, available: !!j.available, sandbox: !!j.sandbox, items: j.items ?? [] }))
-      .catch(() => setCatalog({ loaded: true, available: false, sandbox: false, items: [] }));
+      .then((j) => setCatalog({ loaded: true, available: !!j.available, sandbox: !!j.sandbox, stale: !!j.stale, items: j.items ?? [] }))
+      .catch(() => setCatalog({ loaded: true, available: false, sandbox: false, stale: true, items: [] }));
   }, [hSource, catalog.loaded]);
 
   useEffect(() => {
@@ -222,9 +270,10 @@ export default function ArenasDirectory() {
     // Every pit has a signed-in host who takes seat 1.
     if (!wallet) { await connect(); return; }
     if (hostInputError) { setToast(hostInputError); return; }
-    if (hSource === "panta" && !hPantaId) { setToast("Pick a Panta market for the pit."); return; }
+    if (hSource === "panta" && !MARKET_ID_RE.test(hPantaId)) { setToast("Pick a Panta market or paste a valid market ID."); return; }
     // Checking a new market with Panta comes before the call; seat 1 needs one.
-    const quoting = hSource === "create" && !mQuote;
+    const pendingRegistration = hSource === "create" && !!pendingMarketSignature(mQuote?.draftId, wallet);
+    const quoting = hSource === "create" && !pendingRegistration && (!mQuote || (!mQuote.created && quoteExpired(mQuote)));
     if (!quoting && !hCall && !picks) {
       setToast(pantaHost ? "Pick YES or NO (or decide later) before taking seat 1." : `Pick UP or DOWN on ${hAsset} (or decide later) before taking seat 1.`);
       return;
@@ -235,7 +284,7 @@ export default function ArenasDirectory() {
     try {
       // New market, first press: get Panta's fee quote and stop, so the host
       // sees exactly what creating it costs before anything is signed.
-      if (hSource === "create" && !mQuote) {
+      if (quoting) {
         setHostStep("quoting");
         const q = await quoteMarket({
           question: mQuestion.trim(), category: mCategory, resolutionRule: mRule.trim(),
@@ -243,6 +292,7 @@ export default function ArenasDirectory() {
         });
         if (!q.ok) { setMFieldError({ field: q.field, message: q.error }); setToast(q.error); return; }
         setMQuote(q.data);
+        saveHostMarket(wallet, { quote: q.data, question: mQuestion.trim(), category: mCategory, rule: mRule.trim(), source: mSource.trim(), endsSec: mEndsSec, breaking: mBreaking });
         setToast(q.data.sandbox
           ? "Market checks out. Panta sandbox: no creation fee is charged. Press again to create it and open the pit."
           : `Market checks out. Panta charges ${usd2.format(q.data.feeUsdc)} to create it. Press again to sign and open the pit.`);
@@ -250,25 +300,38 @@ export default function ArenasDirectory() {
       }
       // Check funds and the wallet BEFORE paying Panta or the operator paying
       // for an on-chain InitRound — the seat, plus the market fee if one is due.
-      const marketFee = hSource === "create" && mQuote && !mQuote.created && !mQuote.sandbox ? mQuote.feeUsdc : 0;
-      if (escrow?.active) {
+      const marketFee = hSource === "create" && mQuote && !mQuote.created && !mQuote.sandbox && !pendingRegistration ? mQuote.feeUsdc : 0;
+      if (escrow?.active || marketFee > 0) {
         setHostStep("checking");
-        const short = await checkSeatFunds(wallet, hostSeat + marketFee, marketFee > 0 ? `the ${usd2.format(marketFee)} market fee plus your seat` : undefined);
+        const short = await checkSeatFunds(wallet, (escrow?.active ? hostSeat : 0) + marketFee,
+          marketFee > 0 ? `the ${usd2.format(marketFee)} market fee${escrow?.active ? " plus your seat" : ""}` : undefined, marketFee > 0);
         if (short) { setToast(short); return; }
       }
       // Something to sign: an on-chain seat deposit, or a real market-creation transaction.
-      const willSign = !!escrow?.active || (hSource === "create" && !!mQuote && !mQuote.created && !mQuote.sandbox);
+      const willSign = !!escrow?.active || (hSource === "create" && !!mQuote && !mQuote.created && !mQuote.sandbox && !pendingRegistration);
       const ready = await prepareWallet(wallet, onStep, willSign);
       if (!ready.ok) { setToast(ready.error); return; }
 
       // New market, second press: build → sign (pays the fee) → register.
       if (hSource === "create" && mQuote && !mQuote.created) {
+        if (!mQuote.sandbox && !pendingRegistration && !saveHostMarket(wallet, {
+          quote: mQuote, question: mQuestion.trim(), category: mCategory, rule: mRule.trim(),
+          source: mSource.trim(), endsSec: mEndsSec, breaking: mBreaking
+        })) {
+          setToast("Browser storage is unavailable. Enable it before paying Panta so this market can be recovered after a reload.");
+          return;
+        }
         const made = await finishMarket(mQuote.draftId, wallet, (st) => {
           setHostStep(st);
           setToast(st === "building" ? "Building the market on Panta…" : st === "signing" ? "Approve the market creation in your X wallet…" : "Registering the market with Panta…");
         }, mQuestion.trim());
-        if (!made.ok) { setToast(`Market not created — ${made.error}`); return; }
+        if (!made.ok) {
+          if (made.requote) { setMQuote(null); clearHostMarket(wallet); }
+          setToast(made.pendingRegistration ? made.error : `Market not created — ${made.error}`);
+          return;
+        }
         setMQuote({ ...mQuote, created: true });
+        saveHostMarket(wallet, { quote: { ...mQuote, created: true }, question: mQuestion.trim(), category: mCategory, rule: mRule.trim(), source: mSource.trim(), endsSec: mEndsSec, breaking: mBreaking });
       }
 
       setHostStep("opening");
@@ -311,7 +374,7 @@ export default function ArenasDirectory() {
       }
 
       setInviteInfo({ code: v.arena, url });
-      if (hSource === "create") { setMQuote(null); setMQuestion(""); setMRuleTouched(false); setMSourceTouched(false); }
+      if (hSource === "create") { clearHostMarket(wallet); setMQuote(null); setMQuestion(""); setMRuleTouched(false); setMSourceTouched(false); }
       setToast(hFormat === "streak"
         ? `Pit ${v.arena} is open — you're in seat 1. Pick leg 1 in the pit, then share the link.`
         : picks
@@ -465,8 +528,8 @@ export default function ArenasDirectory() {
                   rule: mRule, setRule: (v: string) => { setMRuleTouched(true); setMRule(v); },
                   source2: mSource, setSource2: (v: string) => { setMSourceTouched(true); setMSource(v); },
                   endsSec: mEndsSec, setEndsSec: setMEndsSec, breaking: mBreaking, setBreaking: setMBreaking,
-                  quote: mQuote, fieldError: mFieldError,
-                  startOver: () => { setMQuote(null); setMQuestion(""); setMRuleTouched(false); setMSourceTouched(false); }
+                  quote: mQuote, pendingRegistration: !!wallet && !!pendingMarketSignature(mQuote?.draftId, wallet), fieldError: mFieldError,
+                  startOver: () => { if (wallet) clearHostMarket(wallet); setMQuote(null); setMQuestion(""); setMRuleTouched(false); setMSourceTouched(false); }
                 }}
               />
             )}
@@ -613,7 +676,9 @@ function HostPanel({
   const picks = isPicksFormat(hFormat);
   const streak = hFormat === "streak";
   const created = !!market.quote?.created;
-  const quoting = src === "create" && !market.quote;
+  const pendingRegistration = market.pendingRegistration;
+  const lockedMarket = created || pendingRegistration;
+  const quoting = src === "create" && !pendingRegistration && (!market.quote || (!created && quoteExpired(market.quote)));
   const label =
     !wallet ? (authStatus === "busy" ? "Signing in with X…" : authStatus === "loading" ? "Checking your sign-in…" : "Sign in with X to host") :
     step === "checking" ? "Checking balance…" :
@@ -623,8 +688,9 @@ function HostPanel({
     step === "signing" ? "Approve the market in your X wallet…" :
     step === "registering" ? "Registering with Panta…" :
     step ? seatStepText(step, hostSeat, undefined, undefined, pantaHost).button :
-    src === "create" && !market.quote ? "Check market & see the creation fee" :
-    src === "panta" && !market.pantaId ? "Pick a Panta market above" :
+    quoting ? "Check market & see the creation fee" :
+    pendingRegistration ? "Retry Panta registration, then open pit" :
+    src === "panta" && !MARKET_ID_RE.test(market.pantaId) ? "Pick a Panta market above" :
     src === "create" && market.quote && !created && !hCall ? `Pick YES or NO` :
     picks ? (escrowActive ? `Deposit ${usd2.format(hostSeat)} & take seat 1` : "Take seat 1 · practice") :
     !hCall ? `Pick ${Yw} or ${Nw} on ${subject}` :
@@ -654,7 +720,9 @@ function HostPanel({
       </FieldRow>
       <p className="jc-help">
         {src === "crypto" ? "BTC, ETH or SOL up or down — priced live from the spot market."
-          : src === "panta" ? "Run a pit on any open Panta market — sports, politics, culture. The room trades its own odds; Panta resolves it."
+          : src === "panta" ? market.catalog.sandbox
+            ? "This Panta test connection has one sample market. Host it to try a pit; real markets require a live Panta connection."
+            : "Run a pit on any open Panta market — sports, politics, culture. The room trades its own odds; Panta resolves it."
           : "Write your own question — tonight's game, a stream bet, anything with a clear yes or no. It's listed on Panta and your pit runs on it."}
       </p>
 
@@ -662,22 +730,28 @@ function HostPanel({
         <div className="mkt-pick" role="listbox" aria-label="Panta markets">
           {!market.catalog.loaded ? <p className="jc-help">Loading Panta&apos;s markets…</p>
             : !market.catalog.available ? <p className="jc-help">Panta markets aren&apos;t available on this server. Use Crypto, or create a market once a Panta key is set.</p>
+            : market.catalog.stale && market.catalog.items.length === 0 ? <p className="jc-help">Panta&apos;s market catalog is temporarily unavailable. Retry in a moment.</p>
             : market.catalog.items.length === 0 ? <p className="jc-help">No open Panta markets right now — create one with <b>New market</b>.</p>
             : market.catalog.items.map((m) => (
               <button key={m.id} role="option" aria-selected={market.pantaId === m.id} className={`mkt-opt ${market.pantaId === m.id ? "on" : ""}`} onClick={() => market.setPantaId(m.id)}>
                 <span className="mkt-cat">{m.category}</span>
                 <span className="mkt-q">{m.question}</span>
-                <span className="mkt-px">{m.yesCents}¢ YES{m.endMs ? ` · ${closesIn(m.endMs)}` : ""}</span>
+                <span className="mkt-px">{m.yesCents === null ? "Live line checked at host" : `${m.yesCents}¢ YES`}{m.endMs ? ` · ${closesIn(m.endMs)}` : ""}</span>
               </button>
             ))}
+          {!market.catalog.sandbox && <label className="mkt-field">
+            <span className="jc-field-label">Or paste any Panta market ID</span>
+            <input value={market.pantaId} onChange={(e) => market.setPantaId(e.target.value.trim())} placeholder="Solana market address" aria-invalid={!!market.pantaId && !MARKET_ID_RE.test(market.pantaId)} />
+          </label>}
           {pickedMarket?.endMs != null && pickedMarket.endMs - Date.now() < ((hMode === "scheduled" ? hStartInMin : 2) + market.windowMin) * 60_000 && (
         <p className="jc-note" role="status">
           Trading on this market ends {closesIn(pickedMarket.endMs) === "closed" ? "now" : `in ${closesIn(pickedMarket.endMs).replace(" left", "")}`} — before your pit would finish.
           The pit still settles on the room&apos;s average, but pick a shorter window or another market to trade alongside Panta.
         </p>
       )}
+      {market.catalog.stale && market.catalog.items.length > 0 && <p className="jc-note" role="status">Showing cached markets while Panta&apos;s catalog is unavailable. Each market is checked again before hosting.</p>}
       {market.catalog.sandbox && market.catalog.loaded && (
-            <p className="jc-note mkt-sandbox">Panta sandbox key: Panta lists one test market. A live key lists every open market.</p>
+            <p className="jc-note mkt-sandbox">Panta test mode exposes one sample market, not the live catalog. The server needs a live Panta key to show real markets.</p>
           )}
         </div>
       )}
@@ -686,39 +760,40 @@ function HostPanel({
         <div className="mkt-create">
           <label className="mkt-field">
             <span className="jc-field-label">Question</span>
-            <input disabled={created || busy} value={market.question} onChange={(e) => market.setQuestion(e.target.value.slice(0, 200))} placeholder="Will the Lakers beat the Celtics tonight?" aria-invalid={market.fieldError?.field === "question"} />
+            <input disabled={lockedMarket || busy} value={market.question} onChange={(e) => market.setQuestion(e.target.value.slice(0, 200))} placeholder="Will the Lakers beat the Celtics tonight?" aria-invalid={market.fieldError?.field === "question"} />
           </label>
           <div className="gm-seg mkt-cats" role="radiogroup" aria-label="Category">
             {CREATE_CATEGORIES.map((c) => (
-              <button key={c} role="radio" aria-checked={market.category === c} disabled={created || busy} className={`opt ${market.category === c ? "on" : ""}`} onClick={() => market.setCategory(c)}>{c}</button>
+              <button key={c} role="radio" aria-checked={market.category === c} disabled={lockedMarket || busy} className={`opt ${market.category === c ? "on" : ""}`} onClick={() => market.setCategory(c)}>{c}</button>
             ))}
           </div>
           <label className="mkt-field">
             <span className="jc-field-label">Resolves YES if…</span>
-            <textarea rows={2} disabled={created || busy} value={market.rule} onChange={(e) => market.setRule(e.target.value.slice(0, 600))} aria-invalid={market.fieldError?.field === "resolutionRule"} />
+            <textarea rows={2} disabled={lockedMarket || busy} value={market.rule} onChange={(e) => market.setRule(e.target.value.slice(0, 600))} aria-invalid={market.fieldError?.field === "resolutionRule"} />
           </label>
           <label className="mkt-field">
             <span className="jc-field-label">Source of truth</span>
-            <input disabled={created || busy} value={market.source2} onChange={(e) => market.setSource2(e.target.value.slice(0, 300))} placeholder="https://…" inputMode="url" aria-invalid={market.fieldError?.field === "sourcesOfTruth"} />
+            <input disabled={lockedMarket || busy} value={market.source2} onChange={(e) => market.setSource2(e.target.value.slice(0, 300))} placeholder="https://…" inputMode="url" aria-invalid={market.fieldError?.field === "sourcesOfTruth"} />
           </label>
           <div className="mkt-row2">
-            <button className={`mkt-toggle ${market.breaking ? "on" : ""}`} role="switch" aria-checked={market.breaking} disabled={created || busy} onClick={() => market.setBreaking(!market.breaking)}>
+            <button className={`mkt-toggle ${market.breaking ? "on" : ""}`} role="switch" aria-checked={market.breaking} disabled={lockedMarket || busy} onClick={() => market.setBreaking(!market.breaking)}>
               <span className="knob" aria-hidden="true" /> Live event — trades on Panta now
             </button>
             <div className="gm-seg" role="radiogroup" aria-label="Trading on the market ends in">
               {MARKET_ENDS.filter((o) => market.breaking || o.sec >= 3 * 3_600).map((o) => (
-                <button key={o.label} role="radio" aria-checked={market.endsSec === o.sec} disabled={created || busy} className={`opt ${market.endsSec === o.sec ? "on" : ""}`} onClick={() => market.setEndsSec(o.sec)}>{o.label}</button>
+                <button key={o.label} role="radio" aria-checked={market.endsSec === o.sec} disabled={lockedMarket || busy} className={`opt ${market.endsSec === o.sec ? "on" : ""}`} onClick={() => market.setEndsSec(o.sec)}>{o.label}</button>
               ))}
             </div>
           </div>
           <p className="jc-help">
             Panta&apos;s AI resolver settles it after trading ends, using your rule and source.
-            {market.breaking ? " A live event trades on Panta immediately." : " A scheduled market opens on Panta about an hour from now — your pit still runs right away."}
+            {market.breaking ? " A live event trades on Panta immediately." : " A scheduled market opens on Panta about an hour from now. You can host its pit once Panta publishes a live line."}
           </p>
           {market.fieldError && <p className="jc-error" role="alert">{market.fieldError.message}</p>}
           {market.quote && (
             <div className={`mkt-fee ${market.quote.sandbox ? "free" : ""}`} role="status">
-              {market.quote.created ? <><b>Market created on Panta.</b> Your pit opens on it — press below to try again if it didn&apos;t. <button type="button" className="link-btn" onClick={market.startOver} disabled={busy}>Write a different market</button></>
+              {pendingRegistration ? <><b>Creation transaction sent.</b> Press below to retry Panta registration with the same signature. No second market fee will be signed.</>
+                : market.quote.created ? <><b>Market created on Panta.</b> Press below to open its pit when Panta&apos;s live line is available. The creation fee will not be charged again. <button type="button" className="link-btn" onClick={market.startOver} disabled={busy}>Write a different market</button></>
                 : market.quote.sandbox ? <><b>No creation fee — Panta sandbox.</b> On mainnet Panta charges a creation fee (it seeds the market&apos;s liquidity); you&apos;d see it here before signing.</>
                 : <><b>Creation fee {usd2.format(market.quote.feeUsdc)}</b> — paid to Panta when you sign{market.quote.liquidityUsdc > 0 ? <>, {usd2.format(market.quote.liquidityUsdc)} of it seeds the market&apos;s liquidity</> : null}. As creator you earn a share of trading fees once it graduates.</>}
             </div>
@@ -895,7 +970,7 @@ function HostPanel({
         onClick={onSubmit}
         disabled={!wallet
           ? authStatus === "busy" || authStatus === "loading"
-          : busy || !!inputError || (!hCall && !picks && !quoting) || (src === "panta" && !market.pantaId) || (src === "create" && market.question.trim().length < 10)}
+          : busy || !!inputError || (!hCall && !picks && !quoting) || (src === "panta" && !MARKET_ID_RE.test(market.pantaId)) || (src === "create" && market.question.trim().length < 10)}
         aria-busy={busy || authStatus === "busy"}
       >
         {label}
@@ -906,7 +981,7 @@ function HostPanel({
 
 type MarketProps = {
   source: MarketSource; setSource: (v: MarketSource) => void;
-  catalog: { loaded: boolean; available: boolean; sandbox: boolean; items: CatalogItem[] };
+  catalog: { loaded: boolean; available: boolean; sandbox: boolean; stale: boolean; items: CatalogItem[] };
   pantaId: string; setPantaId: (v: string) => void;
   windowMin: number; setWindowMin: (v: number) => void;
   question: string; setQuestion: (v: string) => void;
@@ -916,6 +991,7 @@ type MarketProps = {
   endsSec: number; setEndsSec: (v: number) => void;
   breaking: boolean; setBreaking: (v: boolean) => void;
   quote: (MarketQuote & { created?: boolean }) | null;
+  pendingRegistration: boolean;
   fieldError: { field?: string; message: string } | null;
   startOver: () => void;
 };

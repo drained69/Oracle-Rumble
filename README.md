@@ -40,8 +40,9 @@ Two call-contest formats — **Predictions** and **Streak** — run on live cryp
 prices with no trading at all.
 
 > **Devnet.** Everything runs on Solana **devnet** with Circle's test USDC. Test
-> tokens have no monetary value. Flipping to mainnet is a configuration change
-> (RPC + USDC mint + a `pk_live_` Panta key), gated on the usual legal/compliance review.
+> tokens have no monetary value. Mainnet requires the escrow, wallet flow,
+> infrastructure, independent security review, and legal release gates in
+> [MAINNET_READINESS.md](MAINNET_READINESS.md).
 
 ---
 
@@ -93,7 +94,11 @@ A trading pit on a Panta market, end to end:
    or **creates one**. Creation runs Panta's `markets/create/quote` → `build` →
    **X-wallet signature** → `markets/register`; the fee is shown before anything is
    signed. Drafts are persisted (Postgres) and bound to the creating wallet, so a
-   paid market survives a restart and only its creator can host on it.
+   paid market survives a restart and only its creator can host on it. A quote
+   expires after a few minutes; the host sees a fresh fee before signing if it
+   expires. If registration lags after broadcast, retries reuse the original
+   signature. A scheduled market can host a pit once Panta opens it and
+   publishes a live YES price.
 2. **Seats** — players pay the seat (`entry + vault`) into escrow and make a hidden
    YES/NO opening call. The host takes seat #1.
 3. **Lock** — when enrollment closes, Panta's YES price becomes the pit's opening
@@ -287,8 +292,9 @@ funds. `settle_deadline` is set at init to
   until the round locks — absent from the public round state, the Oracle read and the
   deposit memo alike.
 
-> Devnet software for a hackathon: audited by inspection, not formally. Review before
-> any mainnet use.
+> Devnet software for a hackathon. A local code review is recorded in
+> [MAINNET_READINESS.md](MAINNET_READINESS.md); the escrow has not received an
+> independent security audit for mainnet use.
 
 ---
 
@@ -336,7 +342,8 @@ local dev wallet sign-in. Add keys to light up each layer:
 | To enable | Set |
 |---|---|
 | Persistence across restarts | `DATABASE_URL` (Postgres) |
-| Real Panta markets & creation | `PANTA_API_KEY` (+ `PANTA_USER_ID`) |
+| Panta catalog & sandbox creation | `PANTA_API_KEY` (+ `PANTA_USER_ID`) |
+| Paid Panta market creation | `pk_live_*` key, `DATABASE_URL`, `NEXT_PUBLIC_SOLANA_CLUSTER=mainnet-beta`, mainnet `NEXT_PUBLIC_SOLANA_RPC`, and `NEXT_PUBLIC_USDC_MINT` |
 | On-chain USDC escrow | `NEXT_PUBLIC_ESCROW_PROGRAM_ID`, `NEXT_PUBLIC_USDC_MINT`, `ESCROW_HOST_SECRET_KEY` |
 | X-only sign-in & embedded wallets | `NEXT_PUBLIC_PRIVY_APP_ID` (+ `PRIVY_APP_SECRET`) |
 | Claude-phrased Oracle read | `ANTHROPIC_API_KEY` |

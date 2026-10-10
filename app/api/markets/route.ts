@@ -72,7 +72,7 @@ export async function GET(request: Request) {
       // Panta returns `{ items: [...] }` (paginated). Older docs referred
       // to `{ markets: [...] }`. Handle both plus bare arrays for safety.
       const data = await pantaFetch<{ items?: PantaLiveMarket[]; markets?: PantaLiveMarket[] } | PantaLiveMarket[]>(
-        `/markets${qs.toString() ? `?${qs}` : ""}`
+        `/markets/${qs.toString() ? `?${qs}` : ""}`
       );
       const list: PantaLiveMarket[] = Array.isArray(data)
         ? data
@@ -85,8 +85,8 @@ export async function GET(request: Request) {
       }
       return NextResponse.json({ source: "panta", arenas });
     } catch (err) {
-      // Fall through to mock so the UI keeps working when Panta blips.
-      console.error("panta /markets failed, serving mock:", err);
+      console.error("panta /markets failed:", err);
+      return NextResponse.json({ error: "Panta markets are temporarily unavailable." }, { status: 502 });
     }
   }
 

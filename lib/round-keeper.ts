@@ -122,7 +122,7 @@ export async function livePricing(round: Round | null): Promise<Pricing> {
     // The room trades its own book; Panta gives the reference line and, once
     // its resolver rules, the outcome.
     const snap = await getPantaMarket(round.config.marketId);
-    const line = snap?.yesCents ?? round.book?.lastLine ?? round.book?.line ?? 50;
+    const line = (snap?.priceAvailable ? snap.yesCents : null) ?? round.book?.lastLine ?? round.book?.line ?? 50;
     const yesPrice = round.book ? (round.book.close ?? bookCents(round.book)) : line;
     return { yesPrice, priceMap: { [round.config.marketId]: yesPrice }, spots: {}, line, outcome: snap?.outcome ?? null };
   }

@@ -109,7 +109,9 @@ export default function DocsPage() {
               <li><b>Price oracle</b> — live BTC, ETH and SOL spot prices for crypto pits.</li>
             </ol>
             <div className="callout">
-              <b>Devnet.</b> Everything runs on Solana {CLUSTER} with Circle&apos;s devnet USDC. Test tokens have no monetary value.
+              {CLUSTER === "mainnet-beta"
+                ? <>The Pit is configured for Solana mainnet. Deposits use real USDC and can lose value.</>
+                : <><b>Devnet.</b> Everything runs on Solana {CLUSTER} with Circle&apos;s devnet USDC. Test tokens have no monetary value.</>}
             </div>
           </Section>
 
@@ -489,16 +491,16 @@ withdraw  = payout − 0.1% platform fee`}</pre>
             <div className="faq">
               <details open>
                 <summary>How do I sign in? Do I need a wallet?</summary>
-                <p>Sign in with X — that is the only way in, and no wallet extension is needed. Signing in creates a Solana wallet for your X account (a Privy embedded wallet) that holds your USDC and signs your deposits and payouts. Open your account (your handle, top right) to see its address, balances and where to get test funds.</p>
+                <p>Sign in with X — that is the only way in, and no wallet extension is needed. Signing in creates a Solana wallet for your X account (a Privy embedded wallet) that holds your USDC and signs your deposits and payouts. Open your account (your handle, top right) to see its address and balances.</p>
               </details>
               <details>
                 <summary>I already used a Phantom/Backpack wallet here — what happens?</summary>
                 <p>Sign-in is now X-only, so you play with your X account&apos;s own wallet. Your username carries over. Any unclaimed payout still sitting in that old extension wallet can only be withdrawn by signing with that wallet directly on the escrow program — the app no longer drives extension wallets.</p>
               </details>
-              <details>
+              {CLUSTER !== "mainnet-beta" && <details>
                 <summary>Where do I get test funds?</summary>
                 <p>Devnet USDC from faucet.circle.com (choose Solana Devnet) and devnet SOL for fees from faucet.solana.com. Send them to the wallet address in your account menu.</p>
-              </details>
+              </details>}
               <details>
                 <summary>Can I move my wallet to Phantom or Backpack?</summary>
                 <p>Yes — <em>Export private key</em> in the account menu opens Privy&apos;s own window (on Privy&apos;s domain, never shown to The Pit) to copy the key into another wallet app.</p>

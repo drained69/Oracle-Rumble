@@ -31,7 +31,7 @@ export default function PantaPositions({ wallet }: { wallet: string | null }) {
     if (!wallet) { setLoading(false); return; }
     try {
       const res = await fetch(`/api/positions?wallet=${encodeURIComponent(wallet)}`, { cache: "no-store" });
-      if (!res.ok) { setLoading(false); return; }
+      if (!res.ok) { setSource("unknown"); setMsg("Panta positions are unavailable. Your last loaded balances may be stale."); return; }
       const j = (await res.json()) as { source: "panta" | "mock"; positions?: unknown[] };
       setSource(j.source);
       // Panta may send numbers as strings; normalise before rendering.
@@ -51,7 +51,7 @@ export default function PantaPositions({ wallet }: { wallet: string | null }) {
           outcome: p.outcome ?? null
         };
       }));
-    } catch { /* transient */ }
+    } catch { setSource("unknown"); setMsg("Panta positions are unavailable. Your last loaded balances may be stale."); }
     finally { setLoading(false); }
   }, [wallet]);
 
@@ -74,10 +74,12 @@ export default function PantaPositions({ wallet }: { wallet: string | null }) {
           recentBlockhash: build.recentBlockhash
         });
         signature = res.signature;
-      } else {
+      } else if (build.source === "mock") {
         signature = `demo-claim-${Date.now().toString(36)}`;
+      } else {
+        throw new Error("Panta returned no signable claim transaction.");
       }
-      setMsg(`Claimed ${build.amountUsdc} USDC${signature ? ` · ${signature.slice(0, 8)}…` : ""}`);
+      setMsg(`${build.source === "mock" ? "Demo claim" : "Claim transaction submitted"} ${build.amountUsdc} USDC${signature ? ` · ${signature.slice(0, 8)}…` : ""}`);
       await load();
     } catch (err) {
       setMsg(`Claim failed: ${err instanceof Error ? err.message : String(err)}`);

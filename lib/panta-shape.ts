@@ -17,8 +17,10 @@ export type PantaLiveMarket = {
   title?: string;
   question?: string;
   category?: string;
-  yesPrice?: number | string;
-  noPrice?: number | string;
+  yesPrice?: number | string | null;
+  noPrice?: number | string | null;
+  primaryYesPrice?: number | string | null;
+  secondaryYesPrice?: number | string | null;
   volumeUsdc?: string;
   volume?: string;
   /** Unix seconds, ms, or ISO string — Panta varies by endpoint. */
@@ -46,7 +48,7 @@ function isoOrNull(v: string | number | undefined): string | null {
   return Number.isFinite(t) ? new Date(t).toISOString() : null;
 }
 
-export function toCents(v: number | string | undefined): number {
+export function toCents(v: number | string | null | undefined): number {
   if (v === undefined || v === null) return 50;
   const n = typeof v === "number" ? v : parseFloat(v);
   if (!Number.isFinite(n)) return 50;
@@ -78,6 +80,7 @@ export function mapPhase(p: string | undefined, resolved: boolean | undefined): 
   if (resolved) return "resolved";
   switch ((p ?? "").toLowerCase()) {
     case "primary": return "active";
+    case "secondary": return "graduated";
     case "graduated": return "graduated";
     case "resolved": return "resolved";
     case "pending": return "pending";
@@ -90,7 +93,7 @@ export function pantaMarketToUi(m: PantaLiveMarket): PantaMarket {
     id: m.marketId ?? m.id ?? "",
     question: m.title ?? m.question ?? "(untitled market)",
     category: m.category ?? "General",
-    yesPrice: toCents(m.yesPrice),
+    yesPrice: toCents(m.yesPrice ?? m.primaryYesPrice ?? m.secondaryYesPrice),
     change: 0,
     volume: m.volume ?? formatVolume(m.volumeUsdc),
     closes: m.closes ?? formatCloses(m.endTime),
