@@ -14,7 +14,7 @@ export async function GET() {
     available: PANTA_LIVE,
     sandbox: PANTA_SANDBOX,
     stale: pantaCatalogFetchFailed(),
-    items: list.slice(0, 60).map((m) => ({
+    items: list.map((m) => ({
       id: m.id,
       question: m.question,
       category: m.category,

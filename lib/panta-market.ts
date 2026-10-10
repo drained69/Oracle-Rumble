@@ -139,14 +139,18 @@ export async function listPantaMarkets(): Promise<PantaSnapshot[]> {
   try {
     const raw: RawMarket[] = [];
     let cursor: string | null = null;
-    for (let page = 0; page < 4; page++) {
+    const seenCursors = new Set<string>();
+    // Panta's live catalog can exceed the initial 200 rows. Walk its cursor
+    // pages until exhausted, with a high ceiling and cycle guard for safety.
+    for (let page = 0; page < 100; page++) {
       const query = new URLSearchParams({ limit: "50" });
       if (cursor) query.set("cursor", cursor);
       const data = await pantaFetch<{ items?: RawMarket[]; markets?: RawMarket[]; nextCursor?: string | null } | RawMarket[]>(`/markets/?${query}`);
       const items = Array.isArray(data) ? data : (data.items ?? data.markets ?? []);
       raw.push(...items);
       cursor = Array.isArray(data) ? null : data.nextCursor ?? null;
-      if (!cursor || items.length === 0) break;
+      if (!cursor || items.length === 0 || seenCursors.has(cursor)) break;
+      seenCursors.add(cursor);
     }
     const now = Date.now();
     const list = raw

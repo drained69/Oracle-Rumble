@@ -150,6 +150,7 @@ export default function ArenasDirectory() {
   // Market source: crypto direction, an existing Panta market, or a new one.
   const [hSource, setHSource] = useState<MarketSource>("crypto");
   const [catalog, setCatalog] = useState<{ loaded: boolean; available: boolean; sandbox: boolean; stale: boolean; items: CatalogItem[] }>({ loaded: false, available: false, sandbox: false, stale: false, items: [] });
+  const [catalogSearch, setCatalogSearch] = useState("");
   const [hPantaId, setHPantaId] = useState("");
   const [hWindowMin, setHWindowMin] = useState(15);
   const [mQuestion, setMQuestion] = useState("");
@@ -522,7 +523,7 @@ export default function ArenasDirectory() {
                 username={username} authStatus={authStatus}
                 step={hostStep} onSubmit={doHostAndJoin}
                 market={{
-                  source: hSource, setSource: setHSource, catalog, pantaId: hPantaId, setPantaId: setHPantaId,
+                  source: hSource, setSource: setHSource, catalog, catalogSearch, setCatalogSearch, pantaId: hPantaId, setPantaId: setHPantaId,
                   windowMin: hWindowMin, setWindowMin: setHWindowMin,
                   question: mQuestion, setQuestion: setMQuestion, category: mCategory, setCategory: setMCategory,
                   rule: mRule, setRule: (v: string) => { setMRuleTouched(true); setMRule(v); },
@@ -728,11 +729,17 @@ function HostPanel({
 
       {src === "panta" && (
         <div className="mkt-pick" role="listbox" aria-label="Panta markets">
+          {market.catalog.loaded && market.catalog.items.length > 0 && (
+            <label className="mkt-field">
+              <span className="jc-field-label">Search {market.catalog.items.length} open Panta markets</span>
+              <input value={market.catalogSearch} onChange={(e) => market.setCatalogSearch(e.target.value)} placeholder="Search market questions or categories" />
+            </label>
+          )}
           {!market.catalog.loaded ? <p className="jc-help">Loading Panta&apos;s markets…</p>
             : !market.catalog.available ? <p className="jc-help">Panta markets aren&apos;t available on this server. Use Crypto, or create a market once a Panta key is set.</p>
             : market.catalog.stale && market.catalog.items.length === 0 ? <p className="jc-help">Panta&apos;s market catalog is temporarily unavailable. Retry in a moment.</p>
             : market.catalog.items.length === 0 ? <p className="jc-help">No open Panta markets right now — create one with <b>New market</b>.</p>
-            : market.catalog.items.map((m) => (
+            : market.catalog.items.filter((m) => `${m.question} ${m.category}`.toLowerCase().includes(market.catalogSearch.trim().toLowerCase())).map((m) => (
               <button key={m.id} role="option" aria-selected={market.pantaId === m.id} className={`mkt-opt ${market.pantaId === m.id ? "on" : ""}`} onClick={() => market.setPantaId(m.id)}>
                 <span className="mkt-cat">{m.category}</span>
                 <span className="mkt-q">{m.question}</span>
@@ -982,6 +989,7 @@ function HostPanel({
 type MarketProps = {
   source: MarketSource; setSource: (v: MarketSource) => void;
   catalog: { loaded: boolean; available: boolean; sandbox: boolean; stale: boolean; items: CatalogItem[] };
+  catalogSearch: string; setCatalogSearch: (v: string) => void;
   pantaId: string; setPantaId: (v: string) => void;
   windowMin: number; setWindowMin: (v: number) => void;
   question: string; setQuestion: (v: string) => void;
