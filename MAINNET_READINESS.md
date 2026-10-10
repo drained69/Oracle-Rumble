@@ -86,5 +86,9 @@ audit or a guarantee that all vulnerabilities have been found.
    rollback plan. A web rollback cannot undo an on-chain deployment or
    already accepted deposits; keep recovery and settlement available.
 
-No mainnet transaction, Railway deployment, Git push, or live Panta order was
-performed in this audit.
+The code changes were pushed to GitHub `main`. The local `video/` directory is
+excluded from the current branch and remains on the developer machine. The
+earlier pushed commit that contained the video files remains in branch history;
+the removal commit makes them absent from the current tree. No mainnet
+transaction, Railway deployment, or live Panta order was performed in this
+audit.
